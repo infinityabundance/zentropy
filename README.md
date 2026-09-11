@@ -92,5 +92,5 @@ linked, or assumed.
 
 ## Licence
 
-MIT OR Apache-2.0. See `Cargo.toml`. Any submission will ship under an
+MIT. See `LICENSE-MIT` and `Cargo.toml`. Any submission will ship under an
 OSI-approved licence with a complete inventory, as the rules require.

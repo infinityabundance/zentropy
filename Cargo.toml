@@ -4,9 +4,13 @@ version = "0.0.1"
 edition = "2021"
 rust-version = "1.74"
 description = "Zentropy: the smallest legitimate executable explanation of enwik9. A Hutter Prize contender."
-license = "MIT OR Apache-2.0"
-repository = "https://example.invalid/zentropy"
+license = "MIT"
+repository = "https://github.com/infinityabundance/zentropy"
+homepage = "https://github.com/infinityabundance/zentropy"
+documentation = "https://github.com/infinityabundance/zentropy/tree/master/docs"
 readme = "README.md"
+keywords = ["compression", "context-mixing", "enwik9", "hutter-prize", "arithmetic-coding"]
+categories = ["compression", "algorithms", "command-line-utilities"]
 # The scored artifact must be small and deterministic. No external crates in the
 # scored path: everything the submission needs is implemented in-tree so that we
 # control binary size, determinism and licence inventory exactly.
