@@ -40,7 +40,12 @@ name = "zentropy-sfx"
 path = "src/bin/zentropy_sfx.rs"
 
 [features]
-default = []
+default = ["struct-hoist"]
+# Gates the Phase-3 structural-hoisting transform into the binary. Disabling it
+# yields an otherwise-identical binary used ONLY to measure the mechanism's
+# real executable-byte cost. `S` is authority: an estimate is never allowed to
+# decide whether a mechanism is adopted.
+struct-hoist = []
 # `submission` gates out research-only machinery from the decoder stub.
 submission = []
 

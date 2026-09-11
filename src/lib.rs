@@ -36,6 +36,7 @@ pub mod evidence;
 pub mod ir;
 pub mod mixer;
 pub mod score;
+#[cfg(feature = "struct-hoist")]
 pub mod transform;
 
 /// Crate version, surfaced in receipts.

@@ -13,14 +13,20 @@
 - **The corpus is pinned.** `enwik8`/`enwik9` digests are recorded in
   `evidence/baseline/CORPUS.sha256` and in code.
 - **The floor is real and measured.** `RawCm` reconstructs enwik8 exactly at
-  `22,465,931` bytes (1.7973 bpc), beating `xz -9e` (24,831,656), `brotli -q 11`
-  (25,742,001), `bzip2 -9` (29,008,758) and `gzip -9` (36,445,248) on the same
-  input.
+  `22,449,073` bytes (1.7959 bpc) with structural hoisting enabled, beating
+  `xz -9e` (24,831,656), `brotli -q 11` (25,742,001), `bzip2 -9` (29,008,758)
+  and `gzip -9` (36,445,248) on the same input.
 - **The full corpus reconstructs exactly.** enwik9 → `182,949,204` bytes
   (1.4636 bpc) in 41 min, 3.58 GB peak RAM, both directions. This is milestone
   G0 (exact 10⁹-byte reconstruction) and G1 (beats generic compressors).
-- **Two mechanisms are adopted by measurement:** word/bigram experts
-  (−653,805 B on enwik8) and structural hoisting (−16,315 B on enwik8).
+- **Mechanisms are adopted only by complete, measured cost:** word/bigram
+  experts (−653,805 B on enwik8) and orders 0/5/12/16 (−118,676 B on enwik8).
+  Structural hoisting is adopted for ≥ enwik7 (−15,130 B on enwik8) but
+  **rejected on enwik6 (+322 B)** once its 1,728-byte measured executable cost
+  is charged — a direct demonstration that estimates were unsafe.
+- **Hutter score accounting is sealed:** the three legal submission forms are
+  unit-tested constructors, and no mechanism's adoption decision uses an
+  estimated byte cost.
 - **The submission path works.** The scored stub (313,792 B) is both `comp9a`
   and `decomp9`; a packed self-extracting `archive9` reconstructs byte-identically
   with no external inputs.
@@ -39,42 +45,77 @@
 - The model has only been timed on this machine, not on a Geigerbench-scored
   reference machine.
 
+## Accounting status (fixed this revision)
+
+Two score-accounting leaks were found and closed. Both were bookkeeping, not
+compression, but both could have inflated a later celebration:
+
+1. **Separate-form score undercounted by one program copy.** The rule is
+   `comp9a + 2×decomp9 + bhm`, reduced to `comp9a + decomp9 + bhm = 2P + bhm`
+   when `comp9a == decomp9`. `tools/package_sfx.sh` had printed `P + bhm`. The
+   three legal forms now live as named, unit-tested constructors in
+   [`score`](../src/score/mod.rs): `self_extracting`, `separate`,
+   `shared_program`.
+2. **Phase-3 executable cost was estimated, not measured.** The old
+   `binary_cost_estimate()` (543 B: dictionary bytes + an arbitrary allowance)
+   was deleted. `tools/measure_binary_cost.sh` now builds an otherwise-identical
+   submission binary with and without `--features struct-hoist` and reports the
+   real delta. Measured cost: **1,728 B**. With correct accounting the structural
+   hoist is **REJECTED on enwik6 (+322 B)** and adopted on enwik7 (−4,472 B) and
+   enwik8 (−15,130 B) — it only pays once there is enough markup to amortise the
+   fixed executable cost.
+
 ## Next highest-value experiments, in order
 
-Ranked by expected (score gain) ÷ (engineering cost × uncertainty × resource
-risk), per the transfer analysis in `docs/STACK_TECH_TRANSFER.md` and
-`docs/PRIOR_ART_MECHANISMS.md`.
+The ordering below was revised after external review. Its guiding insight: the
+optimal article order is a function of the predictor, so a layout optimised
+against today's simple direct-context predictor could become a local optimum
+once the classical machinery matures. Probe the signal cheaply now; optimise it
+only after the predictor is strong.
 
-1. **Article-layout compiler (Phase 7).** enwik9's pages are *not* title-sorted
-   (verified), so restoration costs a stored permutation, which must be entropy
-   coded and charged. But reordering is independently record-winning in both
-   `fx2-cmix` and `starlit`. First experiment: a cheap semantic order (page
-   title + bag-of-words sketch) with a delta-coded permutation; measure
-   `ΔS = Δarchive + permutation_cost` on enwik7/8. Negative results are
-   first-class.
-2. **Structural hoisting (Phase 3).** Use `ZIR-0` to hoist reconstructible
-   markup (fixed tag names, template delimiters, link delimiters) out of the
-   modelled stream. Hypothesis: fewer, more regular bytes and shorter match
-   distances. Measure the complete cost including restoration logic.
-3. **Transformed lexical dictionary + repeat-offset state (Phase 4).** Replace
-   frequent surface forms with short codes from a root/transform representation;
-   charge the dictionary. Generalise LZMA's repeat-distance state to repeated
-   phrase/template/reference state.
-4. **ICM/ISSE bit histories and a wider mixer (Phase 6).** Replace direct
-   probability models with nibble-aligned bit-history tables and add SSE stages.
-   This is the well-trodden path from `lpaq1` to `cmix` and is where most of the
-   remaining classical gain lives.
-5. **Grammar + rank (Phase 5).** Induce shared procedural descriptions of
-   Wikipedia constructs; entropy-code the grammar skeleton; rank-code per-instance
-   state. EntropyFS measured a −47% reduction in grammar-skeleton cost, leaving
-   the gap explicitly in contextual modelling and rank-coded state.
-6. **Residual-conditioned learned corrector (Phase 8).** Train a small
-   transformer on the *residual* of the classical predictor, quantise it, charge
-   every model byte, and admit only if `net_gain > 0`. This mirrors
-   `fx2-cmix-transformer`'s winning structure but on a thinner remainder.
-7. **Representation optimiser (Phase 10).** Equivalence-preserving rewrites to a
-   fixed point, accepted only when `Decode(D1) == Decode(D0)` and
-   `Size(D1) < Size(D0)`.
+1. **Seal exact Hutter accounting.** *(done this revision — see above.)* No
+   further research until every reported `S` charges the correct program copies
+   and every mechanism's binary cost is measured.
+2. **Cheap article-order oracle (Phase 7 probe).** Determine whether the reorder
+   signal is large and whether the permutation can be coded cheaper than the
+   gain. Do **not** spend serious optimisation effort yet. Established negative
+   input: enwik9 pages are not title-sorted, so restoration costs a stored
+   permutation.
+3. **ICM + state maps + ISSE + proper SSE / context-dependent mixing (Phase 6).**
+   The largest obvious block of technology still missing. This is the well-worn
+   path from `lpaq1` toward `cmix` and is where most remaining classical gain
+   lives.
+4. **Better match modelling.** Sparse matches, multiple recent matches, match
+   confidence/state, and word/structural matches.
+5. **Structural factorization and transformed lexical/phrase representation
+   (Phases 3–4).** Generalise the 31-entry hoist into a real dictionary with
+   root/transform representation and repeat-offset state.
+6. **The distinctly Zentropy part: grammar / configuration / rank / procedural
+   seed explanations (Phase 5).** This is the first experiment that actually
+   tests the project's central hypothesis rather than rediscovering known
+   compression technology.
+7. **Re-run article-layout optimisation against the now-strong predictor.**
+8. **Residual-conditioned transformer last,** when it is genuinely learning the
+   difficult remainder rather than compensating for missing classical machinery.
+
+## The milestone that matters
+
+The first decisive question is not whether Zentropy reaches 100 MB. It is:
+
+1. Can a mature classical floor push this to roughly **125–140 MB**? Then
+2. Does grammar/rank/proceduralization produce **multiple megabytes of additional
+   saving after that floor**, rather than merely rediscovering what the predictor
+   already captured?
+
+Today the floor is 182.9 MB and the distinctly-Zentropy machinery has not yet
+been deployed. The gap to the pending frontier (`fx2-cmix-transformer`,
+100.42 MB including compressor) is ~82.8 MB. It is not close, and the project
+does not pretend otherwise.
+
+## Superseded earlier ordering
+
+The previous revision ranked the article-layout compiler first. That is now
+item 2/7: a cheap probe, not an optimisation campaign.
 
 ## Known risks
 

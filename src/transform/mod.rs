@@ -129,12 +129,12 @@ pub fn decode(input: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Binary bytes the transform costs the scored executable (the dictionary plus
-/// a rough allowance for the code). Charged against `Δbinary` in accounting.
-pub fn binary_cost_estimate() -> u64 {
-    let dict: u64 = DICT.iter().map(|e| e.len() as u64 + 2).sum();
-    dict + 256
-}
+/// NOTE: there is deliberately no `binary_cost_estimate()` here.
+///
+/// The executable cost of this mechanism is established by building an
+/// otherwise-identical submission binary with and without the `struct-hoist`
+/// feature and charging the measured delta (see `tools/measure_binary_cost.sh`).
+/// An estimate is never permitted to decide adoption.
 
 #[cfg(test)]
 mod tests {

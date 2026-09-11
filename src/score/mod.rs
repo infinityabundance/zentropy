@@ -64,10 +64,45 @@ pub struct Score {
 }
 
 impl Score {
+    /// Raw two-field construction. Prefer the named form constructors below.
     pub fn new(compressor_bytes: u64, archive_bytes: u64) -> Self {
         Score {
             compressor_bytes,
             archive_bytes,
+        }
+    }
+
+    /// The primary self-extracting form.
+    ///
+    /// Rule: `S := length(comp9.exe) + length(archive9.exe)`, where `comp9`
+    /// reads enwik9 and writes `archive9`, and `archive9` reconstructs enwik9.
+    pub fn self_extracting(comp9_bytes: u64, archive9_bytes: u64) -> Self {
+        Score {
+            compressor_bytes: comp9_bytes,
+            archive_bytes: archive9_bytes,
+        }
+    }
+
+    /// The relaxed separate-file form with distinct programs.
+    ///
+    /// Rule: `S := length(comp9a) + 2 x length(decomp9) + length(archive9.bhm)`.
+    pub fn separate(comp9a_bytes: u64, decomp9_bytes: u64, bhm_bytes: u64) -> Self {
+        Score {
+            // The decompressor is charged twice; keep the two physical copies
+            // explicit in `compressor_bytes` so the total is never misread.
+            compressor_bytes: comp9a_bytes + 2 * decomp9_bytes,
+            archive_bytes: bhm_bytes,
+        }
+    }
+
+    /// The relaxed separate-file form when `comp9a == decomp9` (one program,
+    /// used both ways). The rule reduces the `2 x` coefficient on `decomp9` to
+    /// `1 x`, so the program is still charged **twice** in total:
+    /// `S := length(P) + length(P) + length(archive9.bhm)`.
+    pub fn shared_program(program_bytes: u64, bhm_bytes: u64) -> Self {
+        Score {
+            compressor_bytes: 2 * program_bytes,
+            archive_bytes: bhm_bytes,
         }
     }
 
@@ -237,5 +272,41 @@ mod tests {
         };
         // 70000/1427 = 49.05 hours.
         assert!((l.time_limit_hours() - 49.05).abs() < 0.1);
+    }
+
+    #[test]
+    fn submission_form_arithmetic() {
+        let program = 313_792u64;
+        let bhm = 276_263u64;
+        let archive9 = 590_078u64; // program + marker(15) + length(8) + bhm
+
+        // comp9a == decomp9: the rule reduces the 2x on decomp9 to 1x, so the
+        // single program is charged twice in total: 2P + bhm.
+        let shared = Score::shared_program(program, bhm);
+        assert_eq!(shared.total(), 313_792 + 313_792 + 276_263);
+        assert_eq!(shared.total(), 903_847);
+
+        // Self-extracting: comp9 + archive9.
+        let sfx = Score::self_extracting(program, archive9);
+        assert_eq!(sfx.total(), 903_870);
+        // The two legal packaging forms differ only by the SFX marker+length.
+        assert_eq!(sfx.total() - shared.total(), 23);
+    }
+
+    #[test]
+    fn separate_with_distinct_programs() {
+        // Distinct comp9a and decomp9: comp9a + 2*decomp9 + bhm.
+        let s = Score::separate(1_000, 2_000, 5_000);
+        assert_eq!(s.total(), 1_000 + 4_000 + 5_000);
+        assert_eq!(s.total(), 10_000);
+
+        // The same-program case is a *rule reduction*, not a substitution into
+        // the distinct-program formula: it is 2P + bhm, strictly less than
+        // comp9a + 2*decomp9 + bhm when both equal P.
+        let p = 7_000u64;
+        let shared = Score::shared_program(p, 1_000);
+        let naive = Score::separate(p, p, 1_000);
+        assert_eq!(shared.total(), 2 * p + 1_000);
+        assert!(shared.total() < naive.total());
     }
 }

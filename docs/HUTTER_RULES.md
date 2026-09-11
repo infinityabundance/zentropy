@@ -23,7 +23,13 @@ Concretely, one of:
 | Separate compressor/decompressor | `len(comp9a) + 2·len(decomp9) + len(archive9.bhm)` |
 | Same program for both | `len(comp9a) + len(decomp9) + len(archive9.bhm)` |
 
-If `comp9a = decomp9`, the `2×` in the separate form reduces to `1×`.
+If `comp9a = decomp9`, the `2×` in the separate form reduces to `1×`. Note that
+this still charges the single program **twice in total** — once as `comp9a` and
+once as `decomp9` — i.e. `S = 2·len(P) + len(archive9.bhm)`. It is *not*
+`len(P) + len(archive9.bhm)`. Concretely, a 313,792-byte program with a
+276,263-byte archive scores `903,847`, not `590,055`. The three forms are
+implemented as named, unit-tested constructors in
+[`score`](../src/score/mod.rs).
 
 Running `archive9` (with no input from other sources) must produce a file
 byte-identical to `enwik9`.

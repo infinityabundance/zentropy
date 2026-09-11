@@ -396,11 +396,18 @@ fn cmd_pack_sfx(args: &[String]) -> Result<(), String> {
         use std::os::unix::fs::PermissionsExt;
         let _ = fs::set_permissions(&args[2], fs::Permissions::from_mode(0o755));
     }
-    let s = Score::new(stub, arch.len() as u64);
+    let s = Score::shared_program(stub, arch.len() as u64);
+    let sfx = Score::self_extracting(stub, image.len() as u64);
     println!("stub_bytes={} archive_bytes={}", stub, arch.len());
     println!("archive9_bytes={}", image.len());
-    println!("S(comp9=stub + archive9)={}", stub + image.len() as u64);
-    println!("S(separate, comp9a=decomp9)={}", s.total());
+    println!("S(self-extracting: comp9 + archive9)  = {}", sfx.total());
+    println!("S(separate, comp9a=decomp9: 2P + bhm)  = {}", s.total());
+    println!(
+        "  (program charged {}x = {}, archive = {})",
+        2,
+        2 * stub,
+        arch.len()
+    );
     Ok(())
 }
 
@@ -420,9 +427,16 @@ fn cmd_hoist(args: &[String]) -> Result<(), String> {
 
     let base_ok = archive::decode(&base).as_deref() == Some(&data[..]);
     let hoist_ok = archive::decode(&hoisted).as_deref() == Some(&data[..]);
-    let bin_cost = zentropy::transform::binary_cost_estimate();
 
-    let binary_cost = bin_cost;
+    // `S` is authority: the executable cost of the mechanism must be *measured*,
+    // never estimated. Pass the delta produced by `tools/measure_binary_cost.sh`.
+    let measured_bin_cost: Option<u64> = args
+        .iter()
+        .position(|a| a == "--binary-cost")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|v| v.parse().ok());
+
+    let binary_cost = measured_bin_cost.unwrap_or(0);
     let n = data.len() as f64;
     let receipt_path = args
         .iter()
@@ -445,18 +459,23 @@ fn cmd_hoist(args: &[String]) -> Result<(), String> {
         hoist_ok
     );
     let archive_saving = base.len() as i64 - hoisted.len() as i64;
-    let delta_s = hoisted.len() as i64 + bin_cost as i64 - base.len() as i64;
+    let delta_s = hoisted.len() as i64 + binary_cost as i64 - base.len() as i64;
     println!("archive saving = {} bytes", archive_saving);
-    println!("binary cost   = {} bytes (upper estimate)", bin_cost);
+    match measured_bin_cost {
+        Some(c) => println!("binary cost   = {} bytes (measured)", c),
+        None => println!(
+            "binary cost   = UNMEASURED -- run tools/measure_binary_cost.sh and pass --binary-cost N"
+        ),
+    }
     println!("DeltaS(hoist) = {} bytes", delta_s);
-    println!(
-        "decision: {}",
-        if delta_s < 0 {
-            "ADOPTED"
-        } else {
-            "REJECTED (complete cost not negative)"
-        }
-    );
+    let decision = if measured_bin_cost.is_none() {
+        "INDETERMINATE (binary cost unmeasured)"
+    } else if delta_s < 0 {
+        "ADOPTED"
+    } else {
+        "REJECTED (complete cost not negative)"
+    };
+    println!("decision: {decision}");
     if let Some(rp) = receipt_path {
         let mut r = RunReceipt::default();
         r.id = format!(
@@ -495,9 +514,13 @@ fn cmd_hoist(args: &[String]) -> Result<(), String> {
                 .unwrap_or(1)
         );
         r.attribution = "Phase-3 structural hoisting + full floor".into();
-        r.decision = if delta_s < 0 { "ADOPTED" } else { "REJECTED" }.into();
-        r.notes =
-            format!("archive_saving={archive_saving} binary_cost={binary_cost} delta_S={delta_s}");
+        r.decision = decision.into();
+        r.notes = format!(
+            "archive_saving={archive_saving} binary_cost_measured={} delta_S={delta_s}",
+            measured_bin_cost
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "unmeasured".into())
+        );
         r.extra.push((
             "bits_per_byte".into(),
             format!("{:.6}", (hoisted.len() as f64 * 8.0) / n),

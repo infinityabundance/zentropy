@@ -20,6 +20,7 @@
 
 use crate::context::{Cm, ModelConfig};
 use crate::entropy::{RangeDecoder, RangeEncoder};
+#[cfg(feature = "struct-hoist")]
 use crate::transform;
 
 /// Container magic.
@@ -56,7 +57,16 @@ impl Method {
     }
 
     fn transforms(self) -> bool {
-        matches!(self, Method::StructHoist)
+        #[cfg(feature = "struct-hoist")]
+        {
+            matches!(self, Method::StructHoist)
+        }
+        #[cfg(not(feature = "struct-hoist"))]
+        {
+            // The measurement build omits the transform; `StructHoist` then
+            // behaves exactly like `RawCm`, so it still reconstructs exactly.
+            false
+        }
     }
 }
 
@@ -117,8 +127,15 @@ pub fn encode(input: &[u8]) -> Vec<u8> {
 /// codes. When a transform is active, `decode` inverts it after model decoding,
 /// so the final output is the caller's original bytes.
 pub fn encode_with(input: &[u8], method: Method) -> Vec<u8> {
-    let transformed = if method.transforms() {
-        Some(transform::encode(input))
+    let transformed: Option<Vec<u8>> = if method.transforms() {
+        #[cfg(feature = "struct-hoist")]
+        {
+            Some(transform::encode(input))
+        }
+        #[cfg(not(feature = "struct-hoist"))]
+        {
+            None
+        }
     } else {
         None
     };
@@ -196,10 +213,16 @@ pub fn decode(archive: &[u8]) -> Option<Vec<u8>> {
     }
 
     if method.transforms() {
-        Some(transform::decode(&decoded))
-    } else {
-        Some(decoded)
+        #[cfg(feature = "struct-hoist")]
+        {
+            return Some(transform::decode(&decoded));
+        }
+        #[cfg(not(feature = "struct-hoist"))]
+        {
+            return Some(decoded);
+        }
     }
+    Some(decoded)
 }
 
 /// Convenience: compress and report the score against the canonical corpus.

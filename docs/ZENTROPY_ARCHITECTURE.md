@@ -152,7 +152,7 @@ yet. All runs reconstruct exactly; each is bound to an immutable receipt in
 | selftest (synthetic) | 3,375,560 | 66,434 | 0.157 | 50.81 | — | — |
 | enwik6 | 1,000,000 | 273,356 | 2.1868 | 3.66 | ~0.8 s | 22.8 MB |
 | enwik7 | 10,000,000 | 2,485,288 | 1.9882 | 4.02 | 10.2 s | 76.0 MB |
-| enwik8 | 100,000,000 | 22,465,931 | 1.7973 | 4.45 | 177.0 s | 447.0 MB |
+| enwik8 | 100,000,000 | 22,449,073 (hoisted) | 1.7959 | 4.45 | 177.0 s | 447.0 MB |
 | enwik9 | 1,000,000,000 | 182,949,204 | 1.4636 | 5.47 | 2,492.2 s | 3.58 GB |
 
 Mechanisms admitted by measurement (each a sequential experiment; a mechanism
@@ -162,7 +162,14 @@ only counts when the *complete* `ΔS` is negative):
 |---|---|---|
 | word + word-bigram experts | −73,635 B on enwik7; −653,805 B on enwik8 | **ADOPTED** |
 | orders 0, 5, 12, 16 added to the ladder | −12,551 B on enwik7; −118,676 B on enwik8 | **ADOPTED** |
-| structural hoisting (fixed dictionary in `.rodata`) | −863 B on enwik6; −5,657 B on enwik7; −16,315 B on enwik8 | **ADOPTED** |
+| structural hoisting (fixed dictionary in `.rodata`) | complete ΔS with **measured** 1,728 B executable cost: **+322 B on enwik6 (REJECTED)**, −4,472 B on enwik7, −15,130 B on enwik8 | **ADOPTED for ≥ enwik7** |
+
+> **Accounting note.** The executable cost of a mechanism is *measured*, never
+> estimated: build an otherwise-identical submission binary with and without the
+> `struct-hoist` feature (`tools/measure_binary_cost.sh`) and charge the delta.
+> The first estimate for this mechanism was 543 B; the measured cost is 1,728 B,
+> which is enough to flip the enwik6 verdict from ADOPTED to REJECTED. This is
+> precisely the class of error the constitution exists to prevent.
 
 The enwik9 run is the first full-corpus milestone: exact 10⁹-byte
 reconstruction, beating every generic compressor (`xz -9e` ≈ 197 MB, `bzip2 -9`
@@ -179,12 +186,23 @@ Phases 3–8 is the climb to the frontier (`lpaq1` ≈ 1.98 bpc, `paq8` ≈ 1.44
 ### Submission-plane measurement
 
 The scored stub (`target/submission/zentropy-sfx`, `opt-level="z"`, LTO,
-stripped) is **313,792 bytes** and serves as both `comp9a` and `decomp9`. For
-enwik6 it produces a 276,263-byte archive, so
-`S = len(comp9a) + len(decomp9) + len(archive) = 590,055` bytes, and a
-self-extracting `archive9` of 590,078 bytes reconstructs byte-identically with
-no external inputs. These are genuine measured splits, not projections. The
-stub is still far larger than a finished submission and is itself a Phase-11
+stripped) is both `comp9a` and `decomp9`. For enwik6 (`program = 315,760 B`,
+`bhm = 273,356 B`, `archive9 = 589,139 B`) the two legal packaging forms score:
+
+```
+S(self-extracting:  comp9 + archive9)          =   904,899
+S(separate, comp9a = decomp9:  2P + bhm)       =   904,876
+```
+
+The two differ by exactly 23 bytes — the SFX marker (15) plus the length field
+(8) — which is a useful sanity check that both accounting paths are consistent.
+Note that the separate form charges the single program **twice** (the rule's
+`2×decomp9` reduces to `1×decomp9`, leaving `comp9a + decomp9`). An earlier
+revision of `tools/package_sfx.sh` printed `P + bhm` and undercounted by one
+full copy of the program; this is now fixed and unit-tested in
+[`score`](../src/score/mod.rs).
+
+The stub is still far larger than a finished submission and is itself a Phase-11
 optimisation target.
 
 > **No claim of competitiveness is made yet.** The floor exists so that every

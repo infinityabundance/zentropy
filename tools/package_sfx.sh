@@ -42,10 +42,13 @@ SFX_BYTES=$(wc -c < "$SFX")
 
 echo ""
 echo "corpus=$NAME input_bytes=$(wc -c < "$IN")"
-echo "stub_bytes=$STUB_BYTES"
+echo "program_bytes=$STUB_BYTES"
 echo "archive_bhm_bytes=$BHM_BYTES"
 echo "archive9_bytes=$SFX_BYTES"
-echo "S(self-extracting)          = $((STUB_BYTES + SFX_BYTES))"
-echo "S(separate, comp9a=decomp9) = $((STUB_BYTES + BHM_BYTES))"
+# Hutter score forms. The separate form charges the program twice: with
+# comp9a == decomp9 the rule's 2x coefficient on decomp9 reduces to 1x, giving
+# comp9a + decomp9 + bhm == 2*program + bhm.
+echo "S(self-extracting: comp9 + archive9)  = $((STUB_BYTES + SFX_BYTES))"
+echo "S(separate, comp9a=decomp9: 2P + bhm)  = $((2 * STUB_BYTES + BHM_BYTES))"
 echo ""
 echo "exactness: PASS (byte-identical)"
