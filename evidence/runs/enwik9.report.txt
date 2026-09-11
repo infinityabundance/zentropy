@@ -1,0 +1,16 @@
+=== Zentropy run report ===
+revision: <untracked>
+input: evidence/corpus/enwik9 len=1000000000 sha256=159b85351e5f76e60cbe32e04c677847a9ecba3adc79addab6f4c6c7aa3744bc
+method: RawCm (Phase-2 floor)
+archive_bytes: 182949204
+compressor_bytes: 0 (driver not yet packaged as submission)
+S(archive-only): 182949204
+ratio(vs input): 5.4660
+bits/byte(input): 1.4636
+compression: wall=1236.547s
+decompression: wall=1255.628s
+peak_rss_bytes: 3582586880
+reconstruction: exact=true decoded_sha256=159b85351e5f76e60cbe32e04c677847a9ecba3adc79addab6f4c6c7aa3744bc
+delta vs official record: S - L = 72156076
+gate (0.99*L): 109685196
+decision: MEASURED
