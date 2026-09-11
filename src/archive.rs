@@ -20,6 +20,7 @@
 
 use crate::context::{Cm, ModelConfig};
 use crate::entropy::{RangeDecoder, RangeEncoder};
+use crate::transform;
 
 /// Container magic.
 pub const MAGIC: &[u8; 4] = b"ZNT0";
@@ -36,12 +37,14 @@ pub enum Method {
     RawCm = 0,
     /// Same floor without the word and word-bigram experts (ablation).
     RawCmNoWord = 1,
+    /// Structural hoisting (Phase 3) followed by the full floor.
+    StructHoist = 2,
 }
 
 impl Method {
     fn config(self, n: usize) -> ModelConfig {
         match self {
-            Method::RawCm => ModelConfig::for_size(n as u64),
+            Method::RawCm | Method::StructHoist => ModelConfig::for_size(n as u64),
             Method::RawCmNoWord => {
                 // Keep every byte-order expert; drop the word and bigram experts
                 // (the last two specs).
@@ -50,6 +53,10 @@ impl Method {
                 full.ablated(&keep)
             }
         }
+    }
+
+    fn transforms(self) -> bool {
+        matches!(self, Method::StructHoist)
     }
 }
 
@@ -105,17 +112,29 @@ pub fn encode(input: &[u8]) -> Vec<u8> {
 }
 
 /// Compress with an explicit method (used by ablation runs).
+///
+/// The stored length is the length of the stream the context model actually
+/// codes. When a transform is active, `decode` inverts it after model decoding,
+/// so the final output is the caller's original bytes.
 pub fn encode_with(input: &[u8], method: Method) -> Vec<u8> {
-    let mut out = Vec::with_capacity(HEADER_LEN + input.len() / 2);
+    let transformed = if method.transforms() {
+        Some(transform::encode(input))
+    } else {
+        None
+    };
+    let data: &[u8] = transformed.as_deref().unwrap_or(input);
+    let n = data.len();
+
+    let mut out = Vec::with_capacity(HEADER_LEN + n / 2);
     out.extend_from_slice(MAGIC);
     out.push(method as u8);
-    out.extend_from_slice(&(input.len() as u64).to_le_bytes());
+    out.extend_from_slice(&(n as u64).to_le_bytes());
 
-    let cfg = method.config(input.len());
-    let mut cm = Cm::new(&cfg, input.len());
-    let mut enc = RangeEncoder::with_capacity(input.len() / 2 + 64);
+    let cfg = method.config(n);
+    let mut cm = Cm::new(&cfg, n);
+    let mut enc = RangeEncoder::with_capacity(n / 2 + 64);
 
-    for &byte in input {
+    for &byte in data {
         let mut mask = 0x80u32;
         while mask != 0 {
             // MSB first. Compare against the mask rather than shifting it by a
@@ -148,6 +167,7 @@ pub fn decode(archive: &[u8]) -> Option<Vec<u8>> {
     let method = match archive[4] {
         0 => Method::RawCm,
         1 => Method::RawCmNoWord,
+        2 => Method::StructHoist,
         _ => return None,
     };
     let mut len_bytes = [0u8; 8];
@@ -162,7 +182,7 @@ pub fn decode(archive: &[u8]) -> Option<Vec<u8>> {
     let cfg = method.config(n);
     let mut cm = Cm::new(&cfg, n);
     let mut dec = RangeDecoder::new(payload);
-    let mut out = Vec::with_capacity(n);
+    let mut decoded = Vec::with_capacity(n);
 
     for _ in 0..n {
         let mut byte = 0u32;
@@ -172,9 +192,14 @@ pub fn decode(archive: &[u8]) -> Option<Vec<u8>> {
             cm.update(bit);
             byte = (byte << 1) | bit;
         }
-        out.push(byte as u8);
+        decoded.push(byte as u8);
     }
-    Some(out)
+
+    if method.transforms() {
+        Some(transform::decode(&decoded))
+    } else {
+        Some(decoded)
+    }
 }
 
 /// Convenience: compress and report the score against the canonical corpus.
@@ -225,10 +250,17 @@ mod tests {
     #[test]
     fn ablation_method_is_exact() {
         let data = b"the quick brown fox jumps over the lazy dog".repeat(50);
-        for m in [Method::RawCm, Method::RawCmNoWord] {
+        for m in [Method::RawCm, Method::RawCmNoWord, Method::StructHoist] {
             let arch = encode_with(&data, m);
             assert_eq!(decode(&arch).unwrap(), data, "method {m:?}");
         }
+    }
+
+    #[test]
+    fn struct_hoist_exact_on_markup() {
+        let data = b"<page><title>Foo</title><id>1</id></page>\n".repeat(100);
+        let arch = encode_with(&data, Method::StructHoist);
+        assert_eq!(decode(&arch).unwrap(), data);
     }
 
     #[test]

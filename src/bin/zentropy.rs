@@ -11,6 +11,7 @@
 //! zentropy verify    <original> <archive>
 //! zentropy bench     <in> [--out <archive>] [--receipt <jsonl>]
 //! zentropy ablate    <in>
+//! zentropy hoist     <in>
 //! zentropy pack-sfx  <stub> <archive> <out>
 //! zentropy corrupt-court
 //! zentropy negative-court
@@ -45,6 +46,7 @@ fn main() -> ExitCode {
         "bench" => cmd_bench(&args[2..]),
         "ablate" => cmd_ablate(&args[2..]),
         "pack-sfx" => cmd_pack_sfx(&args[2..]),
+        "hoist" => cmd_hoist(&args[2..]),
         "corrupt-court" => cmd_corrupt_court(),
         "negative-court" => cmd_negative_court(),
         "gate" => cmd_gate(),
@@ -399,6 +401,114 @@ fn cmd_pack_sfx(args: &[String]) -> Result<(), String> {
     println!("archive9_bytes={}", image.len());
     println!("S(comp9=stub + archive9)={}", stub + image.len() as u64);
     println!("S(separate, comp9a=decomp9)={}", s.total());
+    Ok(())
+}
+
+/// Phase-3 structural-hoisting experiment. Measures the complete `ΔS` of the
+/// transform: archive delta plus the transform's binary bytes. Adopt only if
+/// the total is negative.
+fn cmd_hoist(args: &[String]) -> Result<(), String> {
+    let path = args.first().ok_or("hoist: need <in>")?;
+    let data = read(path)?;
+
+    let t0 = Instant::now();
+    let base = archive::encode_with(&data, Method::RawCm);
+    let base_s = t0.elapsed();
+    let t1 = Instant::now();
+    let hoisted = archive::encode_with(&data, Method::StructHoist);
+    let hoist_s = t1.elapsed();
+
+    let base_ok = archive::decode(&base).as_deref() == Some(&data[..]);
+    let hoist_ok = archive::decode(&hoisted).as_deref() == Some(&data[..]);
+    let bin_cost = zentropy::transform::binary_cost_estimate();
+
+    let binary_cost = bin_cost;
+    let n = data.len() as f64;
+    let receipt_path = args
+        .iter()
+        .position(|a| a == "--receipt")
+        .and_then(|i| args.get(i + 1))
+        .cloned();
+    println!("input_bytes: {}", data.len());
+    println!(
+        "raw  : {} bytes, {:.4} bpc, {:.3}s, exact={}",
+        base.len(),
+        (base.len() as f64 * 8.0) / n,
+        base_s.as_secs_f64(),
+        base_ok
+    );
+    println!(
+        "hoist: {} bytes, {:.4} bpc, {:.3}s, exact={}",
+        hoisted.len(),
+        (hoisted.len() as f64 * 8.0) / n,
+        hoist_s.as_secs_f64(),
+        hoist_ok
+    );
+    let archive_saving = base.len() as i64 - hoisted.len() as i64;
+    let delta_s = hoisted.len() as i64 + bin_cost as i64 - base.len() as i64;
+    println!("archive saving = {} bytes", archive_saving);
+    println!("binary cost   = {} bytes (upper estimate)", bin_cost);
+    println!("DeltaS(hoist) = {} bytes", delta_s);
+    println!(
+        "decision: {}",
+        if delta_s < 0 {
+            "ADOPTED"
+        } else {
+            "REJECTED (complete cost not negative)"
+        }
+    );
+    if let Some(rp) = receipt_path {
+        let mut r = RunReceipt::default();
+        r.id = format!(
+            "struct-hoist/{}/{}",
+            &sha256(&data)[..6]
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>(),
+            data.len()
+        );
+        r.hypothesis =
+            "hoisting frequent structural strings into single-byte codes lowers complete S".into();
+        r.parent = "rawcm".into();
+        r.revision = revision();
+        r.compiler = format!(
+            "rustc {} {}-{}",
+            rustc_version(),
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        );
+        r.corpus = path.clone();
+        r.input_sha256 = hex(&sha256(&data));
+        r.archive_sha256 = hex(&sha256(&hoisted));
+        r.decoded_sha256 = hex(&sha256(&archive::decode(&hoisted).unwrap_or_default()));
+        r.exact = hoist_ok;
+        r.compressor_bytes = binary_cost;
+        r.archive_bytes = hoisted.len() as u64;
+        r.wall_seconds = hoist_s.as_secs_f64();
+        r.peak_rss_bytes = peak_rss();
+        r.environment = format!(
+            "{} {} cores={}",
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            std::thread::available_parallelism()
+                .map(|x| x.get())
+                .unwrap_or(1)
+        );
+        r.attribution = "Phase-3 structural hoisting + full floor".into();
+        r.decision = if delta_s < 0 { "ADOPTED" } else { "REJECTED" }.into();
+        r.notes =
+            format!("archive_saving={archive_saving} binary_cost={binary_cost} delta_S={delta_s}");
+        r.extra.push((
+            "bits_per_byte".into(),
+            format!("{:.6}", (hoisted.len() as f64 * 8.0) / n),
+        ));
+        r.extra
+            .push(("baseline_archive_bytes".into(), base.len().to_string()));
+        append_jsonl(&rp, &r)?;
+    }
+    if !(base_ok && hoist_ok) {
+        return Err("hoist: a variant failed exactness".into());
+    }
     Ok(())
 }
 

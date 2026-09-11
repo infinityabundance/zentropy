@@ -16,6 +16,11 @@
   `22,465,931` bytes (1.7973 bpc), beating `xz -9e` (24,831,656), `brotli -q 11`
   (25,742,001), `bzip2 -9` (29,008,758) and `gzip -9` (36,445,248) on the same
   input.
+- **The full corpus reconstructs exactly.** enwik9 → `182,949,204` bytes
+  (1.4636 bpc) in 41 min, 3.58 GB peak RAM, both directions. This is milestone
+  G0 (exact 10⁹-byte reconstruction) and G1 (beats generic compressors).
+- **Two mechanisms are adopted by measurement:** word/bigram experts
+  (−653,805 B on enwik8) and structural hoisting (−16,315 B on enwik8).
 - **The submission path works.** The scored stub (313,792 B) is both `comp9a`
   and `decomp9`; a packed self-extracting `archive9` reconstructs byte-identically
   with no external inputs.
@@ -26,8 +31,9 @@
 - The context-mixing stack uses only *direct* probability models; it has no
   ICM/ISSE bit histories, no state maps, no SSE beyond two APM stages, and no
   bidirectional/structural contexts.
-- There is no dictionary transform, no grammar, no rank/enumerative coding, no
-  article reordering, no learned residual model, and no representation
+- Structural hoisting exists but is narrow (31 fixed strings). There is still
+  no general lexical/phrase dictionary transform, no grammar, no rank/enumerative
+  coding, no article reordering, no learned residual model, and no representation
   optimiser.
 - The submission stub has not been size-optimised (Phase 11).
 - The model has only been timed on this machine, not on a Geigerbench-scored

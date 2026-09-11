@@ -36,6 +36,7 @@ pub mod evidence;
 pub mod ir;
 pub mod mixer;
 pub mod score;
+pub mod transform;
 
 /// Crate version, surfaced in receipts.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

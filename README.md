@@ -24,9 +24,10 @@ diagnostics. A mechanism is admitted only when its **complete** marginal cost
 
 | | |
 |---|---|
-| Exactness | Every transform and archive round-trips exactly; 45 unit/property tests + 7 scripted courts pass |
-| enwik8 | exact reconstruction at **22,584,607 bytes (1.8068 bpc)** |
-| Reference | gzip 36.4 MB · bzip2 29.0 MB · xz -9e 24.8 MB · brotli 25.7 MB · **zentropy 22.6 MB** |
+| Exactness | Every transform and archive round-trips exactly; 51 unit/property tests + 7 scripted courts pass |
+| enwik9 | exact full-corpus reconstruction at **182,949,204 bytes (1.4636 bpc)**, 3.58 GB peak RAM |
+| enwik8 | exact reconstruction at **22,465,931 bytes (1.7973 bpc)** |
+| Reference | gzip 36.4 MB · bzip2 29.0 MB · xz -9e 24.8 MB · brotli 25.7 MB · **zentropy 22.5 MB** |
 | Submission path | scored stub (313,792 B) compresses/decompresses; self-extracting `archive9` reconstructs with no inputs |
 | Phase | 0–2 measured; 3–12 in progress / proposed (see the architecture doc) |
 

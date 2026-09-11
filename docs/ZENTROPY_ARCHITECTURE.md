@@ -153,7 +153,7 @@ yet. All runs reconstruct exactly; each is bound to an immutable receipt in
 | enwik6 | 1,000,000 | 273,356 | 2.1868 | 3.66 | ~0.8 s | 22.8 MB |
 | enwik7 | 10,000,000 | 2,485,288 | 1.9882 | 4.02 | 10.2 s | 76.0 MB |
 | enwik8 | 100,000,000 | 22,465,931 | 1.7973 | 4.45 | 177.0 s | 447.0 MB |
-| enwik9 | 1,000,000,000 | *see `evidence/runs/enwik9.report.txt`* | | | | |
+| enwik9 | 1,000,000,000 | 182,949,204 | 1.4636 | 5.47 | 2,492.2 s | 3.58 GB |
 
 Mechanisms admitted by measurement (each a sequential experiment; a mechanism
 only counts when the *complete* `ΔS` is negative):
@@ -162,6 +162,12 @@ only counts when the *complete* `ΔS` is negative):
 |---|---|---|
 | word + word-bigram experts | −73,635 B on enwik7; −653,805 B on enwik8 | **ADOPTED** |
 | orders 0, 5, 12, 16 added to the ladder | −12,551 B on enwik7; −118,676 B on enwik8 | **ADOPTED** |
+| structural hoisting (fixed dictionary in `.rodata`) | −863 B on enwik6; −5,657 B on enwik7; −16,315 B on enwik8 | **ADOPTED** |
+
+The enwik9 run is the first full-corpus milestone: exact 10⁹-byte
+reconstruction, beating every generic compressor (`xz -9e` ≈ 197 MB, `bzip2 -9`
+≈ 254 MB, `gzip -9` ≈ 322 MB), and ~5.4× above the 110 MB record. Peak RAM
+3.58 GB is inside the 10 GB Hutter limit.
 
 Reference baselines measured on enwik8 by `tools/baseline.sh` (archive bytes):
 `gzip -9` 36,445,248 · `bzip2 -9` 29,008,758 · `brotli -q 11` 25,742,001 ·
