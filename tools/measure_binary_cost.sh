@@ -1,42 +1,55 @@
 #!/bin/sh
-# Measure the true executable-byte cost of a mechanism.
+# A31 — Measure the true marginal executable-byte cost of one mechanism.
 #
 # `S` is authority, so a mechanism's binary cost must be measured, not guessed.
-# This builds two otherwise-identical submission binaries -- one with the
-# mechanism compiled in, one with it feature-disabled -- and reports the delta.
+# Builds two otherwise-identical submission binaries:
+#   * ALL                    -- every Phase-A mechanism compiled in
+#   * ALL minus TARGET       -- the mechanism under test removed
+# and reports the delta.
 #
-# Usage: tools/measure_binary_cost.sh [feature1,feature2,...]
-#        (default feature: struct-hoist)
+# Usage: tools/measure_binary_cost.sh [target-feature]
+#        default target: struct-hoist
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-FEATURES="${1:-struct-hoist}"
+TARGET="${1:-struct-hoist}"
+ALL="struct-hoist,alphabet-perm,info-inherit"
+
+# ALL minus TARGET (comma list).
+REST=$(printf '%s' "$ALL" | tr ',' '\n' | grep -vx "$TARGET" | paste -sd, -)
+if [ -z "$REST" ]; then
+    echo "error: target '$TARGET' is the only feature; cannot form a baseline" >&2
+    exit 2
+fi
+
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
-
 cd "$ROOT"
 
-echo "measuring executable cost of feature(s): $FEATURES" >&2
-echo "  building WITH  ..." >&2
-cargo build --quiet --profile submission --bin zentropy-sfx
-cp "$ROOT/target/submission/zentropy-sfx" "$TMP/with"
+echo "measuring marginal executable cost of: $TARGET" >&2
+echo "  ALL              = $ALL" >&2
+echo "  ALL minus target = $REST" >&2
 
-echo "  building WITHOUT (--no-default-features) ..." >&2
-cargo build --quiet --profile submission --no-default-features --bin zentropy-sfx
-cp "$ROOT/target/submission/zentropy-sfx" "$TMP/without"
+echo "  building ALL ..." >&2
+cargo build --quiet --profile submission --no-default-features --features "$ALL" --bin zentropy-sfx
+cp "$ROOT/target/submission/zentropy-sfx" "$TMP/all"
 
-WITH=$(wc -c < "$TMP/with")
-WITHOUT=$(wc -c < "$TMP/without")
-DELTA=$((WITH - WITHOUT))
+echo "  building ALL-minus-$TARGET ..." >&2
+cargo build --quiet --profile submission --no-default-features --features "$REST" --bin zentropy-sfx
+cp "$ROOT/target/submission/zentropy-sfx" "$TMP/rest"
 
-echo "binary_with_bytes=$WITH"
-echo "binary_without_bytes=$WITHOUT"
-echo "measured_binary_cost_bytes=$DELTA"
+A=$(wc -c < "$TMP/all")
+B=$(wc -c < "$TMP/rest")
+DELTA=$((A - B))
+
+echo "binary_ALL_bytes=$A"
+echo "binary_without_${TARGET}_bytes=$B"
+echo "measured_marginal_binary_cost_bytes=$DELTA"
 echo ""
 
-# Leave the tree holding the default (mechanism-enabled) submission stub so
-# subsequent packaging does not silently use the measurement build.
+# Leave the default (all mechanisms) submission stub in place.
 cargo build --quiet --profile submission --bin zentropy-sfx
 
-echo "Pass this to the experiment, e.g.:"
-echo "  zentropy hoist <corpus> --binary-cost $DELTA --receipt evidence/runs/receipts.jsonl"
+echo "Pass this to a Phase-A evaluation, e.g.:"
+echo "  zentropy eval <corpus> --candidate <method> --parent struct-hoist \\"
+echo "      --binary-cost $DELTA --receipt evidence/runs/receipts.jsonl"

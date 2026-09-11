@@ -1,0 +1,24 @@
+{
+  "phase": "optimization-a",
+  "role": "frozen-parent",
+  "revision": "57ff6a81d8d332972e0262a8c13b1d04679347cf",
+  "dirty_files": 1,
+  "toolchain": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+  "profiles": { "driver": "release", "submission": "submission" },
+  "artifacts": {
+    "driver_bytes": 429872,
+    "driver_sha256": "c55d38d7f162c6a58fd0746eb222e50029366ea300a04ca0667a70d5bed82802",
+    "submission_stub_bytes": 315760,
+    "submission_stub_sha256": "f0aee994812aba9ca58bc028cef4c0ecdd4d51a417548878afadd60a93e3396f"
+  },
+  "corpus": {
+    "enwik6": { "bytes": 1000000, "sha256": "369b688978f649681136198fb96db14c1616756260c55fb4b65e9bc049552cad" },
+    "enwik7": { "bytes": 10000000, "sha256": "5985c81c39d927ae0e169625790ca4d9e7d1531270c8b09ad73176a375bb3d97" },
+    "enwik8": { "bytes": 100000000, "sha256": "2b49720ec4d78c3c9fabaee6e4179a5e997302b3a70029f30f2d582218c024a8" },
+    "enwik9": { "bytes": 1000000000, "sha256": "159b85351e5f76e60cbe32e04c677847a9ecba3adc79addab6f4c6c7aa3744bc" }
+  },
+  "accounting": {
+    "binary_cost_policy": "measured by tools/measure_binary_cost.sh; estimates forbidden",
+    "score_forms": ["self_extracting", "separate", "shared_program"]
+  }
+}

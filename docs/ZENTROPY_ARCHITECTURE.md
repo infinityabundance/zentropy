@@ -152,7 +152,7 @@ yet. All runs reconstruct exactly; each is bound to an immutable receipt in
 | selftest (synthetic) | 3,375,560 | 66,434 | 0.157 | 50.81 | — | — |
 | enwik6 | 1,000,000 | 273,356 | 2.1868 | 3.66 | ~0.8 s | 22.8 MB |
 | enwik7 | 10,000,000 | 2,485,288 | 1.9882 | 4.02 | 10.2 s | 76.0 MB |
-| enwik8 | 100,000,000 | 22,449,073 (hoisted) | 1.7959 | 4.45 | 177.0 s | 447.0 MB |
+| enwik8 | 100,000,000 | 22,372,738 (accepted config) | 1.7898 | 4.47 | 177.0 s | 447.0 MB |
 | enwik9 | 1,000,000,000 | 182,949,204 | 1.4636 | 5.47 | 2,492.2 s | 3.58 GB |
 
 Mechanisms admitted by measurement (each a sequential experiment; a mechanism
@@ -162,7 +162,8 @@ only counts when the *complete* `ΔS` is negative):
 |---|---|---|
 | word + word-bigram experts | −73,635 B on enwik7; −653,805 B on enwik8 | **ADOPTED** |
 | orders 0, 5, 12, 16 added to the ladder | −12,551 B on enwik7; −118,676 B on enwik8 | **ADOPTED** |
-| structural hoisting (fixed dictionary in `.rodata`) | complete ΔS with **measured** 1,728 B executable cost: **+322 B on enwik6 (REJECTED)**, −4,472 B on enwik7, −15,130 B on enwik8 | **ADOPTED for ≥ enwik7** |
+| structural hoisting (fixed dictionary in `.rodata`) | complete ΔS with **measured** 1,712 B executable cost: **+322 B on enwik6 (REJECTED)**, −4,472 B on enwik7, −15,130 B on enwik8 | **ADOPTED for ≥ enwik7** |
+| A20 mixer learning rate 24 (tune 7, zero executable cost) | −9,492 B on enwik7; **−76,483 B on enwik8** | **ADOPTED** |
 
 > **Accounting note.** The executable cost of a mechanism is *measured*, never
 > estimated: build an otherwise-identical submission binary with and without the

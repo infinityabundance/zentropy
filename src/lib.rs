@@ -36,7 +36,8 @@ pub mod evidence;
 pub mod ir;
 pub mod mixer;
 pub mod score;
-#[cfg(feature = "struct-hoist")]
+// The transform module is needed by either transform-based feature.
+#[cfg(any(feature = "struct-hoist", feature = "alphabet-perm"))]
 pub mod transform;
 
 /// Crate version, surfaced in receipts.

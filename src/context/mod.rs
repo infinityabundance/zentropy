@@ -57,8 +57,23 @@ pub struct ModelSpec {
     pub rate: u32,
 }
 
+/// Information-inheritance mode for first-occupancy table slots (A3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InfoMode {
+    /// Neutral cold start (`p = 0.5`) for every new slot.
+    None,
+    /// A newly occupied child slot inherits the parent expert's probability.
+    Inherit,
+    /// Negative control: inherit from a deliberately unrelated expert.
+    Unrelated,
+}
+
 /// A direct context model: one adaptive probability per (context, partial byte)
 /// index.
+///
+/// Table entries are initialised to `0`, which is a *sentinel* meaning
+/// "never observed". Real probabilities are clamped to `[1, 65535]`, so `0` can
+/// never be a genuine value and no separate occupancy array is needed.
 #[derive(Debug, Clone)]
 pub struct ContextModel {
     table: Vec<u16>,
@@ -66,17 +81,20 @@ pub struct ContextModel {
     ctx: u32,
     idx: usize,
     rate: u32,
+    /// The 16-bit probability most recently used for the current bit.
+    pub last_p: u16,
 }
 
 impl ContextModel {
     pub fn new(bits: u32, rate: u32) -> Self {
         let n = 1usize << bits;
         ContextModel {
-            table: vec![32768u16; n],
+            table: vec![0u16; n],
             mask: n - 1,
             ctx: 0,
             idx: 0,
             rate,
+            last_p: 32768,
         }
     }
 
@@ -85,18 +103,27 @@ impl ContextModel {
         self.ctx = ctx;
     }
 
+    /// Predict `P(bit = 1)`, stretched. `seed` is the probability used when this
+    /// slot has never been occupied (information inheritance).
     #[inline]
-    pub fn predict(&mut self, c0: u32, st: &StretchTable) -> i32 {
+    pub fn predict(&mut self, c0: u32, st: &StretchTable, seed: u16) -> i32 {
         self.idx = (self.ctx ^ c0.wrapping_mul(MIX_C)) as usize & self.mask;
-        let p = (self.table[self.idx] as i32) >> 4;
-        st.stretch(p)
+        let mut t = self.table[self.idx];
+        if t == 0 {
+            t = seed.max(1);
+            self.table[self.idx] = t;
+        }
+        self.last_p = t;
+        st.stretch((t >> 4) as i32)
     }
 
     #[inline]
     pub fn update(&mut self, bit: u32) {
         let target: i32 = if bit != 0 { 65535 } else { 0 };
         let p = self.table[self.idx] as i32;
-        self.table[self.idx] = (p + ((target - p) >> self.rate)) as u16;
+        let np = p + ((target - p) >> self.rate);
+        // Never emit the sentinel: real probabilities live in [1, 65535].
+        self.table[self.idx] = np.clamp(1, 65535) as u16;
     }
 
     pub fn memory_bytes(&self) -> u64 {
@@ -209,6 +236,38 @@ impl MatchModel {
     }
 }
 
+/// Compute the A3 inheritance parent of every expert: the most specific
+/// lower-order expert already present. Word/bigram experts inherit from the
+/// order-1 expert (or order-0) because their contexts have no order relation.
+fn compute_parents(specs: &[ModelSpec]) -> Vec<Option<usize>> {
+    let mut parents = vec![None; specs.len()];
+    let mut last_order: Option<usize> = None;
+    let mut order1: Option<usize> = None;
+    let mut order0: Option<usize> = None;
+    for (i, s) in specs.iter().enumerate() {
+        match s.kind {
+            CtxKind::Order(0) => {
+                order0 = Some(i);
+                last_order = Some(i);
+                parents[i] = None;
+            }
+            CtxKind::Order(1) => {
+                order1 = Some(i);
+                parents[i] = last_order;
+                last_order = Some(i);
+            }
+            CtxKind::Order(_) => {
+                parents[i] = last_order;
+                last_order = Some(i);
+            }
+            CtxKind::Word | CtxKind::WordBigram => {
+                parents[i] = order1.or(order0);
+            }
+        }
+    }
+    parents
+}
+
 /// Configuration for the classical prediction floor.
 #[derive(Debug, Clone)]
 pub struct ModelConfig {
@@ -217,6 +276,8 @@ pub struct ModelConfig {
     pub mixer_lr: i32,
     pub apm1_ctx: usize,
     pub apm2_ctx: usize,
+    /// A3 information-inheritance mode for first-occupancy slots.
+    pub info: InfoMode,
 }
 
 impl ModelConfig {
@@ -303,7 +364,26 @@ impl ModelConfig {
             mixer_lr: 12,
             apm1_ctx: 4096,
             apm2_ctx: 65536,
+            info: InfoMode::None,
         }
+    }
+
+    /// Set the information-inheritance mode (A3).
+    pub fn with_info(mut self, info: InfoMode) -> Self {
+        self.info = info;
+        self
+    }
+
+    /// A20: map a tuning variant to a mixer learning rate. Variant 0 is the
+    /// frozen parent behaviour (lr = 12); higher variants explore the update-law
+    /// family without changing the executable, since the variant is carried in
+    /// the archive header and applied identically by the decoder.
+    pub fn with_tune(mut self, tune: u8) -> Self {
+        const LRS: [i32; 16] = [
+            12, 4, 6, 8, 10, 16, 20, 24, 32, 40, 48, 64, 96, 128, 192, 256,
+        ];
+        self.mixer_lr = LRS[(tune & 15) as usize];
+        self
     }
 
     /// A configuration with a chosen subset of experts, for ablation.
@@ -330,6 +410,9 @@ pub struct Predictor {
     models: Vec<ContextModel>,
     specs: Vec<ModelSpec>,
     ctx: Vec<u32>,
+    /// For each expert, the lower-order expert that seeds its cold slots (A3).
+    parent: Vec<Option<usize>>,
+    info: InfoMode,
     match_model: MatchModel,
     mixer: Mixer,
     apm1: Apm,
@@ -355,6 +438,8 @@ impl Predictor {
         let n_inputs = models.len() + 1;
         Predictor {
             models,
+            parent: compute_parents(&cfg.specs),
+            info: cfg.info,
             specs: cfg.specs.clone(),
             ctx: vec![0; cfg.specs.len()],
             match_model: MatchModel::new(cfg.match_bits),
@@ -435,7 +520,21 @@ impl Predictor {
     pub fn predict(&mut self) -> u32 {
         let nm = self.models.len();
         for i in 0..nm {
-            self.inputs[i] = self.models[i].predict(self.c0, &self.st);
+            // A3: seed a cold slot from the parent expert's probability for this
+            // same bit. Both encoder and decoder apply the identical rule, so no
+            // side information is needed.
+            let seed: u16 = match self.info {
+                InfoMode::None => 32768,
+                InfoMode::Inherit => self.parent[i]
+                    .map(|j| self.models[j].last_p)
+                    .unwrap_or(32768),
+                InfoMode::Unrelated => {
+                    let base = self.parent[i].unwrap_or(i);
+                    let alt = (base + 1 + nm / 2) % nm;
+                    self.models[alt].last_p
+                }
+            };
+            self.inputs[i] = self.models[i].predict(self.c0, &self.st, seed);
         }
         let mstate = self.match_model.state();
         self.inputs[nm] = self.match_model.predict(self.bitpos);
@@ -535,11 +634,39 @@ mod tests {
         let mut m = ContextModel::new(16, 4);
         m.set_context(42);
         for _ in 0..2000 {
-            m.predict(1, &st);
+            m.predict(1, &st, 32768);
             m.update(1);
         }
-        let p = m.predict(1, &st);
+        let p = m.predict(1, &st, 32768);
         assert!(p > 1500, "p={p}");
+    }
+
+    #[test]
+    fn info_inheritance_seeds_cold_slots() {
+        let st = StretchTable::new();
+        let mut m = ContextModel::new(12, 4);
+        m.set_context(7);
+        // Cold slot seeded with a confident parent must start confident.
+        let p = m.predict(1, &st, 60000);
+        assert!(p > 400, "cold slot ignored its seed: p={p}");
+        // A neutral seed must start at the neutral probability.
+        let mut m2 = ContextModel::new(12, 4);
+        m2.set_context(7);
+        let pn = m2.predict(1, &st, 32768);
+        assert!(
+            pn.abs() < 200,
+            "neutral seed should be near 0 log-odds: p={pn}"
+        );
+        assert!(p > pn);
+    }
+
+    #[test]
+    fn parents_form_a_lower_order_chain() {
+        let c = ModelConfig::for_size(1_000_000);
+        let parents = compute_parents(&c.specs);
+        // First spec (order 0) has no parent; every order-k>0 has one.
+        assert_eq!(parents[0], None);
+        assert!(parents[1..].iter().all(|p| p.is_some()));
     }
 
     #[test]

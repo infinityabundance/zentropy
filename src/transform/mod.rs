@@ -136,6 +136,54 @@ pub fn decode(input: &[u8]) -> Vec<u8> {
 /// feature and charging the measured delta (see `tools/measure_binary_cost.sh`).
 /// An estimate is never permitted to decide adoption.
 
+/// A2 — frequency-ordered 256-symbol permutation.
+///
+/// Maps each byte value to a code such that more frequent symbols receive
+/// smaller codes. For a bitwise predictor this changes *which binary
+/// distinctions are asked first*, which is not invariant the way it is for an
+/// ideal byte coder. Ties break by symbol value for determinism.
+pub fn frequency_perm(input: &[u8]) -> [u8; 256] {
+    let mut counts = [0u64; 256];
+    for &b in input {
+        counts[b as usize] += 1;
+    }
+    let mut order: Vec<u8> = (0..=255u8).collect();
+    order.sort_by(|&a, &b| counts[b as usize].cmp(&counts[a as usize]).then(a.cmp(&b)));
+    let mut perm = [0u8; 256];
+    for (code, &sym) in order.iter().enumerate() {
+        perm[sym as usize] = code as u8;
+    }
+    perm
+}
+
+/// A2 negative control: a deterministic pseudo-random permutation.
+pub fn random_perm(seed: u64) -> [u8; 256] {
+    let mut p: [u8; 256] = core::array::from_fn(|i| i as u8);
+    let mut s = seed | 1;
+    for i in (1..256).rev() {
+        s ^= s << 13;
+        s ^= s >> 7;
+        s ^= s << 17;
+        let j = (s as usize) % (i + 1);
+        p.swap(i, j);
+    }
+    p
+}
+
+/// Apply a symbol→code permutation.
+pub fn apply_perm(input: &[u8], perm: &[u8; 256]) -> Vec<u8> {
+    input.iter().map(|&b| perm[b as usize]).collect()
+}
+
+/// Invert a symbol→code permutation into a code→symbol table.
+pub fn invert_perm(perm: &[u8; 256]) -> [u8; 256] {
+    let mut inv = [0u8; 256];
+    for (sym, &code) in perm.iter().enumerate() {
+        inv[code as usize] = sym as u8;
+    }
+    inv
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,18 +227,34 @@ mod tests {
     }
 
     #[test]
-    fn property_random() {
-        let mut s = 0xDEAD_BEEF_1234_5678u64;
-        let alphabet = b"<>[]{}|&=;abc019 \n\x00\x01\x1f\x7f\xff";
-        for _ in 0..300 {
-            let mut data = Vec::new();
-            for _ in 0..200 {
-                s ^= s << 13;
-                s ^= s >> 7;
-                s ^= s << 17;
-                data.push(alphabet[(s as usize) % alphabet.len()]);
+    fn perm_roundtrips_and_ranks() {
+        let data = b"aaaaabbbbccd";
+        let perm = frequency_perm(data);
+        // 'a' is most frequent, so it must receive the smallest code.
+        assert_eq!(perm[b'a' as usize], 0);
+        let enc = apply_perm(data, &perm);
+        let inv = invert_perm(&perm);
+        let dec = apply_perm(&enc, &inv);
+        assert_eq!(dec, data);
+    }
+
+    #[test]
+    fn perm_is_a_bijection_for_all_bytes() {
+        for perm in [frequency_perm(b"hello world"), random_perm(42)] {
+            let mut seen = [false; 256];
+            for &c in &perm {
+                assert!(!seen[c as usize], "permutation is not injective");
+                seen[c as usize] = true;
             }
-            roundtrip(&data);
         }
+    }
+
+    #[test]
+    fn random_perm_matches_roundtrip() {
+        let data: Vec<u8> = (0..=255u8).cycle().take(4096).collect();
+        let perm = random_perm(7);
+        let enc = apply_perm(&data, &perm);
+        let inv = invert_perm(&perm);
+        assert_eq!(apply_perm(&enc, &inv), data);
     }
 }

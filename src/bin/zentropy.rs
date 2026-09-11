@@ -12,6 +12,8 @@
 //! zentropy bench     <in> [--out <archive>] [--receipt <jsonl>]
 //! zentropy ablate    <in>
 //! zentropy hoist     <in>
+//! zentropy eval      <in> --candidate <method> [--parent <method>] --binary-cost <n> [--receipt <f>]
+//! zentropy sweep     <in> [--method <method>] [--receipt <f>]
 //! zentropy pack-sfx  <stub> <archive> <out>
 //! zentropy corrupt-court
 //! zentropy negative-court
@@ -47,6 +49,8 @@ fn main() -> ExitCode {
         "ablate" => cmd_ablate(&args[2..]),
         "pack-sfx" => cmd_pack_sfx(&args[2..]),
         "hoist" => cmd_hoist(&args[2..]),
+        "eval" => cmd_eval(&args[2..]),
+        "sweep" => cmd_sweep(&args[2..]),
         "corrupt-court" => cmd_corrupt_court(),
         "negative-court" => cmd_negative_court(),
         "gate" => cmd_gate(),
@@ -531,6 +535,226 @@ fn cmd_hoist(args: &[String]) -> Result<(), String> {
     }
     if !(base_ok && hoist_ok) {
         return Err("hoist: a variant failed exactness".into());
+    }
+    Ok(())
+}
+
+/// Optimization Phase A: complete-cost evaluation of a candidate method against
+/// a parent method. `S` is authority; the candidate's executable cost must be
+/// supplied as a *measured* value.
+fn cmd_eval(args: &[String]) -> Result<(), String> {
+    let path = args.first().ok_or("eval: need <in>")?;
+    let get = |k: &str| -> Option<String> {
+        args.iter()
+            .position(|a| a == k)
+            .and_then(|i| args.get(i + 1))
+            .cloned()
+    };
+    let candidate = get("--candidate")
+        .and_then(|s| Method::from_name(&s))
+        .ok_or("eval: --candidate <method> required")?;
+    let parent = match get("--parent") {
+        Some(s) => Method::from_name(&s).ok_or("eval: unknown --parent method")?,
+        None => archive::ACCEPTED_METHOD,
+    };
+    let bin_cost: u64 = get("--binary-cost")
+        .and_then(|v| v.parse().ok())
+        .ok_or("eval: --binary-cost <measured bytes> required")?;
+    let receipt_path = get("--receipt");
+    // The Phase-A parent is the currently accepted tune; override to compare
+    // against a different optimizer variant.
+    let parent_tune: u8 = get("--parent-tune")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(archive::ACCEPTED_TUNE);
+    let tune: u8 = get("--tune")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(archive::ACCEPTED_TUNE);
+
+    let data = read(path)?;
+
+    let t0 = Instant::now();
+    let parent_arch = archive::encode_tuned(&data, parent, parent_tune);
+    let parent_s = t0.elapsed();
+    let t1 = Instant::now();
+    let cand_arch = archive::encode_tuned(&data, candidate, tune);
+    let cand_s = t1.elapsed();
+
+    let parent_ok = archive::decode(&parent_arch).as_deref() == Some(&data[..]);
+    let cand_ok = archive::decode(&cand_arch).as_deref() == Some(&data[..]);
+
+    let n = data.len() as f64;
+    let archive_delta = cand_arch.len() as i64 - parent_arch.len() as i64;
+    let delta_s = archive_delta + bin_cost as i64;
+    let decision = if !cand_ok {
+        "REJECTED (roundtrip)"
+    } else if delta_s < 0 {
+        "ADOPTED"
+    } else {
+        "REJECTED"
+    };
+
+    println!("input_bytes: {}", data.len());
+    println!(
+        "parent    {:<26} {:>12} bytes  {:.4} bpc  {:.3}s  exact={}",
+        parent.name(),
+        parent_arch.len(),
+        (parent_arch.len() as f64 * 8.0) / n,
+        parent_s.as_secs_f64(),
+        parent_ok
+    );
+    println!(
+        "candidate {:<26} {:>12} bytes  {:.4} bpc  {:.3}s  exact={}",
+        candidate.name(),
+        cand_arch.len(),
+        (cand_arch.len() as f64 * 8.0) / n,
+        cand_s.as_secs_f64(),
+        cand_ok
+    );
+    println!("tune          = {tune}");
+    println!("archive_delta = {} bytes", archive_delta);
+    println!("binary_cost   = {} bytes (measured)", bin_cost);
+    println!("DeltaS        = {} bytes", delta_s);
+    println!("decision: {decision}");
+
+    if let Some(rp) = receipt_path {
+        let mut r = RunReceipt::default();
+        r.id = format!("opt-a/{}/{}", candidate.name(), data.len());
+        r.hypothesis = format!(
+            "{} improves complete S over {}",
+            candidate.name(),
+            parent.name()
+        );
+        r.parent = parent.name().into();
+        r.revision = revision();
+        r.compiler = format!(
+            "rustc {} {}-{}",
+            rustc_version(),
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        );
+        r.corpus = path.clone();
+        r.input_sha256 = hex(&sha256(&data));
+        r.archive_sha256 = hex(&sha256(&cand_arch));
+        r.decoded_sha256 = hex(&sha256(&archive::decode(&cand_arch).unwrap_or_default()));
+        r.exact = cand_ok;
+        r.compressor_bytes = bin_cost;
+        r.archive_bytes = cand_arch.len() as u64;
+        r.wall_seconds = cand_s.as_secs_f64();
+        r.peak_rss_bytes = peak_rss();
+        r.environment = format!(
+            "{} {} cores={}",
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            std::thread::available_parallelism()
+                .map(|x| x.get())
+                .unwrap_or(1)
+        );
+        r.attribution = format!("method={} parent={}", candidate.name(), parent.name());
+        r.decision = decision.into();
+        r.notes = format!(
+            "archive_delta={archive_delta} binary_cost_measured={bin_cost} delta_S={delta_s}"
+        );
+        r.extra.push(("phase".into(), "optimization-a".into()));
+        r.extra.push((
+            "bits_per_byte".into(),
+            format!("{:.6}", (cand_arch.len() as f64 * 8.0) / n),
+        ));
+        r.extra
+            .push(("parent_archive_bytes".into(), parent_arch.len().to_string()));
+        r.extra.push(("parent_exact".into(), parent_ok.to_string()));
+        append_jsonl(&rp, &r)?;
+    }
+    if !(parent_ok && cand_ok) {
+        return Err("eval: a method failed exactness".into());
+    }
+    Ok(())
+}
+
+/// A20: sweep the optimizer tuning variants. Because `tune` is a runtime
+/// parameter carried in the archive header, every variant has identical
+/// executable cost; only the archive bytes differ.
+fn cmd_sweep(args: &[String]) -> Result<(), String> {
+    let path = args.first().ok_or("sweep: need <in>")?;
+    let get = |k: &str| -> Option<String> {
+        args.iter()
+            .position(|a| a == k)
+            .and_then(|i| args.get(i + 1))
+            .cloned()
+    };
+    let method = match get("--method") {
+        Some(s) => Method::from_name(&s).ok_or("sweep: unknown method")?,
+        None => archive::ACCEPTED_METHOD,
+    };
+    let receipt_path = get("--receipt");
+    let data = read(path)?;
+    let n = data.len() as f64;
+
+    let mut best: Option<(u8, usize)> = None;
+    let mut base_size = 0usize;
+    println!("method={} tune sweep", method.name());
+    for tune in 0..16u8 {
+        let t0 = Instant::now();
+        let arch = archive::encode_tuned(&data, method, tune);
+        let dt = t0.elapsed();
+        let ok = archive::decode(&arch).as_deref() == Some(&data[..]);
+        if tune == 0 {
+            base_size = arch.len();
+        }
+        println!(
+            "  tune {tune} (lr idx {tune}): {:>12} bytes  {:.4} bpc  {:.3}s  exact={}",
+            arch.len(),
+            (arch.len() as f64 * 8.0) / n,
+            dt.as_secs_f64(),
+            ok
+        );
+        if !ok {
+            return Err(format!("sweep: tune {tune} failed exactness"));
+        }
+        if best.map(|(_, s)| arch.len() < s).unwrap_or(true) {
+            best = Some((tune, arch.len()));
+        }
+    }
+    let (bt, bs) = best.unwrap();
+    let delta_s = bs as i64 - base_size as i64;
+    println!(
+        "best tune = {bt} ({}), DeltaS vs tune 0 = {} bytes",
+        bs, delta_s
+    );
+    println!(
+        "decision: {}",
+        if delta_s < 0 {
+            "ADOPTED (learning-rate variant)"
+        } else {
+            "REJECTED (tune 0 already optimal)"
+        }
+    );
+
+    if let Some(rp) = receipt_path {
+        let mut r = RunReceipt::default();
+        r.id = format!("opt-a/a20-sweep/{}/{}", method.name(), data.len());
+        r.hypothesis =
+            "a mixer learning-rate/update-law variant lowers complete S (zero binary cost)".into();
+        r.parent = format!("{}@tune0", method.name());
+        r.revision = revision();
+        r.compiler = format!(
+            "rustc {} {}-{}",
+            rustc_version(),
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        );
+        r.corpus = path.clone();
+        r.input_sha256 = hex(&sha256(&data));
+        r.exact = true;
+        r.compressor_bytes = 0;
+        r.archive_bytes = bs as u64;
+        r.peak_rss_bytes = peak_rss();
+        r.environment = format!("{} {}", std::env::consts::OS, std::env::consts::ARCH);
+        r.attribution = format!("A20 tune sweep, best tune={bt}");
+        r.decision = if delta_s < 0 { "ADOPTED" } else { "REJECTED" }.into();
+        r.notes = format!("best_tune={bt} base_bytes={base_size} delta_S={delta_s}");
+        r.extra.push(("phase".into(), "optimization-a".into()));
+        r.extra.push(("tune0_bytes".into(), base_size.to_string()));
+        append_jsonl(&rp, &r)?;
     }
     Ok(())
 }
