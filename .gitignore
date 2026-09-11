@@ -1,0 +1,46 @@
+# ---------------------------------------------------------------------------
+# Zentropy — repository ignore rules
+# ---------------------------------------------------------------------------
+# The `research/` tree contains third-party and reference material
+# (papers, upstream source zips, citation snapshots). It is intentionally
+# excluded from version control: it is large, it is not ours to
+# redistribute unilaterally, and it is not part of the scored artifact.
+# See docs/STACK_TECH_TRANSFER.md for what was extracted from it.
+/research/
+
+# The master prompt that seeded the project is a working document, not a
+# scored artifact.
+/prompt.txt
+
+# Rust build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+*.orig
+
+# Bulk corpus bytes are regenerable from the published distributions. The
+# pinned digests live in evidence/baseline/CORPUS.sha256.
+/evidence/corpus/
+
+# Generated archives and decoded outputs are regenerable; receipts and
+# baselines are committed.
+/evidence/runs/*.znt
+/evidence/runs/*.bhm
+/evidence/runs/*.archive9
+/evidence/runs/archive9
+/evidence/runs/*.decoded
+/evidence/runs/*.out
+/data9
+
+# Scratch
+/work/
+/scratch/
+*.tmp
+*.log
+
+# Editor / OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~

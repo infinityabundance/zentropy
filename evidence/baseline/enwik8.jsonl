@@ -1,0 +1,5 @@
+{"corpus":"enwik8","input_bytes":100000000,"program":"gzip -9","archive_bytes":36445248,"program_bytes":117888,"hutter_equivalent":36563136,"seconds":3.652,"note":"LZ77"}
+{"corpus":"enwik8","input_bytes":100000000,"program":"bzip2 -9","archive_bytes":29008758,"program_bytes":39032,"hutter_equivalent":29047790,"seconds":4.377,"note":"BWT"}
+{"corpus":"enwik8","input_bytes":100000000,"program":"zstd -19 --ultra -22","archive_bytes":25272471,"program_bytes":210176,"hutter_equivalent":25482647,"seconds":52.972,"note":"LZ77+FSE"}
+{"corpus":"enwik8","input_bytes":100000000,"program":"xz -9e","archive_bytes":24831656,"program_bytes":92824,"hutter_equivalent":24924480,"seconds":57.130,"note":"LZMA2"}
+{"corpus":"enwik8","input_bytes":100000000,"program":"brotli -q 11","archive_bytes":25742001,"program_bytes":34832,"hutter_equivalent":25776833,"seconds":133.090,"note":"LZ77+dict"}

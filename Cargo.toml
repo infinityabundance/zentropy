@@ -1,0 +1,69 @@
+[package]
+name = "zentropy"
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.74"
+description = "Zentropy: the smallest legitimate executable explanation of enwik9. A Hutter Prize contender."
+license = "MIT OR Apache-2.0"
+repository = "https://example.invalid/zentropy"
+readme = "README.md"
+# The scored artifact must be small and deterministic. No external crates in the
+# scored path: everything the submission needs is implemented in-tree so that we
+# control binary size, determinism and licence inventory exactly.
+[dependencies]
+
+[dev-dependencies]
+
+[lib]
+name = "zentropy"
+path = "src/lib.rs"
+
+# ---------------------------------------------------------------------------
+# Executables
+#
+# `zentropy` is the research/production driver (compression + decompression +
+# harness + courts). It is allowed to be larger than the submission plane; the
+# submission packaging step (Phase 12) builds a stripped, feature-gated decoder.
+# `zentropy-sfx` is deliberately a separate, minimal decoder-only binary that
+# the self-extracting-archive packager will use as its stub.
+# ---------------------------------------------------------------------------
+[[bin]]
+name = "zentropy"
+path = "src/bin/zentropy.rs"
+
+[[bin]]
+name = "zentropy-sfx"
+path = "src/bin/zentropy_sfx.rs"
+
+[features]
+default = []
+# `submission` gates out research-only machinery from the decoder stub.
+submission = []
+
+# ---------------------------------------------------------------------------
+# Profiles
+#
+# `release` is used by the research driver (speed matters there).
+# `submission` is used to build the scored stub: size is a first-class metric.
+# ---------------------------------------------------------------------------
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+debug = false
+strip = "symbols"
+overflow-checks = false
+
+[profile.submission]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+debug = false
+strip = "symbols"
+overflow-checks = true
+
+[profile.bench]
+inherits = "release"
