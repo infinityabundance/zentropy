@@ -150,15 +150,18 @@ yet. All runs reconstruct exactly; each is bound to an immutable receipt in
 | Corpus | bytes | archive | bits/byte | ratio | wall (C+D) | peak RSS |
 |---|---|---|---|---|---|---|
 | selftest (synthetic) | 3,375,560 | 66,434 | 0.157 | 50.81 | — | — |
-| enwik6 | 1,000,000 | 276,263 | 2.2101 | 3.62 | 0.79 s | 20.7 MB |
-| enwik7 | 10,000,000 | 2,497,839 | 1.9983 | 4.00 | 9.07 s | 67.6 MB |
-| enwik8 | 100,000,000 | 22,584,607 | 1.8068 | 4.43 | 138.9 s | 419.8 MB |
+| enwik6 | 1,000,000 | 273,356 | 2.1868 | 3.66 | ~0.8 s | 22.8 MB |
+| enwik7 | 10,000,000 | 2,485,288 | 1.9882 | 4.02 | 10.2 s | 76.0 MB |
+| enwik8 | 100,000,000 | 22,465,931 | 1.7973 | 4.45 | 177.0 s | 447.0 MB |
+| enwik9 | 1,000,000,000 | *see `evidence/runs/enwik9.report.txt`* | | | | |
 
-Measured leave-one-out ablation (`zentropy ablate`):
+Mechanisms admitted by measurement (each a sequential experiment; a mechanism
+only counts when the *complete* `ΔS` is negative):
 
-| Mechanism | enwik7 ΔS | enwik8 ΔS | decision |
-|---|---|---|---|
-| word + word-bigram experts | −73,635 B | −653,805 B | **ADOPTED** |
+| Mechanism | measured ΔS | decision |
+|---|---|---|
+| word + word-bigram experts | −73,635 B on enwik7; −653,805 B on enwik8 | **ADOPTED** |
+| orders 0, 5, 12, 16 added to the ladder | −12,551 B on enwik7; −118,676 B on enwik8 | **ADOPTED** |
 
 Reference baselines measured on enwik8 by `tools/baseline.sh` (archive bytes):
 `gzip -9` 36,445,248 · `bzip2 -9` 29,008,758 · `brotli -q 11` 25,742,001 ·

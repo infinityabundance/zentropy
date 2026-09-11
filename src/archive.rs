@@ -42,7 +42,13 @@ impl Method {
     fn config(self, n: usize) -> ModelConfig {
         match self {
             Method::RawCm => ModelConfig::for_size(n as u64),
-            Method::RawCmNoWord => ModelConfig::for_size(n as u64).ablated(&[0, 1, 2, 3, 4, 5]),
+            Method::RawCmNoWord => {
+                // Keep every byte-order expert; drop the word and bigram experts
+                // (the last two specs).
+                let full = ModelConfig::for_size(n as u64);
+                let keep: Vec<usize> = (0..full.specs.len().saturating_sub(2)).collect();
+                full.ablated(&keep)
+            }
         }
     }
 }

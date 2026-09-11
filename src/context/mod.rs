@@ -233,7 +233,14 @@ impl ModelConfig {
         };
         let match_bits = bits;
         let word_bits = bits.min(22);
+        // The expert ladder. Higher orders use the same table size and rely on
+        // hashing; collisions are charged as lost probability, not as bytes.
         let specs = vec![
+            ModelSpec {
+                kind: CtxKind::Order(0),
+                bits: bits.min(20),
+                rate: 4,
+            },
             ModelSpec {
                 kind: CtxKind::Order(1),
                 bits,
@@ -255,12 +262,27 @@ impl ModelConfig {
                 rate: 5,
             },
             ModelSpec {
+                kind: CtxKind::Order(5),
+                bits,
+                rate: 5,
+            },
+            ModelSpec {
                 kind: CtxKind::Order(6),
+                bits,
+                rate: 5,
+            },
+            ModelSpec {
+                kind: CtxKind::Order(8),
                 bits,
                 rate: 6,
             },
             ModelSpec {
-                kind: CtxKind::Order(8),
+                kind: CtxKind::Order(12),
+                bits,
+                rate: 6,
+            },
+            ModelSpec {
+                kind: CtxKind::Order(16),
                 bits,
                 rate: 6,
             },
@@ -534,8 +556,11 @@ mod tests {
     #[test]
     fn config_ablation_keeps_subset() {
         let c = ModelConfig::for_size(1_000_000);
+        assert!(c.specs.len() >= 4);
         let a = c.ablated(&[0, 1]);
         assert_eq!(a.specs.len(), 2);
-        assert_eq!(a.specs[0].kind, CtxKind::Order(1));
+        assert_eq!(a.specs[0].kind, CtxKind::Order(0));
+        assert_eq!(a.specs[1].kind, CtxKind::Order(1));
+        assert_eq!(c.specs[c.specs.len() - 1].kind, CtxKind::WordBigram);
     }
 }
