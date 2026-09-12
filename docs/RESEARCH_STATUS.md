@@ -16,9 +16,11 @@
   `22,449,073` bytes (1.7959 bpc) with structural hoisting enabled, beating
   `xz -9e` (24,831,656), `brotli -q 11` (25,742,001), `bzip2 -9` (29,008,758)
   and `gzip -9` (36,445,248) on the same input.
-- **The full corpus reconstructs exactly.** enwik9 → `182,949,204` bytes
-  (1.4636 bpc) in 41 min, 3.58 GB peak RAM, both directions. This is milestone
-  G0 (exact 10⁹-byte reconstruction) and G1 (beats generic compressors).
+- **The full corpus reconstructs exactly.** The first enwik9 run under the
+  accepted configuration (`hoist + column + tune 7`) gives `181,803,607` bytes
+  (`1.4544` bpc), decoded byte-identically; the earlier pre-column run was
+  `182,949,204` (`1.4636` bpc). This is milestone G0 (exact 10⁹-byte
+  reconstruction) and G1 (beats generic compressors).
 - **Mechanisms are adopted only by complete, measured cost:** word/bigram
   experts (−653,805 B on enwik8) and orders 0/5/12/16 (−118,676 B on enwik8).
   Structural hoisting is adopted for ≥ enwik7 (−15,130 B on enwik8) but
@@ -34,9 +36,9 @@
   A20 learning-rate variant (`tune 7`) are adopted; A2 (alphabet permutation) and
   A3 (information inheritance) are rejected, each with a negative control that
   demonstrates the mechanism is real but the heuristic is wrong. A1.2 case
-  factorization: merging lexical identity is **rejected** (wins on enwik6/7,
-  loses on enwik8 — a scaling reversal), while case *marking alone* is
-  screening-positive on enwik7/enwik8 and pending a full enwik9 gate. See
+  factorization is **rejected in full**: merging lexical identity wins on
+  enwik6/7 and reverses on enwik8, and marking alone wins on enwik7/enwik8 then
+  reverses by +427,246 B on enwik9. Both are kept out of the default build. See
   [`OPTIMIZATION_PHASE_A.md`](OPTIMIZATION_PHASE_A.md).
 
 ## What is *not* true yet
@@ -115,9 +117,9 @@ The first decisive question is not whether Zentropy reaches 100 MB. It is:
    saving after that floor**, rather than merely rediscovering what the predictor
    already captured?
 
-Today the floor is 182.9 MB and the distinctly-Zentropy machinery has not yet
+Today the floor is 181.8 MB and the distinctly-Zentropy machinery has not yet
 been deployed. The gap to the pending frontier (`fx2-cmix-transformer`,
-100.42 MB including compressor) is ~82.8 MB. It is not close, and the project
+100.42 MB including compressor) is ~81.4 MB. It is not close, and the project
 does not pretend otherwise.
 
 ## Superseded earlier ordering
