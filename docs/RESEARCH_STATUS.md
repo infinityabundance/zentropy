@@ -17,11 +17,11 @@
   `xz -9e` (24,831,656), `brotli -q 11` (25,742,001), `bzip2 -9` (29,008,758)
   and `gzip -9` (36,445,248) on the same input.
 - **The full corpus reconstructs exactly.** The accepted configuration
-  (`hoist + column + word-token-reverse + tune 7`) gives enwik9
-  `180,079,678` bytes (`1.4406` bpc), decoded byte-identically. Intermediate
-  milestones: pre-column `182,949,204` (1.4636 bpc), then hoist+column
-  `181,803,607` (1.4544 bpc). This is milestone G0 (exact 10⁹-byte
-  reconstruction) and G1 (beats generic compressors).
+  (`struct-hoist + word-token-reverse + column + Phase-4 match family + tune 7`)
+  gives enwik9 `176,204,762` bytes (`1.4096` bpc), decoded byte-identically.
+  Progression: pre-column `182,949,204` (1.4636 bpc); hoist+column `181,803,607`
+  (1.4544); +A1.1 tokenizer `180,079,678` (1.4406); +Phase 4 `176,204,762`
+  (1.4096). This is milestone G0 (exact 10⁹-byte reconstruction) and G1.
 - **Mechanisms are adopted only by complete, measured cost:** word/bigram
   experts (−653,805 B on enwik8) and orders 0/5/12/16 (−118,676 B on enwik8).
   Structural hoisting is adopted for ≥ enwik7 (−15,130 B on enwik8) but
@@ -30,7 +30,7 @@
 - **Hutter score accounting is sealed:** the three legal submission forms are
   unit-tested constructors, and no mechanism's adoption decision uses an
   estimated byte cost.
-- **The submission path works.** The scored stub (346,208 B) is both `comp9a`
+- **The submission path works.** The scored stub (351,784 B) is both `comp9a`
   and `decomp9`; a packed self-extracting `archive9` reconstructs byte-identically
   with no external inputs.
 - **Optimization Phase A is running.** A17 (previous-line/column expert) and the
@@ -41,9 +41,13 @@
   enwik6/7 and reverses on enwik8, and marking alone wins on enwik7/enwik8 then
   reverses by +427,246 B on enwik9. A1.1/A26 dynamic word tokenization is
   **ADOPTED** (`column-word-token-reverse`): −1,723,929 B archive at enwik9 for a
-  charged 21,848 B of executable. A26's v2 extension of that vocabulary past 255
-  tokens is **REJECTED** (coverage loses at every cap tested). See
-  [`OPTIMIZATION_PHASE_A.md`](OPTIMIZATION_PHASE_A.md).
+  charged 21,848 B of executable. **Phase 4 is complete**: the long-distance and
+  sparse match tiers and the matched-literal expert are adopted (enwik9
+  −3,869,340 fully accounted), while repeat-offset state, distance-conditioned
+  floors, stemming, word-class, phrase/affix dictionaries and front-coding were
+  rejected with controls and dose-response. See
+  [`OPTIMIZATION_PHASE_A.md`](OPTIMIZATION_PHASE_A.md) and
+  [`PHASE4_PLAN.md`](PHASE4_PLAN.md).
 
 ## What is *not* true yet
 
@@ -125,10 +129,11 @@ The first decisive question is not whether Zentropy reaches 100 MB. It is:
    saving after that floor**, rather than merely rediscovering what the predictor
    already captured?
 
-Today the floor is 180.1 MB and the distinctly-Zentropy machinery has not yet
+Today the floor is 176.2 MB and the distinctly-Zentropy machinery has not yet
 been deployed. The gap to the pending frontier (`fx2-cmix-transformer`,
-100.42 MB including compressor) is ~79.7 MB. It is not close, and the project
-does not pretend otherwise.
+100.42 MB including compressor) is ~75.8 MB; to the accepted record (`fx2-cmix`,
+110.79 MB) it is ~65.4 MB. It is not close, and the project does not pretend
+otherwise.
 
 ## Superseded earlier ordering
 
@@ -142,8 +147,9 @@ item 2/7: a cheap probe, not an optimisation campaign.
   mechanism is gated on that, not on our hardware.
 - **Memory.** The model already uses ~450 MB for enwik8; enwik9 needs a
   careful allocation budget under 10 GB.
-- **Binary size.** The stub is 346,208 B, of which 21,848 B is the adopted
-  word-token transform (mostly `std::HashMap`). If the model grows, the scored
+- **Binary size.** The stub is 351,784 B, of which 21,848 B is the word tokenizer
+  and 5,576 B is the Phase-4 match family (mostly `std::HashMap` and the extra
+  match tiers). If the model grows, the scored
   `compressor_bytes` grows with it; Phase 11 must reclaim this.
 - **Determinism.** All arithmetic is integer-only today. This must be preserved
   if any floating-point learned component enters the submission.

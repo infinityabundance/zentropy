@@ -73,10 +73,11 @@ licence inventory must be trivial. Even SHA-256 is implemented in-tree.
 
 ```
 bytes ──► [reversible structural hoist]      (Phase 3, fixed 31-entry table)
-      ──► [reversible case marking]          (A1.2; evaluated, REJECTED)
       ──► [reversible dynamic word tokens]   (Phase 4 / A1.1, ADOPTED)
       ──► [context models: orders 0..16, word, word-bigram,
-           previous-line/column, match model]
+           previous-line/column]
+      ──► [match tiers: dense short, long-distance, sparse/gapped]
+      ──► [matched-literal expert over the match prediction]  (Phase 4)
       ──► [logistic mixer over expert predictions]   (A20, tune 7)
       ──► [APM/SSE calibration ×2]
       ──► [binary range coder]
@@ -138,7 +139,7 @@ Honest status as of the current revision. `MEASURED` means the number exists in
 | 1 | Exact Wikipedia IR (ZIR-0) with RAW escape and full round-trip | **MEASURED** (exact on enwik6/8; **not yet in the pipeline**) |
 | 2 | Minimal coding floor: range coder, rANS option, context model | **MEASURED** |
 | 3 | Structural factorization, typed streams, structural hoisting | **COMPLETE (closed by measurement)** — fixed 31-entry hoisting ADOPTED and at saturation; IR-driven field hoisting and typed streams REJECTED at archive level (see §7.1) |
-| 4 | Transformed lexical/phrase dictionary, long/sparse matches, repeat refs | **PARTIAL** — corpus-derived 255-word dictionary adopted (A1.1); larger-vocabulary v2 REJECTED (A26); repeat-offset state not started |
+| 4 | Transformed lexical/phrase dictionary, long/sparse matches, repeat refs | **COMPLETE** — 255-word dictionary (A1.1) + long-distance and sparse match tiers + matched-literal expert adopted; repeat-offset state, distance floors, stemming, phrase/affix dictionaries and front-coding rejected with controls (see PHASE4_PLAN.md) |
 | 5 | Procedural grammar + rank/enumerative state | PROPOSED |
 | 6 | Serious context-mixing floor (ICM/ISSE, state maps, word/stem, SSE) | **PARTIAL** — direct contexts + word/bigram + previous-line/column + match + 2 APM; no ICM/ISSE/state maps |
 | 7 | Article-layout compiler (semantic/structural/residual/predictor orders) | PROPOSED |
@@ -157,10 +158,10 @@ receipt in `evidence/runs/receipts.jsonl`.
 
 | Corpus | bytes | archive (accepted) | bits/byte | ratio | encode wall | peak RSS |
 |---|---|---|---|---|---|---|
-| enwik6 | 1,000,000 | 272,066 | 2.1765 | 3.68 | 0.5 s | — |
-| enwik7 | 10,000,000 | 2,455,390 | 1.9643 | 4.07 | 6.0 s | — |
-| enwik8 | 100,000,000 | 22,181,992 | 1.7746 | 4.51 | 95.3 s | — |
-| enwik9 | 1,000,000,000 | 180,079,678 | 1.4406 | 5.55 | 1,362.9 s | 4.35 GiB |
+| enwik6 | 1,000,000 | 267,277 | 2.1382 | 3.74 | 0.6 s | — |
+| enwik7 | 10,000,000 | 2,412,977 | 1.9304 | 4.14 | 6.5 s | — |
+| enwik8 | 100,000,000 | 21,815,643 | 1.7453 | 4.58 | 160.7 s | — |
+| enwik9 | 1,000,000,000 | 176,204,762 | 1.4096 | 5.68 | 1,553.3 s | ~5.0 GiB |
 
 Mechanisms admitted by measurement (each a sequential experiment; a mechanism
 only counts when the *complete* `ΔS` is negative):
@@ -173,6 +174,10 @@ only counts when the *complete* `ΔS` is negative):
 | A20 mixer learning rate 24 (tune 7, zero executable cost) | −9,492 B on enwik7; **−76,483 B on enwik8** | **ADOPTED** |
 | A17 previous-line/column expert | −8,689 B on enwik7; **−58,737 B on enwik8** (measured 720 B cost) | **ADOPTED** |
 | A1.1/A26 dynamic word tokenizer (corpus-derived dictionary in the archive, reverse ids) | complete ΔS with **measured** 21,848 B executable cost: **+14,805 B on enwik7 (REJECTED)**, −109,441 B on enwik8, **−1,702,081 B on enwik9** | **ADOPTED for large corpora** |
+| Phase 4.1 long-distance match tier (Z6) | enwik7 −4,229; enwik8 −77,348; **enwik9 −1,454,881** (1,240 B cost) | **ADOPTED** |
+| Phase 4.2 sparse/gapped match tier (C9) | enwik7 −5,636; enwik8 −30,993 | **ADOPTED** (composite) |
+| Phase 4.4 matched-literal expert (X2/X3) | enwik7 −43,858; enwik8 −333,917 (control −1,280 / −12,219) | **ADOPTED** (composite) |
+| Phase 4 composite (`phase4`, 4.1+4.2+4.4) | **enwik9 −3,869,340** at the fully accounted 5,576 B marginal | **ADOPTED (accepted configuration)** |
 
 > **Accounting note.** The executable cost of a mechanism is *measured*, never
 > estimated: build an otherwise-identical submission binary with and without the
@@ -240,14 +245,15 @@ transformed representation and can only add binary cost. A production that
 
 ### Submission-plane measurement
 
-The scored stub (`target/submission/zentropy-sfx`, `opt-level="z"`, LTO,
-stripped) is both `comp9a` and `decomp9` and is currently **346,208 B**. For
-enwik6 (`bhm = 272,066 B`, `archive9 = 618,297 B`) the two legal packaging forms
-score:
+The accepted configuration is `struct-hoist + word-token-reverse + column + match
+family (4.1/4.2/4.4) + tune 7`. The scored stub (`target/submission/zentropy-sfx`,
+`opt-level="z"`, LTO, stripped) is both `comp9a` and `decomp9` and is currently
+**351,784 B**. For enwik6 (`bhm = 267,277 B`, `archive9 = 619,084 B`) the two legal
+packaging forms score:
 
 ```
-S(self-extracting:  comp9 + archive9)          =   964,505
-S(separate, comp9a = decomp9:  2P + bhm)       =   964,482
+S(self-extracting:  comp9 + archive9)          =   970,868
+S(separate, comp9a = decomp9:  2P + bhm)       =   970,845
 ```
 
 The two differ by exactly 23 bytes — the SFX marker (15) plus the length field

@@ -214,9 +214,9 @@ the dictionary is charged. No new mechanism is required; this item is
 | item | ledger | verdict |
 |---|---|---|
 | 4.1 long-distance match | Z6 | **ADOPTED** (enwik9 DeltaS −1,454,881) |
-| 4.2 sparse match | C9 | positive (in the gate composite) |
+| 4.2 sparse match | C9 | **ADOPTED** (via the composite) |
 | 4.3 repeat-offset state | B5/Z3/X6 | REJECTED (enwik8 reversal) |
-| 4.4 matched-literal | X2/X3 | **positive** (in the gate composite) |
+| 4.4 matched-literal | X2/X3 | **ADOPTED** (via the composite) |
 | 4.5 distance floors | A9/X5 | REJECTED |
 | 4.6 stem transform | B1/C8 | REJECTED |
 | 4.7 word-class context | C8 | REJECTED |
@@ -224,3 +224,26 @@ the dictionary is charged. No new mechanism is required; this item is
 | 4.9 phrase vocabulary | A26/A27 | REJECTED |
 | 4.10 front-coded dictionary | B1/C7 | REJECTED (neutral) |
 | 4.11 reverse dictionary | C7 | satisfied by A1.1 |
+
+## Adoption
+
+The composite of the three surviving match mechanisms — 4.1 (`long-match8`),
+4.2 (`sparse-match4g1`) and 4.4 (`matched-literal`) — is `Method::Phase4`, and it
+is now the **accepted configuration**. enwik9 gate:
+
+```
+parent    column-word-token-reverse  180,079,678  1.4406 bpc  exact
+candidate phase4                     176,204,762  1.4096 bpc  exact
+archive_delta -3,874,916 ; DeltaS -3,869,716 (at the 5,200 B charged in the run)
+```
+
+`ACCEPTED_METHOD = Phase4`; `long-match`, `sparse-match` and `match-byte` joined
+the default build. The previous accepted stub was 346,208 B and the new one is
+**351,784 B**, so the fully accounted marginal is **5,576 B** — the 5,200 B in the
+receipt predates the final 4.5–4.10 shared scaffolding (+376 B). The refined
+`DeltaS` is **−3,869,340**; the decision is unchanged. This is a 2.15 % archive
+reduction from Phase 4 alone, on top of A1.1.
+
+Runtime: enwik9 encode 1,553 s (vs 1,514 s for the parent) — the match tiers add
+~3 %. RAM: the extra tiers cost `2^bits × 4` each (64 MB at enwik9), well inside
+the 10 GB envelope and the 8 GiB default budget.

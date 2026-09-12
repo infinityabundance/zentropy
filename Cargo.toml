@@ -43,7 +43,7 @@ path = "src/bin/zentropy_sfx.rs"
 # Only ADOPTED mechanisms are in the default (scored) build. Rejected or
 # experimental mechanisms are compiled in explicitly with --features so they
 # reproduce but do not cost submission bytes.
-default = ["struct-hoist", "column-model", "word-token", "mem-guard"]
+default = ["struct-hoist", "column-model", "word-token", "long-match", "sparse-match", "match-byte", "mem-guard"]
 # Gates the Phase-3 structural-hoisting transform into the binary. Disabling it
 # yields an otherwise-identical binary used ONLY to measure the mechanism's
 # real executable-byte cost. `S` is authority: an estimate is never allowed to

@@ -795,9 +795,11 @@ fn maybe_unstem(_method: Method, data: Vec<u8>) -> Vec<u8> {
 /// measured configuration. Optimization-A experiments override both explicitly.
 ///
 /// A1.1/A26: corpus-derived word tokenization with reverse-frequency ids on top
-/// of structural hoisting and the column expert. Adopted at enwik9 after the
-/// enwik8 screen (ΔS -1,723,353 at 576 B measured executable cost).
-pub const ACCEPTED_METHOD: Method = Method::ColumnWordTokenReverse;
+/// of structural hoisting and the column expert, extended by Phase 4's match
+/// family: a long-distance tier (4.1), a sparse/gapped tier (4.2) and the
+/// matched-literal expert (4.4). Adopted at enwik9: archive 176,204,762 (1.4096
+/// bpc vs 1.4406), DeltaS -3,869,716 at a measured 5,200 B executable cost.
+pub const ACCEPTED_METHOD: Method = Method::Phase4;
 /// A20: mixer learning rate 24 was adopted on enwik7 screening and confirmed on
 /// enwik8 (−76,483 B at zero executable cost).
 pub const ACCEPTED_TUNE: u8 = 7;

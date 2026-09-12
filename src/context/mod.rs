@@ -37,6 +37,7 @@ fn word_add(h: u64, b: u8) -> u64 {
 }
 
 /// Hash of a whole lowercase word, using the same fold as the running `word_cur`.
+#[cfg(feature = "word-class")]
 pub fn word_hash(w: &[u8]) -> u64 {
     let mut h = 0u64;
     for &b in w {
@@ -46,6 +47,7 @@ pub fn word_hash(w: &[u8]) -> u64 {
 }
 
 /// Sorted `(word_hash, class)` table for the closed-class function words.
+#[cfg(feature = "word-class")]
 pub fn fnword_table() -> Vec<(u64, u8)> {
     let mut v: Vec<(u64, u8)> = FUNC_WORDS.iter().map(|(w, c)| (word_hash(w), *c)).collect();
     v.sort_unstable();
@@ -53,6 +55,7 @@ pub fn fnword_table() -> Vec<(u64, u8)> {
 }
 
 /// Class of a word given its running hash: 0 content, 1..=4 closed classes.
+#[cfg(feature = "word-class")]
 #[inline]
 pub fn word_class(h: u64, table: &[(u64, u8)]) -> u8 {
     match table.binary_search_by_key(&h, |&(hh, _)| hh) {
@@ -93,6 +96,7 @@ pub enum CtxKind {
 /// Closed-class English function words (ledger C8 word-type streams). The class
 /// of the previous completed word and of the current prefix are cheap, bounded
 /// context that the word/bigram experts do not expose directly.
+#[cfg(feature = "word-class")]
 pub const FUNC_WORDS: &[(&[u8], u8)] = &[
     (b"the", 1),
     (b"a", 1),
@@ -773,7 +777,16 @@ impl Predictor {
             specs: cfg.specs.clone(),
             ctx: vec![0; cfg.specs.len()],
             match_models,
-            fnwords: fnword_table(),
+            fnwords: {
+                #[cfg(feature = "word-class")]
+                {
+                    fnword_table()
+                }
+                #[cfg(not(feature = "word-class"))]
+                {
+                    Vec::new()
+                }
+            },
             rep: vec![0; cfg.rep_offsets],
             rep_conf: vec![0; cfg.rep_offsets],
             mixer: Mixer::new(n_inputs, 4096),
