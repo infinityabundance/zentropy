@@ -217,9 +217,10 @@ size target worth ~20 KB.
 > may be an artefact of the id byte's interaction with the CM's bit tree rather
 > than a genuine ranking effect. A control assigning ids by an unrelated criterion
 > (word length, say) would separate "ordering" from "substitution". Also, the
-> transform's word-count `HashMap` pushed measured enwik9 peak RSS to 4.67 GB,
-> which is **above** the 4.41 GiB projection; `memory::projected_encode` does not
-> yet account for transform aux memory and should be extended.
+> transform's word-count `HashMap` raised measured enwik9 peak RSS to
+> 4,671,049,728 B (4.35 GiB); the 4.41 GiB `projected_encode` still covered it,
+> but with only ~60 MB of margin, so an explicit transform-aux term in
+> `memory::projected_encode` is the robust follow-up.
 
 ### A1.2 — case factorization (merge REJECTED; mark-only screening-positive)
 
@@ -353,8 +354,9 @@ dominates it.
 1. **A1.1/FOT follow-ups** — a case-independent id-ordering control (A32);
    words vs BPE/subword vs hybrid units (A26); and reclaiming the ~21.8 KB of
    `std::HashMap` code with a custom word counter (Phase-11 size).
-2. **Extend `memory::projected_encode`** to include transform aux memory (the
-   token `HashMap`), since measured enwik9 peak RSS exceeded the projection.
+2. **Extend `memory::projected_encode`** with an explicit transform-aux term (the
+   token `HashMap`); measured enwik9 peak RSS stayed just under the projection,
+   so the guard held, but the margin is thin.
 3. **A2.2 coder-in-the-loop alphabet search** — cheap; the A2 control proves the
    signal exists and frequency is the wrong objective.
 4. **Wave C parsing** — entropy-repriced optimal parsing + MRU carousel +
