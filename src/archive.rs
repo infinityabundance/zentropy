@@ -72,6 +72,18 @@ enum TokenKind {
     /// v2: escape-extended ids, vocabulary far past 255.
     #[cfg_attr(not(feature = "word-token2"), allow(dead_code))]
     V2,
+    /// Phase 4.9: phrase vocabulary with reverse ids.
+    #[cfg_attr(not(feature = "phrase"), allow(dead_code))]
+    Phrase,
+    /// Phase 4.9 control: phrase vocabulary with frequency-ranked ids.
+    #[cfg_attr(not(feature = "phrase"), allow(dead_code))]
+    PhraseFreq,
+    /// Phase 4.10: v1 vocabulary with a front-coded dictionary header.
+    #[cfg_attr(not(feature = "dict-front"), allow(dead_code))]
+    Front,
+    /// Phase 4.8: vocabulary with affix-referenced derived tokens.
+    #[cfg_attr(not(feature = "affix-token"), allow(dead_code))]
+    Affix,
 }
 
 /// Coding method. New mechanisms are added as variants so each is ablatable.
@@ -130,6 +142,39 @@ pub enum Method {
     LongMatch16 = 24,
     /// Phase 4.1: accepted config + a long-distance match tier, min 24.
     LongMatch24 = 25,
+    /// Phase 4.2: accepted config + a sparse match tier (min 4, gap 1).
+    SparseMatch4g1 = 26,
+    /// Phase 4.2: accepted config + a sparse match tier (min 6, gap 1).
+    SparseMatch6g1 = 27,
+    /// Phase 4.2: accepted config + a sparse match tier (min 6, gap 2).
+    SparseMatch6g2 = 28,
+    /// Phase 4.3: accepted config + repeat-offset predictors.
+    RepState1 = 29,
+    RepState2 = 30,
+    RepState3 = 31,
+    RepState4 = 32,
+    /// Phase 4.4: accepted config + a matched-literal expert.
+    MatchByte = 33,
+    /// Phase 4.4 control: the same expert with the predicted byte removed.
+    MatchByteConst = 34,
+    /// Phase 4 composite: long-match8 + sparse4g1 + matched-literal on the accepted parent.
+    Phase4 = 35,
+    /// Phase 4.5: accepted config + distance-conditioned match confidence.
+    DistMatch = 36,
+    /// Phase 4.6: standalone stem / root+affix transform (screened vs the floor).
+    Stem = 37,
+    /// Phase 4.7: accepted config + word-class context expert.
+    WordClass = 38,
+    /// Phase 4.7 control: the same expert keyed only on "inside a word".
+    WordClassConst = 39,
+    /// Phase 4.9: accepted config + phrase vocabulary (reverse ids).
+    ColumnWordTokenPhrase = 40,
+    /// Phase 4.9 control: phrase vocabulary with frequency-ranked ids.
+    ColumnWordTokenPhraseFreq = 41,
+    /// Phase 4.10: accepted config + front-coded dictionary header.
+    ColumnWordTokenFront = 42,
+    /// Phase 4.8: accepted config + affix-referenced derived tokens.
+    ColumnWordTokenAffix = 43,
 }
 
 impl Method {
@@ -161,6 +206,24 @@ impl Method {
             Method::LongMatch12 => "long-match12",
             Method::LongMatch16 => "long-match16",
             Method::LongMatch24 => "long-match24",
+            Method::SparseMatch4g1 => "sparse-match4g1",
+            Method::SparseMatch6g1 => "sparse-match6g1",
+            Method::SparseMatch6g2 => "sparse-match6g2",
+            Method::RepState1 => "rep-state1",
+            Method::RepState2 => "rep-state2",
+            Method::RepState3 => "rep-state3",
+            Method::RepState4 => "rep-state4",
+            Method::MatchByte => "match-byte",
+            Method::MatchByteConst => "match-byte-const",
+            Method::Phase4 => "phase4",
+            Method::DistMatch => "dist-match",
+            Method::Stem => "stem",
+            Method::WordClass => "word-class",
+            Method::WordClassConst => "word-class-const",
+            Method::ColumnWordTokenPhrase => "column-word-token-phrase",
+            Method::ColumnWordTokenPhraseFreq => "column-word-token-phrase-freq",
+            Method::ColumnWordTokenFront => "column-word-token-front",
+            Method::ColumnWordTokenAffix => "column-word-token-affix",
         }
     }
 
@@ -192,12 +255,30 @@ impl Method {
             "long-match12" => Method::LongMatch12,
             "long-match16" => Method::LongMatch16,
             "long-match24" => Method::LongMatch24,
+            "sparse-match4g1" => Method::SparseMatch4g1,
+            "sparse-match6g1" => Method::SparseMatch6g1,
+            "sparse-match6g2" => Method::SparseMatch6g2,
+            "rep-state1" => Method::RepState1,
+            "rep-state2" => Method::RepState2,
+            "rep-state3" => Method::RepState3,
+            "rep-state4" => Method::RepState4,
+            "match-byte" => Method::MatchByte,
+            "match-byte-const" => Method::MatchByteConst,
+            "phase4" => Method::Phase4,
+            "dist-match" => Method::DistMatch,
+            "stem" => Method::Stem,
+            "word-class" => Method::WordClass,
+            "word-class-const" => Method::WordClassConst,
+            "column-word-token-phrase" => Method::ColumnWordTokenPhrase,
+            "column-word-token-phrase-freq" => Method::ColumnWordTokenPhraseFreq,
+            "column-word-token-front" => Method::ColumnWordTokenFront,
+            "column-word-token-affix" => Method::ColumnWordTokenAffix,
             _ => return None,
         })
     }
 
     /// All methods, for exhaustive exactness testing.
-    pub const ALL: [Method; 26] = [
+    pub const ALL: [Method; 44] = [
         Method::RawCm,
         Method::RawCmNoWord,
         Method::StructHoist,
@@ -224,6 +305,24 @@ impl Method {
         Method::LongMatch12,
         Method::LongMatch16,
         Method::LongMatch24,
+        Method::SparseMatch4g1,
+        Method::SparseMatch6g1,
+        Method::SparseMatch6g2,
+        Method::RepState1,
+        Method::RepState2,
+        Method::RepState3,
+        Method::RepState4,
+        Method::MatchByte,
+        Method::MatchByteConst,
+        Method::Phase4,
+        Method::DistMatch,
+        Method::Stem,
+        Method::WordClass,
+        Method::WordClassConst,
+        Method::ColumnWordTokenPhrase,
+        Method::ColumnWordTokenPhraseFreq,
+        Method::ColumnWordTokenFront,
+        Method::ColumnWordTokenAffix,
     ];
 
     /// Whether this method runs the structural-hoisting transform.
@@ -249,6 +348,23 @@ impl Method {
                 | Method::LongMatch12
                 | Method::LongMatch16
                 | Method::LongMatch24
+                | Method::SparseMatch4g1
+                | Method::SparseMatch6g1
+                | Method::SparseMatch6g2
+                | Method::RepState1
+                | Method::RepState2
+                | Method::RepState3
+                | Method::RepState4
+                | Method::MatchByte
+                | Method::MatchByteConst
+                | Method::Phase4
+                | Method::DistMatch
+                | Method::WordClass
+                | Method::WordClassConst
+                | Method::ColumnWordTokenPhrase
+                | Method::ColumnWordTokenPhraseFreq
+                | Method::ColumnWordTokenFront
+                | Method::ColumnWordTokenAffix
         );
         cfg!(feature = "struct-hoist") && wants
     }
@@ -307,12 +423,41 @@ impl Method {
             | Method::LongMatch8
             | Method::LongMatch12
             | Method::LongMatch16
-            | Method::LongMatch24 => return TokenKind::Reverse,
+            | Method::LongMatch24
+            | Method::SparseMatch4g1
+            | Method::SparseMatch6g1
+            | Method::SparseMatch6g2
+            | Method::RepState1
+            | Method::RepState2
+            | Method::RepState3
+            | Method::RepState4
+            | Method::MatchByte
+            | Method::MatchByteConst
+            | Method::Phase4
+            | Method::DistMatch
+            | Method::WordClass
+            | Method::WordClassConst => return TokenKind::Reverse,
             _ => {}
         }
         #[cfg(feature = "word-token2")]
         match self {
             Method::WordToken2 | Method::ColumnWordToken2 => return TokenKind::V2,
+            _ => {}
+        }
+        #[cfg(feature = "phrase")]
+        match self {
+            Method::ColumnWordTokenPhrase => return TokenKind::Phrase,
+            Method::ColumnWordTokenPhraseFreq => return TokenKind::PhraseFreq,
+            _ => {}
+        }
+        #[cfg(feature = "dict-front")]
+        match self {
+            Method::ColumnWordTokenFront => return TokenKind::Front,
+            _ => {}
+        }
+        #[cfg(feature = "affix-token")]
+        match self {
+            Method::ColumnWordTokenAffix => return TokenKind::Affix,
             _ => {}
         }
         let _ = self;
@@ -331,6 +476,76 @@ impl Method {
             Method::LongMatch12 => Some(12),
             Method::LongMatch16 => Some(16),
             Method::LongMatch24 => Some(24),
+            Method::Phase4 => Some(8),
+            _ => None,
+        }
+    }
+
+    /// Phase 4.2: the sparse match tier's (min_len, gap), if any.
+    #[cfg_attr(not(feature = "sparse-match"), allow(dead_code))]
+    fn sparse_tier(self) -> Option<(usize, usize)> {
+        if !cfg!(feature = "sparse-match") {
+            return None;
+        }
+        match self {
+            Method::SparseMatch4g1 => Some((4, 1)),
+            Method::SparseMatch6g1 => Some((6, 1)),
+            Method::SparseMatch6g2 => Some((6, 2)),
+            Method::Phase4 => Some((4, 1)),
+            _ => None,
+        }
+    }
+
+    /// Phase 4.3: number of repeat-offset predictors.
+    #[cfg_attr(not(feature = "rep-state"), allow(dead_code))]
+    fn rep_offsets(self) -> usize {
+        if !cfg!(feature = "rep-state") {
+            return 0;
+        }
+        match self {
+            Method::RepState1 => 1,
+            Method::RepState2 => 2,
+            Method::RepState3 => 3,
+            Method::RepState4 => 4,
+            _ => 0,
+        }
+    }
+
+    /// Phase 4.4: matched-literal expert; `Some(true)` is the constant control.
+    #[cfg_attr(not(feature = "match-byte"), allow(dead_code))]
+    fn match_byte_kind(self) -> Option<bool> {
+        if !cfg!(feature = "match-byte") {
+            return None;
+        }
+        match self {
+            Method::MatchByte => Some(false),
+            Method::MatchByteConst => Some(true),
+            Method::Phase4 => Some(false),
+            _ => None,
+        }
+    }
+
+    /// Phase 4.5: distance-conditioned match confidence.
+    #[cfg_attr(not(feature = "dist-match"), allow(dead_code))]
+    fn dist_match(self) -> bool {
+        cfg!(feature = "dist-match") && matches!(self, Method::DistMatch)
+    }
+
+    /// Phase 4.6: whether the stem transform runs.
+    #[cfg_attr(not(feature = "stem"), allow(dead_code))]
+    fn stems(self) -> bool {
+        cfg!(feature = "stem") && matches!(self, Method::Stem)
+    }
+
+    /// Phase 4.7: word-class expert; `Some(true)` is the constant control.
+    #[cfg_attr(not(feature = "word-class"), allow(dead_code))]
+    fn word_class_kind(self) -> Option<bool> {
+        if !cfg!(feature = "word-class") {
+            return None;
+        }
+        match self {
+            Method::WordClass => Some(false),
+            Method::WordClassConst => Some(true),
             _ => None,
         }
     }
@@ -355,13 +570,48 @@ impl Method {
             | Method::LongMatch8
             | Method::LongMatch12
             | Method::LongMatch16
-            | Method::LongMatch24 => base.with_column(false),
+            | Method::LongMatch24
+            | Method::SparseMatch4g1
+            | Method::SparseMatch6g1
+            | Method::SparseMatch6g2
+            | Method::RepState1
+            | Method::RepState2
+            | Method::RepState3
+            | Method::RepState4
+            | Method::MatchByte
+            | Method::MatchByteConst
+            | Method::Phase4
+            | Method::DistMatch
+            | Method::WordClass
+            | Method::WordClassConst
+            | Method::ColumnWordTokenPhrase
+            | Method::ColumnWordTokenPhraseFreq
+            | Method::ColumnWordTokenFront
+            | Method::ColumnWordTokenAffix => base.with_column(false),
             Method::ColumnShuffled => base.with_column(true),
             Method::ColumnNoLine => base.with_column_kind(crate::context::CtxKind::ColumnNoLine),
             _ => base,
         };
         let base = match self.match2_min() {
             Some(m) => base.with_match2(m),
+            None => base,
+        };
+        let base = match self.sparse_tier() {
+            Some((min, gap)) => base.with_match_tier(min, gap),
+            None => base,
+        };
+        let base = base.with_rep_offsets(self.rep_offsets());
+        let base = match self.match_byte_kind() {
+            Some(ctl) => base.with_match_byte(ctl),
+            None => base,
+        };
+        let base = if self.dist_match() {
+            base.with_dist_match()
+        } else {
+            base
+        };
+        let base = match self.word_class_kind() {
+            Some(ctl) => base.with_word_class(ctl),
             None => base,
         };
         base.with_info(self.info())
@@ -480,6 +730,10 @@ fn maybe_token(method: Method, data: Vec<u8>) -> Vec<u8> {
         TokenKind::Words => crate::transform::word_token_encode(&data, false),
         TokenKind::Reverse => crate::transform::word_token_encode(&data, true),
         TokenKind::V2 => crate::transform::word_token2_encode(&data),
+        TokenKind::Phrase => crate::transform::word_token_phrase_encode(&data, true),
+        TokenKind::PhraseFreq => crate::transform::word_token_phrase_encode(&data, false),
+        TokenKind::Front => crate::transform::word_token_front_encode(&data, true),
+        TokenKind::Affix => crate::transform::word_token_affix_encode(&data, true),
     }
 }
 
@@ -494,11 +748,43 @@ fn maybe_untoken(method: Method, data: Vec<u8>) -> Vec<u8> {
         TokenKind::None => data,
         TokenKind::Words | TokenKind::Reverse => crate::transform::word_token_decode(&data),
         TokenKind::V2 => crate::transform::word_token2_decode(&data),
+        TokenKind::Phrase | TokenKind::PhraseFreq => crate::transform::word_token_decode(&data),
+        TokenKind::Front => crate::transform::word_token_front_decode(&data),
+        TokenKind::Affix => crate::transform::word_token_affix_decode(&data),
     }
 }
 
 #[cfg(not(any(feature = "word-token", feature = "word-token2")))]
 fn maybe_untoken(_method: Method, data: Vec<u8>) -> Vec<u8> {
+    data
+}
+
+// Phase 4.6: stem transform, applied first (it is standalone for the screen).
+#[cfg(feature = "stem")]
+fn maybe_stem(method: Method, data: Vec<u8>) -> Vec<u8> {
+    if method.stems() {
+        crate::transform::stem_encode(&data)
+    } else {
+        data
+    }
+}
+
+#[cfg(not(feature = "stem"))]
+fn maybe_stem(_method: Method, data: Vec<u8>) -> Vec<u8> {
+    data
+}
+
+#[cfg(feature = "stem")]
+fn maybe_unstem(method: Method, data: Vec<u8>) -> Vec<u8> {
+    if method.stems() {
+        crate::transform::stem_decode(&data)
+    } else {
+        data
+    }
+}
+
+#[cfg(not(feature = "stem"))]
+fn maybe_unstem(_method: Method, data: Vec<u8>) -> Vec<u8> {
     data
 }
 
@@ -531,7 +817,8 @@ pub fn encode_with(input: &[u8], method: Method) -> Vec<u8> {
 /// additional executable bytes; the value is stored in the header and the
 /// decoder reconstructs the identical model.
 pub fn encode_tuned(input: &[u8], method: Method, tune: u8) -> Vec<u8> {
-    let hoisted = maybe_hoist(method, input);
+    let stemmed = maybe_stem(method, input.to_vec());
+    let hoisted = maybe_hoist(method, &stemmed);
     let cased = maybe_case(method, hoisted);
     let tokened = maybe_token(method, cased);
     let (data, perm) = maybe_perm(method, tokened);
@@ -599,6 +886,24 @@ pub fn decode(archive: &[u8]) -> Option<Vec<u8>> {
         23 => Method::LongMatch12,
         24 => Method::LongMatch16,
         25 => Method::LongMatch24,
+        26 => Method::SparseMatch4g1,
+        27 => Method::SparseMatch6g1,
+        28 => Method::SparseMatch6g2,
+        29 => Method::RepState1,
+        30 => Method::RepState2,
+        31 => Method::RepState3,
+        32 => Method::RepState4,
+        33 => Method::MatchByte,
+        34 => Method::MatchByteConst,
+        35 => Method::Phase4,
+        36 => Method::DistMatch,
+        37 => Method::Stem,
+        38 => Method::WordClass,
+        39 => Method::WordClassConst,
+        40 => Method::ColumnWordTokenPhrase,
+        41 => Method::ColumnWordTokenPhraseFreq,
+        42 => Method::ColumnWordTokenFront,
+        43 => Method::ColumnWordTokenAffix,
         _ => return None,
     };
     let mut len_bytes = [0u8; 8];
@@ -642,7 +947,8 @@ pub fn decode(archive: &[u8]) -> Option<Vec<u8>> {
     let unpermuted = maybe_unperm(decoded, perm.as_ref());
     let untokened = maybe_untoken(method, unpermuted);
     let uncased = maybe_uncase(method, untokened);
-    Some(maybe_unhoist(method, uncased))
+    let unhoisted = maybe_unhoist(method, uncased);
+    Some(maybe_unstem(method, unhoisted))
 }
 
 /// Peek the coded length from an archive header without decoding it. Used by

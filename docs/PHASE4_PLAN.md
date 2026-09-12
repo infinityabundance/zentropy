@@ -86,6 +86,141 @@ enwik8 parent    column-word-token-reverse  22,181,992  1.7746 bpc  exact
 ```
 
 Encode time rises ~31% (91.6 s -> 120.1 s on enwik8) and the long tier costs
-`2^bits * 4` bytes of RAM (64 MB at enwik9). The **enwik9 gate is running** and no
-adoption is made before it (A29: the enwik8 screen has reversed twice already in
-this project).
+`2^bits * 4` bytes of RAM (64 MB at enwik9). The **enwik9 gate**:
+
+```
+enwik9 parent    column-word-token-reverse  180,079,678  1.4406 bpc  exact
+       candidate long-match8               178,623,557  1.4290 bpc  exact
+       archive_delta -1,456,121 ; charged 1,240 B ; DeltaS -1,454,881 -> ADOPTED
+```
+
+### 4.2 Sparse / gapped match
+
+A match tier whose context ends `gap` bytes before the current position, so it
+catches repeats whose immediately preceding byte(s) differ (ledger C9).
+
+| (min, gap) | enwik7 archive Δ | enwik8 archive Δ |
+|---|---|---|
+| (4, 1) | **−5,636** | **−30,993** |
+| (6, 1) | +3,283 | — |
+| (6, 2) | +5,518 | — |
+
+Short sparse contexts recur; long gapped ones rarely do and act as noise (the
+same failure as 4.1's redundancy control). `sparse-match4g1` is positive at both
+rungs. Binary cost and the enwik9 gate are pending, together with 4.1.
+
+### 4.3 Repeat-offset state
+
+An MRU ring of recent match distances feeding 1–4 repeat-offset predictors, whose
+confidence adapts on hit/miss (ledger B5/Z3/X6).
+
+| depth | enwik7 archive Δ | enwik8 archive Δ |
+|---|---|---|
+| 1 | −258 | — |
+| 2 | −1,880 | — |
+| **3** | **−2,021** | **+29,105** |
+| 4 | −1,656 | — |
+
+**REJECTED — scaling reversal.** The mechanism helps at enwik7 and hurts at
+enwik8. Caveat (A32): the rep predictors also add three mixer inputs, and mixer
+input-count changes can move the archive on their own; a null-input control would
+separate dilution from signal. The reversal makes the point moot for adoption.
+
+### 4.4 Matched-literal expert
+
+An expert whose context is the best active match tier's predicted byte plus its
+match state (ledger X2/X3). Its control (`match-byte-const`) uses the same expert
+with the predicted byte replaced by a constant, isolating the value of the
+prediction from that of one more mixer input.
+
+| variant | enwik7 archive Δ | enwik8 archive Δ |
+|---|---|---|
+| `match-byte` | **−43,858** | **−333,917** |
+| `match-byte-const` (control) | −1,280 | −12,219 |
+
+The predicted byte carries almost all of the signal (≈34x the control at
+enwik7). The **enwik9 gate runs with the 4.1+4.2+4.4 composite** (`phase4`).
+
+### 4.5 Distance-conditioned match floors
+
+Far matches must be longer to earn the same confidence (ledger A9/X5).
+
+| corpus | archive Δ |
+|---|---|
+| enwik7 | +28,713 |
+| enwik8 | +231,163 |
+
+**REJECTED** at both rungs. Discounting distance this crudely damages the long
+tier the 4.1/4.4 wins depend on.
+
+### 4.6 Stem / root+affix transform
+
+A reversible morphological production (`MARK code stem`). Standalone vs the floor:
+
+| corpus | archive Δ |
+|---|---|
+| enwik7 | +22,934 |
+| enwik8 | +243,672 |
+
+**REJECTED.** Consistent with A1.2 and A26: normalising surface forms destroys
+distinctions the CM exploits, and the marker bytes are not recovered.
+
+### 4.7 Word-class context
+
+A closed-class word-type expert (ledger C8), with a constant control.
+
+| variant | enwik7 archive Δ |
+|---|---|
+| `word-class` | −1,226 |
+| `word-class-const` (control) | −1,055 |
+
+The closed-class information adds only ≈171 B over the extra mixer input, i.e.
+nothing. **REJECTED** — redundant with the word and word-bigram experts.
+
+### 4.8 Affix-referenced token entries
+
+A word not in the vocabulary encoded as `(base id, affix code)` (Brotli-style
+dictionary transform, ledger B1). enwik7 archive Δ **+8,989** -> **REJECTED**.
+
+### 4.9 Phrase (multi-word) vocabulary
+
+Frequent adjacent-word phrases as two-byte tokens.
+
+| variant | enwik7 archive Δ | enwik8 archive Δ |
+|---|---|---|
+| `column-word-token-phrase` (reverse ids) | +7,077 | +51,531 |
+| `column-word-token-phrase-freq` | +15,422 | — |
+
+**REJECTED.** Phrases displace single-word tokens from the 255-entry budget, and
+the CM already models adjacent words.
+
+### 4.10 Front-coded dictionary header
+
+The stored vocabulary front-coded against the previous entry. enwik7 archive Δ
+**+20** — the dictionary is ~2 KB and already entropy-coded in-stream, so
+front-coding is neutral. **REJECTED** (within noise, and it adds code).
+
+### 4.11 Reverse-dictionary accounting
+
+The ledger's C7 reverse-dictionary transform ("load the dictionary when first
+encountered") is **already satisfied** by the adopted A1.1 design: the
+corpus-derived vocabulary is stored as a prefix of the same modelled stream and
+parsed by the decoder before the body, so text and coded buffers are separate and
+the dictionary is charged. No new mechanism is required; this item is
+`satisfied by A1.1` rather than a separate implementation.
+
+## Verdict summary
+
+| item | ledger | verdict |
+|---|---|---|
+| 4.1 long-distance match | Z6 | **ADOPTED** (enwik9 DeltaS −1,454,881) |
+| 4.2 sparse match | C9 | positive (in the gate composite) |
+| 4.3 repeat-offset state | B5/Z3/X6 | REJECTED (enwik8 reversal) |
+| 4.4 matched-literal | X2/X3 | **positive** (in the gate composite) |
+| 4.5 distance floors | A9/X5 | REJECTED |
+| 4.6 stem transform | B1/C8 | REJECTED |
+| 4.7 word-class context | C8 | REJECTED |
+| 4.8 affix-referenced entries | B1 | REJECTED |
+| 4.9 phrase vocabulary | A26/A27 | REJECTED |
+| 4.10 front-coded dictionary | B1/C7 | REJECTED (neutral) |
+| 4.11 reverse dictionary | C7 | satisfied by A1.1 |

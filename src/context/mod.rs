@@ -36,6 +36,31 @@ fn word_add(h: u64, b: u8) -> u64 {
     h.wrapping_mul(HASH_C) ^ (b as u64 | 0x100)
 }
 
+/// Hash of a whole lowercase word, using the same fold as the running `word_cur`.
+pub fn word_hash(w: &[u8]) -> u64 {
+    let mut h = 0u64;
+    for &b in w {
+        h = word_add(h, b.to_ascii_lowercase());
+    }
+    h
+}
+
+/// Sorted `(word_hash, class)` table for the closed-class function words.
+pub fn fnword_table() -> Vec<(u64, u8)> {
+    let mut v: Vec<(u64, u8)> = FUNC_WORDS.iter().map(|(w, c)| (word_hash(w), *c)).collect();
+    v.sort_unstable();
+    v
+}
+
+/// Class of a word given its running hash: 0 content, 1..=4 closed classes.
+#[inline]
+pub fn word_class(h: u64, table: &[(u64, u8)]) -> u8 {
+    match table.binary_search_by_key(&h, |&(hh, _)| hh) {
+        Ok(i) => table[i].1,
+        Err(_) => 0,
+    }
+}
+
 /// Which context an expert consumes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CtxKind {
@@ -53,7 +78,118 @@ pub enum CtxKind {
     /// A17 null control: no previous-line byte at all (left byte + column only).
     /// Isolates the value of *vertical alignment* from that of the column bucket.
     ColumnNoLine,
+    /// Phase 4.4: context conditioned on the match model's predicted byte and its
+    /// match state (the LZMA matched-literal path, ledger X2/X3).
+    MatchByte,
+    /// Phase 4.4 control: the same expert with the predicted byte removed, so the
+    /// archive effect of merely adding one more mixer input is separable.
+    MatchByteConst,
+    /// Phase 4.7: word-class context (prev word class + current word class).
+    WordClass,
+    /// Phase 4.7 control: the same expert keyed only on "inside a word".
+    WordClassConst,
 }
+
+/// Closed-class English function words (ledger C8 word-type streams). The class
+/// of the previous completed word and of the current prefix are cheap, bounded
+/// context that the word/bigram experts do not expose directly.
+pub const FUNC_WORDS: &[(&[u8], u8)] = &[
+    (b"the", 1),
+    (b"a", 1),
+    (b"an", 1),
+    (b"this", 1),
+    (b"that", 1),
+    (b"these", 1),
+    (b"those", 1),
+    (b"its", 1),
+    (b"their", 1),
+    (b"his", 1),
+    (b"her", 1),
+    (b"our", 1),
+    (b"your", 1),
+    (b"my", 1),
+    (b"some", 1),
+    (b"any", 1),
+    (b"no", 1),
+    (b"every", 1),
+    (b"each", 1),
+    (b"all", 1),
+    (b"both", 1),
+    (b"such", 1),
+    (b"and", 2),
+    (b"or", 2),
+    (b"but", 2),
+    (b"nor", 2),
+    (b"of", 2),
+    (b"to", 2),
+    (b"in", 2),
+    (b"on", 2),
+    (b"at", 2),
+    (b"for", 2),
+    (b"with", 2),
+    (b"by", 2),
+    (b"from", 2),
+    (b"as", 2),
+    (b"into", 2),
+    (b"over", 2),
+    (b"under", 2),
+    (b"about", 2),
+    (b"after", 2),
+    (b"before", 2),
+    (b"between", 2),
+    (b"during", 2),
+    (b"through", 2),
+    (b"against", 2),
+    (b"among", 2),
+    (b"up", 2),
+    (b"down", 2),
+    (b"out", 2),
+    (b"off", 2),
+    (b"than", 2),
+    (b"if", 2),
+    (b"because", 2),
+    (b"while", 2),
+    (b"when", 2),
+    (b"where", 2),
+    (b"i", 3),
+    (b"he", 3),
+    (b"she", 3),
+    (b"it", 3),
+    (b"we", 3),
+    (b"they", 3),
+    (b"you", 3),
+    (b"me", 3),
+    (b"him", 3),
+    (b"us", 3),
+    (b"them", 3),
+    (b"who", 3),
+    (b"which", 3),
+    (b"whom", 3),
+    (b"whose", 3),
+    (b"is", 4),
+    (b"are", 4),
+    (b"was", 4),
+    (b"were", 4),
+    (b"be", 4),
+    (b"been", 4),
+    (b"being", 4),
+    (b"am", 4),
+    (b"has", 4),
+    (b"have", 4),
+    (b"had", 4),
+    (b"do", 4),
+    (b"does", 4),
+    (b"did", 4),
+    (b"will", 4),
+    (b"would", 4),
+    (b"shall", 4),
+    (b"should", 4),
+    (b"can", 4),
+    (b"could", 4),
+    (b"may", 4),
+    (b"might", 4),
+    (b"must", 4),
+];
 
 /// Specification of a single expert. Ablation removes a spec.
 #[derive(Debug, Clone, Copy)]
@@ -147,6 +283,12 @@ pub const MATCH_MIN: usize = 6;
 #[derive(Debug, Clone)]
 pub struct MatchModel {
     min_len: usize,
+    /// Bytes excluded from the match context (Phase 4.2).
+    gap: usize,
+    /// Phase 4.5: scale confidence down with match distance.
+    dist_scaled: bool,
+    /// Distance of the current match (set when a match starts).
+    off: usize,
     table: Vec<u32>,
     table_mask: usize,
     ptr: usize,
@@ -157,7 +299,7 @@ pub struct MatchModel {
 }
 
 impl MatchModel {
-    pub fn new(bits: u32, min_len: usize) -> Self {
+    pub fn new(bits: u32, min_len: usize, gap: usize, dist_scaled: bool) -> Self {
         let n = 1usize << bits;
         let table = StretchTable::new();
         let mut st_tab = vec![0i32; 64];
@@ -167,6 +309,9 @@ impl MatchModel {
         }
         MatchModel {
             min_len,
+            gap,
+            dist_scaled,
+            off: 0,
             table: vec![0u32; n],
             table_mask: n - 1,
             ptr: 0,
@@ -177,10 +322,13 @@ impl MatchModel {
         }
     }
 
-    pub fn byte_boundary(&mut self, buf: &[u8]) {
+    /// Returns the distance of a match that *started* on this boundary, if any
+    /// (Phase 4.3 uses this to maintain the repeat-offset ring).
+    pub fn byte_boundary(&mut self, buf: &[u8]) -> Option<usize> {
         let pos = buf.len();
-        if pos < self.min_len {
-            return;
+        // The context is `min_len` bytes ending `gap` bytes before `pos`.
+        if pos < self.min_len + self.gap {
+            return None;
         }
         if self.len > 0 && self.ptr < pos && buf[self.ptr] == buf[pos - 1] {
             self.ptr += 1;
@@ -188,16 +336,23 @@ impl MatchModel {
         } else {
             self.len = 0;
         }
-        let ctx = hash_bytes(&buf[pos - self.min_len..pos]);
+        let cs = pos - self.min_len - self.gap;
+        let ce = pos - self.gap;
+        let ctx = hash_bytes(&buf[cs..ce]);
         let slot = (ctx as usize) & self.table_mask;
         let cand = self.table[slot] as usize;
         self.table[slot] = pos as u32;
-        if self.len == 0 && cand >= self.min_len && cand < pos {
-            if buf[cand - self.min_len..cand] == buf[pos - self.min_len..pos] {
+        if self.len == 0 && cand >= self.min_len + self.gap && cand < pos {
+            let hs = cand - self.min_len - self.gap;
+            let he = cand - self.gap;
+            if buf[hs..he] == buf[cs..ce] {
                 self.ptr = cand;
                 self.len = self.min_len as u32;
+                self.off = pos - cand;
+                return Some(pos - cand);
             }
         }
+        None
     }
 
     #[inline]
@@ -215,7 +370,8 @@ impl MatchModel {
             return 0;
         }
         let bit = (self.pred_byte >> (7 - bitpos)) & 1;
-        let conf = self.st_tab[(self.len as usize).min(self.st_tab.len() - 1)];
+        let eff = self.effective_len();
+        let conf = self.st_tab[(eff as usize).min(self.st_tab.len() - 1)];
         if bit != 0 {
             conf
         } else {
@@ -223,16 +379,35 @@ impl MatchModel {
         }
     }
 
+    /// Phase 4.5: distance-conditioned effective match length. Far matches must be
+    /// longer to earn the same confidence (ledger A9/X5).
+    #[inline]
+    fn effective_len(&self) -> u32 {
+        if !self.dist_scaled {
+            return self.len;
+        }
+        let lg = (usize::BITS - self.off.max(1).leading_zeros()) as u32;
+        let pen = lg.saturating_sub(10);
+        self.len.saturating_sub(pen)
+    }
+
     #[inline]
     pub fn update(&mut self, _bit: u32) {}
 
+    /// The byte this tier currently predicts (Phase 4.4 matched-literal).
+    #[inline]
+    pub fn pred_byte(&self) -> u8 {
+        self.pred_byte
+    }
+
     #[inline]
     pub fn state(&self) -> usize {
+        let l = self.effective_len();
         if self.len == 0 {
             0
-        } else if self.len < 12 {
+        } else if l < 12 {
             1
-        } else if self.len < 24 {
+        } else if l < 24 {
             2
         } else {
             3
@@ -247,14 +422,7 @@ impl MatchModel {
 /// The ordered list of match tiers for a configuration: the short tier always,
 /// then the optional long-distance tier (Phase 4.1).
 fn match_tiers(cfg: &ModelConfig) -> Vec<MatchSpec> {
-    let mut v = vec![MatchSpec {
-        bits: cfg.match_bits,
-        min_len: MATCH_MIN,
-    }];
-    if let Some(s) = cfg.match2 {
-        v.push(s);
-    }
-    v
+    cfg.matches.clone()
 }
 
 /// Compute the A3 inheritance parent of every expert: the most specific
@@ -287,26 +455,38 @@ fn compute_parents(specs: &[ModelSpec]) -> Vec<Option<usize>> {
             CtxKind::Column | CtxKind::ColumnShuffled | CtxKind::ColumnNoLine => {
                 parents[i] = order1.or(order0);
             }
+            CtxKind::MatchByte | CtxKind::MatchByteConst => {
+                parents[i] = order1.or(order0);
+            }
+            CtxKind::WordClass | CtxKind::WordClassConst => {
+                parents[i] = order1.or(order0);
+            }
         }
     }
     parents
 }
 
-/// A match tier: table size and minimum match length. Phase 4 uses more than one
-/// tier so short recent repeats and long far repeats have separate indexes.
+/// A match tier: table size, minimum match length, and a context gap.
+/// `gap = 0` is the dense tier (context ends at the current byte); `gap = k > 0`
+/// excludes the `k` most recent bytes from the context, so the model can catch
+/// repeats whose immediately preceding bytes differ (Phase 4.2, ledger C9).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MatchSpec {
     pub bits: u32,
     pub min_len: usize,
+    pub gap: usize,
 }
 
 /// Configuration for the classical prediction floor.
 #[derive(Debug, Clone)]
 pub struct ModelConfig {
     pub specs: Vec<ModelSpec>,
-    pub match_bits: u32,
-    /// Phase 4.1: an optional second (long-distance) match tier.
-    pub match2: Option<MatchSpec>,
+    /// Ordered match tiers (Phase 4.1/4.2). The first is the dense short tier.
+    pub matches: Vec<MatchSpec>,
+    /// Phase 4.3: number of repeat-offset predictors (0 = off).
+    pub rep_offsets: usize,
+    /// Phase 4.5: distance-scale match confidence.
+    pub dist_match: bool,
     pub mixer_lr: i32,
     pub apm1_ctx: usize,
     pub apm2_ctx: usize,
@@ -394,8 +574,13 @@ impl ModelConfig {
         ];
         ModelConfig {
             specs,
-            match_bits,
-            match2: None,
+            matches: vec![MatchSpec {
+                bits: match_bits,
+                min_len: MATCH_MIN,
+                gap: 0,
+            }],
+            rep_offsets: 0,
+            dist_match: false,
             mixer_lr: 12,
             apm1_ctx: 4096,
             apm2_ctx: 65536,
@@ -403,14 +588,53 @@ impl ModelConfig {
         }
     }
 
+    /// Phase 4.7: append a word-class context expert. `const_ctl` drops the
+    /// closed-class information and keeps only "inside a word".
+    pub fn with_word_class(mut self, const_ctl: bool) -> Self {
+        let kind = if const_ctl {
+            CtxKind::WordClassConst
+        } else {
+            CtxKind::WordClass
+        };
+        let bits = self.specs[0].bits.min(20);
+        self.specs.push(ModelSpec {
+            kind,
+            bits,
+            rate: 5,
+        });
+        self
+    }
+
+    /// Phase 4.5: enable distance-conditioned match confidence.
+    pub fn with_dist_match(mut self) -> Self {
+        self.dist_match = true;
+        self
+    }
+
+    /// Phase 4.3: enable `n` repeat-offset predictors fed by the recent match
+    /// distance ring.
+    pub fn with_rep_offsets(mut self, n: usize) -> Self {
+        self.rep_offsets = n;
+        self
+    }
+
     /// Phase 4.1: append a long-distance match tier with the given minimum match
     /// length. The short tier still exists; this adds a separate index that is
     /// not evicted by short-range traffic.
     pub fn with_match2(mut self, min_len: usize) -> Self {
-        self.match2 = Some(MatchSpec {
-            bits: self.match_bits,
+        let bits = self.matches[0].bits;
+        self.matches.push(MatchSpec {
+            bits,
             min_len,
+            gap: 0,
         });
+        self
+    }
+
+    /// Phase 4.2: append a sparse (gapped) match tier.
+    pub fn with_match_tier(mut self, min_len: usize, gap: usize) -> Self {
+        let bits = self.matches[0].bits;
+        self.matches.push(MatchSpec { bits, min_len, gap });
         self
     }
 
@@ -433,6 +657,23 @@ impl ModelConfig {
 
     /// A17: append an expert of the given column family.
     pub fn with_column_kind(mut self, kind: CtxKind) -> Self {
+        let bits = self.specs[0].bits.min(20);
+        self.specs.push(ModelSpec {
+            kind,
+            bits,
+            rate: 5,
+        });
+        self
+    }
+
+    /// Phase 4.4: append a matched-literal expert. `const_ctl` selects the
+    /// control that removes the predicted byte.
+    pub fn with_match_byte(mut self, const_ctl: bool) -> Self {
+        let kind = if const_ctl {
+            CtxKind::MatchByteConst
+        } else {
+            CtxKind::MatchByte
+        };
         let bits = self.specs[0].bits.min(20);
         self.specs.push(ModelSpec {
             kind,
@@ -466,9 +707,8 @@ impl ModelConfig {
         for s in &self.specs {
             m += (1u64 << s.bits) * 2;
         }
-        m += (1u64 << self.match_bits) * 4;
-        if let Some(spec) = self.match2 {
-            m += (1u64 << spec.bits) * 4;
+        for t in &self.matches {
+            m += (1u64 << t.bits) * 4;
         }
         m += (self.apm1_ctx as u64) * 33 * 4;
         m += (self.apm2_ctx as u64) * 33 * 4;
@@ -485,6 +725,12 @@ pub struct Predictor {
     parent: Vec<Option<usize>>,
     info: InfoMode,
     match_models: Vec<MatchModel>,
+    /// Phase 4.7: sorted closed-class word table.
+    #[cfg_attr(not(feature = "word-class"), allow(dead_code))]
+    fnwords: Vec<(u64, u8)>,
+    /// Phase 4.3: MRU ring of recent match distances and their confidences.
+    rep: Vec<usize>,
+    rep_conf: Vec<i32>,
     mixer: Mixer,
     apm1: Apm,
     apm2: Apm,
@@ -510,10 +756,15 @@ impl Predictor {
             .iter()
             .map(|s| ContextModel::new(s.bits, s.rate))
             .collect();
-        let n_inputs = models.len() + match_tiers(cfg).len();
+        let n_inputs = models.len() + match_tiers(cfg).len() + cfg.rep_offsets;
         let mut match_models: Vec<MatchModel> = Vec::new();
         for spec in match_tiers(cfg) {
-            match_models.push(MatchModel::new(spec.bits, spec.min_len));
+            match_models.push(MatchModel::new(
+                spec.bits,
+                spec.min_len,
+                spec.gap,
+                cfg.dist_match,
+            ));
         }
         Predictor {
             models,
@@ -522,6 +773,9 @@ impl Predictor {
             specs: cfg.specs.clone(),
             ctx: vec![0; cfg.specs.len()],
             match_models,
+            fnwords: fnword_table(),
+            rep: vec![0; cfg.rep_offsets],
+            rep_conf: vec![0; cfg.rep_offsets],
             mixer: Mixer::new(n_inputs, 4096),
             apm1: Apm::new(cfg.apm1_ctx, 7),
             apm2: Apm::new(cfg.apm2_ctx, 7),
@@ -547,6 +801,18 @@ impl Predictor {
     /// the word state.
     fn refresh_contexts(&mut self) {
         let n = self.buf.len();
+        // Phase 4.4: the best-tier match prediction, for the matched-literal expert.
+        let mut mb_pb = 0u8;
+        let mut mb_state = 0u8;
+        for m in &self.match_models {
+            let s = m.state() as u8;
+            if s >= mb_state {
+                mb_state = s;
+                mb_pb = m.pred_byte();
+            }
+        }
+        // `mb_pb` is only consumed by the matched-literal expert (feature-gated).
+        let _ = (mb_pb, mb_state);
         for (i, spec) in self.specs.iter().enumerate() {
             let c = match spec.kind {
                 CtxKind::Order(o) => {
@@ -602,6 +868,38 @@ impl Predictor {
                         0
                     }
                 }
+                CtxKind::MatchByte | CtxKind::MatchByteConst => {
+                    #[cfg(feature = "match-byte")]
+                    {
+                        let pb = if matches!(spec.kind, CtxKind::MatchByte) {
+                            mb_pb
+                        } else {
+                            0
+                        };
+                        hash_bytes(&[pb, mb_state])
+                    }
+                    #[cfg(not(feature = "match-byte"))]
+                    {
+                        0
+                    }
+                }
+                CtxKind::WordClass | CtxKind::WordClassConst => {
+                    #[cfg(feature = "word-class")]
+                    {
+                        let wo = if self.word_cur != 0 { 1u8 } else { 0u8 };
+                        if matches!(spec.kind, CtxKind::WordClass) {
+                            let pc = word_class(self.word_prev, &self.fnwords);
+                            let cc = word_class(self.word_cur, &self.fnwords);
+                            hash_bytes(&[pc, cc, wo])
+                        } else {
+                            hash_bytes(&[wo])
+                        }
+                    }
+                    #[cfg(not(feature = "word-class"))]
+                    {
+                        0
+                    }
+                }
             };
             self.ctx[i] = c;
         }
@@ -628,11 +926,37 @@ impl Predictor {
                 self.line_start = self.buf.len();
             }
         }
-        self.refresh_contexts();
+        // Match tiers first, so their predicted bytes are current for the
+        // matched-literal expert read by refresh_contexts (Phase 4.4).
         for mm in &mut self.match_models {
-            mm.byte_boundary(&self.buf);
+            if let Some(d) = mm.byte_boundary(&self.buf) {
+                if !self.rep.is_empty() && d > 0 && self.rep[0] != d {
+                    self.rep.rotate_right(1);
+                    self.rep[0] = d;
+                }
+            }
             mm.begin_byte(&self.buf);
         }
+        // Phase 4.3: score the repeat-offset predictions that were made for the
+        // byte just appended.
+        if !self.rep.is_empty() {
+            let q = self.buf.len();
+            let idx = q - 1;
+            let actual = self.buf[idx];
+            for k in 0..self.rep.len() {
+                let d = self.rep[k];
+                if d > 0 && idx >= d {
+                    if self.buf[idx - d] == actual {
+                        self.rep_conf[k] += (2047 - self.rep_conf[k]) >> 4;
+                    } else {
+                        self.rep_conf[k] -= self.rep_conf[k] >> 3;
+                    }
+                } else {
+                    self.rep_conf[k] -= self.rep_conf[k] >> 3;
+                }
+            }
+        }
+        self.refresh_contexts();
     }
 
     /// Initialise contexts (call once, before coding, with an empty buffer).
@@ -673,9 +997,33 @@ impl Predictor {
         for (k, mm) in self.match_models.iter_mut().enumerate() {
             self.inputs[nm + k] = mm.predict(self.bitpos);
         }
+        // Phase 4.3: repeat-offset predictors.
+        let rep_base = nm + self.match_models.len();
+        let q = self.buf.len();
+        for k in 0..self.rep.len() {
+            let d = self.rep[k];
+            self.inputs[rep_base + k] = if d > 0 && q >= d {
+                let pb = self.buf[q - d];
+                let bit = (pb >> (7 - self.bitpos)) & 1;
+                let c = self.rep_conf[k].clamp(0, 2047);
+                if bit != 0 {
+                    c
+                } else {
+                    -c
+                }
+            } else {
+                0
+            };
+        }
 
         let word_open = if self.word_cur != 0 { 1usize } else { 0 };
-        let mix_cx = (self.c0 as usize & 0xff) | (mstate << 8) | (word_open << 10);
+        let rep_active = if self.rep.iter().any(|&d| d > 0) {
+            1usize
+        } else {
+            0usize
+        };
+        let mix_cx =
+            (self.c0 as usize & 0xff) | (mstate << 8) | (word_open << 10) | (rep_active << 11);
         let raw = self.mixer.mix(&self.inputs, mix_cx);
 
         let a1 = self.apm1.predict(raw, (self.c0 as usize) | (mstate << 8));
@@ -811,7 +1159,7 @@ mod tests {
     #[test]
     fn match_model_finds_a_repeat() {
         let buf: Vec<u8> = b"hello world hello world".to_vec();
-        let mut mm = MatchModel::new(16, MATCH_MIN);
+        let mut mm = MatchModel::new(16, MATCH_MIN, 0, false);
         for i in 1..=buf.len() {
             mm.byte_boundary(&buf[..i]);
         }

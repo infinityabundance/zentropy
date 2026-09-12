@@ -667,6 +667,431 @@ pub fn word_token2_decode(data: &[u8]) -> Vec<u8> {
     out
 }
 
+// --- Phase 4.6: stem / root+affix production transform ----------------------
+//
+// A reversible morphological transform: a word that ends in a known inflection is
+// emitted as `MARK code stem`, and the decoder re-appends the suffix. This is the
+// `MorphologicalProduction` of the ledger (`root id + transform`), specialised to
+// English suffixes. `code` is a suffix-table index; the `stem` is the remaining
+// letters (>= 2 of them), which are copied verbatim so case is preserved.
+//
+//   literal 0x00 or 0x01 -> 0x00, byte
+//   stem word            -> 0x01, code, stem
+pub const STEM_ESC: u8 = 0x00;
+pub const STEM_MARK: u8 = 0x01;
+/// Suffix table, longest-match wins.
+pub const SUFFIXES: [&[u8]; 20] = [
+    b"ation", b"ition", b"sion", b"tion", b"ness", b"ment", b"able", b"ible", b"less", b"ing",
+    b"est", b"ity", b"ive", b"ous", b"ful", b"ly", b"es", b"ed", b"er", b"s",
+];
+
+/// Longest suffix of `w` present in the table that leaves a stem of >= 2 bytes.
+fn stem_split(w: &[u8]) -> Option<(usize, u8)> {
+    let mut best: Option<(usize, u8)> = None;
+    for (i, suf) in SUFFIXES.iter().enumerate() {
+        let l = suf.len();
+        if w.len() >= l + 2 && w.ends_with(suf) {
+            match best {
+                Some((bl, _)) if bl >= l => {}
+                _ => best = Some((l, i as u8)),
+            }
+        }
+    }
+    best
+}
+
+/// Encode with the stem transform.
+pub fn stem_encode(input: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(input.len());
+    let mut i = 0;
+    while i < input.len() {
+        let b = input[i];
+        if b.is_ascii_alphabetic() {
+            let mut j = i;
+            while j < input.len() && input[j].is_ascii_alphabetic() {
+                j += 1;
+            }
+            let w = &input[i..j];
+            match stem_split(w) {
+                Some((l, code)) => {
+                    out.push(STEM_MARK);
+                    out.push(code);
+                    out.extend_from_slice(&w[..w.len() - l]);
+                }
+                None => out.extend_from_slice(w),
+            }
+            i = j;
+        } else if b <= STEM_MARK {
+            out.push(STEM_ESC);
+            out.push(b);
+            i += 1;
+        } else {
+            out.push(b);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Exact inverse of [`stem_encode`]. Total on malformed input.
+pub fn stem_decode(input: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(input.len());
+    let mut i = 0;
+    while i < input.len() {
+        let b = input[i];
+        if b == STEM_ESC {
+            if i + 1 < input.len() {
+                out.push(input[i + 1]);
+                i += 2;
+            } else {
+                out.push(STEM_ESC);
+                i += 1;
+            }
+        } else if b == STEM_MARK {
+            if i + 1 < input.len() {
+                let code = input[i + 1] as usize;
+                i += 2;
+                let s = i;
+                while i < input.len() && input[i].is_ascii_alphabetic() {
+                    i += 1;
+                }
+                out.extend_from_slice(&input[s..i]);
+                if code < SUFFIXES.len() {
+                    out.extend_from_slice(SUFFIXES[code]);
+                }
+            } else {
+                out.push(STEM_MARK);
+                i += 1;
+            }
+        } else {
+            out.push(b);
+            i += 1;
+        }
+    }
+    out
+}
+
+// --- Phase 4.9: phrase vocabulary (multi-word tokens) -----------------------
+//
+// Extends the A1.1 word vocabulary to frequent adjacent-word phrases ("w1 w2"
+// separated by a single space). The token encoding and the decoder are identical
+// to v1: a dictionary entry simply contains a space, so `word_token_decode`
+// expands phrase tokens exactly.
+pub fn build_phrase_vocab(input: &[u8], reverse: bool) -> Vec<Vec<u8>> {
+    use std::collections::HashMap;
+    let mut counts: HashMap<Vec<u8>, u64> = HashMap::new();
+    let mut i = 0;
+    while i < input.len() {
+        if is_word_byte(input[i]) {
+            let mut j = i;
+            while j < input.len() && is_word_byte(input[j]) {
+                j += 1;
+            }
+            *counts.entry(input[i..j].to_vec()).or_insert(0) += 1;
+            if j + 1 < input.len() && input[j] == b' ' && is_word_byte(input[j + 1]) {
+                let mut k = j + 1;
+                while k < input.len() && is_word_byte(input[k]) {
+                    k += 1;
+                }
+                let mut ph = Vec::with_capacity(k - i);
+                ph.extend_from_slice(&input[i..k]);
+                *counts.entry(ph).or_insert(0) += 1;
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    let mut cand: Vec<(Vec<u8>, u64)> = counts
+        .into_iter()
+        .filter(|(w, c)| *c >= 2 && w.len() >= 3)
+        .filter(|(w, c)| {
+            let len = w.len() as i64;
+            let count = *c as i64;
+            count * (len - 2) - (len + 1) > 0
+        })
+        .collect();
+    cand.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    cand.truncate(MAX_TOKENS);
+    if reverse {
+        cand.reverse();
+    }
+    cand.into_iter().map(|(w, _)| w).collect()
+}
+
+/// Encode with the phrase vocabulary; decode with [`word_token_decode`].
+pub fn word_token_phrase_encode(input: &[u8], reverse: bool) -> Vec<u8> {
+    use std::collections::HashMap;
+    let vocab = build_phrase_vocab(input, reverse);
+    let mut ids: HashMap<&[u8], u8> = HashMap::with_capacity(vocab.len());
+    let mut out = Vec::with_capacity(input.len());
+    out.push(vocab.len() as u8);
+    for (k, w) in vocab.iter().enumerate() {
+        out.push(w.len() as u8);
+        out.extend_from_slice(w);
+        ids.insert(w.as_slice(), (k + 1) as u8);
+    }
+    let mut i = 0;
+    while i < input.len() {
+        let b = input[i];
+        if is_word_byte(b) {
+            let mut j = i;
+            while j < input.len() && is_word_byte(input[j]) {
+                j += 1;
+            }
+            let mut matched = false;
+            if j + 1 < input.len() && input[j] == b' ' && is_word_byte(input[j + 1]) {
+                let mut k = j + 1;
+                while k < input.len() && is_word_byte(input[k]) {
+                    k += 1;
+                }
+                if let Some(&id) = ids.get(&input[i..k]) {
+                    out.push(TOK_ESC);
+                    out.push(id);
+                    i = k;
+                    matched = true;
+                }
+            }
+            if !matched {
+                match ids.get(&input[i..j]) {
+                    Some(&id) => {
+                        out.push(TOK_ESC);
+                        out.push(id);
+                    }
+                    None => out.extend_from_slice(&input[i..j]),
+                }
+                i = j;
+            }
+        } else if b == TOK_ESC {
+            out.push(TOK_ESC);
+            out.push(0);
+            i += 1;
+        } else {
+            out.push(b);
+            i += 1;
+        }
+    }
+    out
+}
+
+// --- Phase 4.10: front-coded dictionary ------------------------------------
+//
+// Same token encoding as v1, but the stored vocabulary is front-coded against
+// the previous entry (shared-prefix length + suffix), the Brotli/LZMA header
+// idea for shrinking the dictionary the archive must carry (ledger B1).
+pub fn word_token_front_encode(input: &[u8], reverse: bool) -> Vec<u8> {
+    use std::collections::HashMap;
+    let vocab = build_word_vocab(input, reverse);
+    let mut ids: HashMap<&[u8], u8> = HashMap::with_capacity(vocab.len());
+    let mut out = Vec::with_capacity(input.len());
+    out.push(vocab.len() as u8);
+    let mut prev: &[u8] = b"";
+    for (k, w) in vocab.iter().enumerate() {
+        let mut shared = 0usize;
+        while shared < prev.len() && shared < w.len() && prev[shared] == w[shared] {
+            shared += 1;
+        }
+        out.push(shared.min(255) as u8);
+        let suf = &w[shared..];
+        out.push(suf.len() as u8);
+        out.extend_from_slice(suf);
+        ids.insert(w.as_slice(), (k + 1) as u8);
+        prev = w;
+    }
+    let mut i = 0;
+    while i < input.len() {
+        let b = input[i];
+        if is_word_byte(b) {
+            let mut j = i;
+            while j < input.len() && is_word_byte(input[j]) {
+                j += 1;
+            }
+            match ids.get(&input[i..j]) {
+                Some(&id) => {
+                    out.push(TOK_ESC);
+                    out.push(id);
+                }
+                None => out.extend_from_slice(&input[i..j]),
+            }
+            i = j;
+        } else if b == TOK_ESC {
+            out.push(TOK_ESC);
+            out.push(0);
+            i += 1;
+        } else {
+            out.push(b);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Exact inverse of [`word_token_front_encode`]. Total on malformed input.
+pub fn word_token_front_decode(data: &[u8]) -> Vec<u8> {
+    if data.is_empty() {
+        return Vec::new();
+    }
+    let count = data[0] as usize;
+    let mut i = 1usize;
+    let mut dict: Vec<Vec<u8>> = Vec::with_capacity(count);
+    let mut prev: Vec<u8> = Vec::new();
+    for _ in 0..count {
+        if i + 1 >= data.len() {
+            break;
+        }
+        let shared = (data[i] as usize).min(prev.len());
+        let l = data[i + 1] as usize;
+        i += 2;
+        if i + l > data.len() {
+            break;
+        }
+        let mut w = prev[..shared].to_vec();
+        w.extend_from_slice(&data[i..i + l]);
+        i += l;
+        prev = w.clone();
+        dict.push(w);
+    }
+    let mut out = Vec::new();
+    while i < data.len() {
+        let b = data[i];
+        if b == TOK_ESC {
+            if i + 1 < data.len() {
+                let id = data[i + 1] as usize;
+                i += 2;
+                if id == 0 {
+                    out.push(0);
+                } else if id <= dict.len() {
+                    out.extend_from_slice(&dict[id - 1]);
+                }
+            } else {
+                i += 1;
+            }
+        } else {
+            out.push(b);
+            i += 1;
+        }
+    }
+    out
+}
+
+// --- Phase 4.8: affix-referenced token entries -------------------------------
+//
+// Brotli-style dictionary transforms: a word not in the vocabulary can still be
+// encoded by reference to a vocabulary base plus an affix code, so inflectional
+// variants need no stored entry. Id 255 is reserved as the derived marker, so
+// direct tokens are 1..=254. `0x00 0xFF base code` expands to `dict[base-1] +
+// SUFFIXES[code]`.
+pub const AFFIX_MARK: u8 = 0xFF;
+
+pub fn word_token_affix_encode(input: &[u8], reverse: bool) -> Vec<u8> {
+    use std::collections::HashMap;
+    let mut vocab = build_word_vocab(input, reverse);
+    vocab.truncate(254);
+    let mut ids: HashMap<&[u8], u8> = HashMap::with_capacity(vocab.len());
+    let mut out = Vec::with_capacity(input.len());
+    out.push(vocab.len() as u8);
+    for (k, w) in vocab.iter().enumerate() {
+        out.push(w.len() as u8);
+        out.extend_from_slice(w);
+        ids.insert(w.as_slice(), (k + 1) as u8);
+    }
+    let mut i = 0;
+    while i < input.len() {
+        let b = input[i];
+        if is_word_byte(b) {
+            let mut j = i;
+            while j < input.len() && is_word_byte(input[j]) {
+                j += 1;
+            }
+            let w = &input[i..j];
+            if let Some(&id) = ids.get(w) {
+                out.push(TOK_ESC);
+                out.push(id);
+            } else if let Some((l, code)) = stem_split(w) {
+                let stem = &w[..w.len() - l];
+                if let Some(&base) = ids.get(stem) {
+                    out.push(TOK_ESC);
+                    out.push(AFFIX_MARK);
+                    out.push(base);
+                    out.push(code);
+                } else {
+                    out.extend_from_slice(w);
+                }
+            } else {
+                out.extend_from_slice(w);
+            }
+            i = j;
+        } else if b == TOK_ESC {
+            out.push(TOK_ESC);
+            out.push(0);
+            i += 1;
+        } else {
+            out.push(b);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Exact inverse of [`word_token_affix_encode`].
+pub fn word_token_affix_decode(data: &[u8]) -> Vec<u8> {
+    if data.is_empty() {
+        return Vec::new();
+    }
+    let count = data[0] as usize;
+    let mut i = 1usize;
+    let mut dict: Vec<&[u8]> = Vec::with_capacity(count);
+    for _ in 0..count {
+        if i >= data.len() {
+            break;
+        }
+        let l = data[i] as usize;
+        i += 1;
+        if i + l > data.len() {
+            break;
+        }
+        dict.push(&data[i..i + l]);
+        i += l;
+    }
+    let mut out = Vec::new();
+    while i < data.len() {
+        let b = data[i];
+        if b == TOK_ESC {
+            if i + 1 >= data.len() {
+                break;
+            }
+            let x = data[i + 1];
+            if x == 0 {
+                out.push(0);
+                i += 2;
+            } else if x == AFFIX_MARK {
+                if i + 3 >= data.len() {
+                    break;
+                }
+                let base = data[i + 2] as usize;
+                let code = data[i + 3] as usize;
+                i += 4;
+                if base >= 1 && base <= dict.len() {
+                    out.extend_from_slice(dict[base - 1]);
+                    if code < SUFFIXES.len() {
+                        out.extend_from_slice(SUFFIXES[code]);
+                    }
+                }
+            } else {
+                let id = x as usize;
+                i += 2;
+                if id <= dict.len() {
+                    out.extend_from_slice(dict[id - 1]);
+                }
+            }
+        } else {
+            out.push(b);
+            i += 1;
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -939,6 +1364,132 @@ mod tests {
             mix.extend_from_slice(&xorshift_bytes(seed * 13, 512));
         }
         token2_roundtrip(&mix);
+    }
+
+    // --- Phase 4.6 stem transform -----------------------------------------
+
+    fn stem_roundtrip(data: &[u8]) {
+        assert_eq!(stem_decode(&stem_encode(data)), data, "stem roundtrip");
+    }
+
+    #[test]
+    fn stem_roundtrip_examples() {
+        stem_roundtrip(b"");
+        stem_roundtrip(b"compression rendering responsibilities running cats");
+        stem_roundtrip(b"a s ed ing the and");
+        stem_roundtrip(b"\x00\x01\x01ab\x00");
+    }
+
+    #[test]
+    fn stem_roundtrip_all_bytes_and_random() {
+        stem_roundtrip(&(0..=255u8).collect::<Vec<u8>>());
+        for seed in 1..=32u64 {
+            stem_roundtrip(&xorshift_bytes(seed, 4096));
+        }
+    }
+
+    #[test]
+    fn stem_produces_stem_plus_affix() {
+        // "rendering" -> mark, code(ing), "render"
+        let e = stem_encode(b"rendering");
+        assert_eq!(e[0], STEM_MARK);
+        assert_eq!(
+            e[1] as usize,
+            SUFFIXES.iter().position(|s| *s == b"ing").unwrap()
+        );
+        assert_eq!(&e[2..], b"render");
+        assert_eq!(stem_decode(&e), b"rendering");
+    }
+
+    // --- Phase 4.9 phrase vocabulary --------------------------------------
+
+    fn phrase_roundtrip(data: &[u8]) {
+        for rev in [false, true] {
+            assert_eq!(
+                word_token_decode(&word_token_phrase_encode(data, rev)),
+                data,
+                "phrase roundtrip"
+            );
+        }
+    }
+
+    #[test]
+    fn phrase_roundtrip_examples() {
+        phrase_roundtrip(b"");
+        phrase_roundtrip(b"the united states of america and the united nations");
+        phrase_roundtrip(b"\x00\x01 the and");
+    }
+
+    #[test]
+    fn phrase_roundtrip_all_bytes_and_random() {
+        phrase_roundtrip(&(0..=255u8).collect::<Vec<u8>>());
+        for seed in 1..=16u64 {
+            phrase_roundtrip(&xorshift_bytes(seed, 4096));
+        }
+    }
+
+    #[test]
+    fn phrase_vocab_includes_a_bigram() {
+        let text = b"united states united states united states united states";
+        let v = build_phrase_vocab(text, false);
+        assert!(
+            v.iter().any(|w| w.as_slice() == b"united states"),
+            "phrase not learned: {v:?}"
+        );
+    }
+
+    // --- Phase 4.10 front-coded dictionary --------------------------------
+
+    fn front_roundtrip(data: &[u8]) {
+        for rev in [false, true] {
+            assert_eq!(
+                word_token_front_decode(&word_token_front_encode(data, rev)),
+                data,
+                "front roundtrip"
+            );
+        }
+    }
+
+    #[test]
+    fn front_roundtrip_examples() {
+        front_roundtrip(b"");
+        front_roundtrip(b"the quick brown fox and the lazy dog");
+        front_roundtrip(b"\x00\x01 the and");
+    }
+
+    #[test]
+    fn front_roundtrip_all_bytes_and_random() {
+        front_roundtrip(&(0..=255u8).collect::<Vec<u8>>());
+        for seed in 1..=16u64 {
+            front_roundtrip(&xorshift_bytes(seed, 4096));
+        }
+    }
+
+    // --- Phase 4.8 affix-referenced entries -------------------------------
+
+    fn affix_roundtrip(data: &[u8]) {
+        for rev in [false, true] {
+            assert_eq!(
+                word_token_affix_decode(&word_token_affix_encode(data, rev)),
+                data,
+                "affix roundtrip"
+            );
+        }
+    }
+
+    #[test]
+    fn affix_roundtrip_examples() {
+        affix_roundtrip(b"");
+        affix_roundtrip(b"rendering render rendering renders render");
+        affix_roundtrip(b"\x00\x01 the and");
+    }
+
+    #[test]
+    fn affix_roundtrip_all_bytes_and_random() {
+        affix_roundtrip(&(0..=255u8).collect::<Vec<u8>>());
+        for seed in 1..=16u64 {
+            affix_roundtrip(&xorshift_bytes(seed, 4096));
+        }
     }
 
     #[test]

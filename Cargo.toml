@@ -67,6 +67,24 @@ word-token = []
 word-token2 = []
 # Phase 4.1: long-distance match tier (a second, longer-minimum match index).
 long-match = []
+# Phase 4.2: sparse (gapped) match tier.
+sparse-match = []
+# Phase 4.3: repeat-offset state (MRU distance ring + rep predictors).
+rep-state = []
+# Phase 4.4: matched-literal expert (context conditioned on predicted byte).
+match-byte = []
+# Phase 4.5: distance-conditioned match confidence.
+dist-match = []
+# Phase 4.6: stem / root+affix transform.
+stem = []
+# Phase 4.7: word-class context expert.
+word-class = []
+# Phase 4.9: phrase (multi-word) vocabulary.
+phrase = []
+# Phase 4.10: front-coded dictionary header.
+dict-front = []
+# Phase 4.8: affix-referenced derived tokens.
+affix-token = []
 # Out-of-memory protection in the scored stub. On by default; disabling it
 # yields an otherwise-identical binary used to measure its executable cost.
 mem-guard = []
