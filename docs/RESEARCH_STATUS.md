@@ -60,9 +60,17 @@
   remaining tag gap (34.5 KB raw) changes the archive by only −309 B, and all
   metadata field hoisting is bounded at ≤1.3% of the archive while naive binary
   packing loses. The IR (ZIR-0) is exact but not worth wiring into the pipeline.
-  What remains absent is elsewhere: no general lexical/phrase transform beyond the
-  adopted 255-word dictionary, no grammar, no rank/enumerative coding, no article
-  reordering, no learned residual model, and no representation optimiser.
+- **Phase 5 (procedural grammar + rank/enumerative state) is closed by
+  measurement.** Every mechanism — iterative RePair, maximal-repeat induction,
+  one-shot scalable induction, first-use inline productions, rank-ordered rule
+  tables, MTF symbol ranking and LZBE factorization — loses against the accepted
+  floor, and the loss *grows* with corpus size (`grammar-oneshot` +67,989 enwik6 →
+  +489,509 enwik7; `lzbe` +150,530 → +1,784,136). The CM's Phase-4 match family
+  already owns the repetition a grammar would explain, and writing the
+  explanation down explicitly is a net cost. Rank coding of symbols (MTF) is
+  actively harmful (+198,511 vs +47,298 verbatim at enwik6). This is a decisive
+  negative result for the project's central hypothesis on enwik. See
+  [`PHASE5_PLAN.md`](PHASE5_PLAN.md).
 - The submission stub has not been size-optimised (Phase 11).
 - The model has only been timed on this machine, not on a Geigerbench-scored
   reference machine.

@@ -85,6 +85,8 @@ phrase = []
 dict-front = []
 # Phase 4.8: affix-referenced derived tokens.
 affix-token = []
+# Phase 5: RePair grammar transform (procedural grammar + rank state).
+grammar = []
 # Out-of-memory protection in the scored stub. On by default; disabling it
 # yields an otherwise-identical binary used to measure its executable cost.
 mem-guard = []

@@ -140,7 +140,7 @@ Honest status as of the current revision. `MEASURED` means the number exists in
 | 2 | Minimal coding floor: range coder, rANS option, context model | **MEASURED** |
 | 3 | Structural factorization, typed streams, structural hoisting | **COMPLETE (closed by measurement)** — fixed 31-entry hoisting ADOPTED and at saturation; IR-driven field hoisting and typed streams REJECTED at archive level (see §7.1) |
 | 4 | Transformed lexical/phrase dictionary, long/sparse matches, repeat refs | **COMPLETE** — 255-word dictionary (A1.1) + long-distance and sparse match tiers + matched-literal expert adopted; repeat-offset state, distance floors, stemming, phrase/affix dictionaries and front-coding rejected with controls (see PHASE4_PLAN.md) |
-| 5 | Procedural grammar + rank/enumerative state | PROPOSED |
+| 5 | Procedural grammar + rank/enumerative state | **COMPLETE (closed by measurement)** — RePair/MR/one-shot grammars, first-use and rank-coded skeletons, LZBE factors all REJECTED; the loss grows with corpus size (see PHASE5_PLAN.md) |
 | 6 | Serious context-mixing floor (ICM/ISSE, state maps, word/stem, SSE) | **PARTIAL** — direct contexts + word/bigram + previous-line/column + match + 2 APM; no ICM/ISSE/state maps |
 | 7 | Article-layout compiler (semantic/structural/residual/predictor orders) | PROPOSED |
 | 8 | Learned residual corrector (model-size Pareto campaign) | PROPOSED |

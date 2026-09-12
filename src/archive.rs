@@ -175,6 +175,20 @@ pub enum Method {
     ColumnWordTokenFront = 42,
     /// Phase 4.8: accepted config + affix-referenced derived tokens.
     ColumnWordTokenAffix = 43,
+    /// Phase 5.1: standalone RePair grammar transform.
+    Grammar = 44,
+    /// Phase 5.3: grammar with a move-to-front rank-coded symbol stream.
+    GrammarMtf = 45,
+    /// Phase 5.4: grammar induced by maximal repeats (MR-RePair).
+    GrammarMr = 46,
+    /// Phase 5.6: grammar with the rule table reordered by first use (rank state).
+    GrammarRrank = 47,
+    /// Phase 5.5: grammar with first-use inline productions.
+    GrammarFirstUse = 48,
+    /// Phase 5.9: scalable one-shot grammar induction (large-corpus feasibility).
+    GrammarOneShot = 49,
+    /// Phase 5.8: LZ-Begin-End factorization (A15).
+    Lzbe = 50,
 }
 
 impl Method {
@@ -224,6 +238,13 @@ impl Method {
             Method::ColumnWordTokenPhraseFreq => "column-word-token-phrase-freq",
             Method::ColumnWordTokenFront => "column-word-token-front",
             Method::ColumnWordTokenAffix => "column-word-token-affix",
+            Method::Grammar => "grammar",
+            Method::GrammarMtf => "grammar-mtf",
+            Method::GrammarMr => "grammar-mr",
+            Method::GrammarRrank => "grammar-rrank",
+            Method::GrammarFirstUse => "grammar-first-use",
+            Method::GrammarOneShot => "grammar-oneshot",
+            Method::Lzbe => "lzbe",
         }
     }
 
@@ -273,12 +294,19 @@ impl Method {
             "column-word-token-phrase-freq" => Method::ColumnWordTokenPhraseFreq,
             "column-word-token-front" => Method::ColumnWordTokenFront,
             "column-word-token-affix" => Method::ColumnWordTokenAffix,
+            "grammar" => Method::Grammar,
+            "grammar-mtf" => Method::GrammarMtf,
+            "grammar-mr" => Method::GrammarMr,
+            "grammar-rrank" => Method::GrammarRrank,
+            "grammar-first-use" => Method::GrammarFirstUse,
+            "grammar-oneshot" => Method::GrammarOneShot,
+            "lzbe" => Method::Lzbe,
             _ => return None,
         })
     }
 
     /// All methods, for exhaustive exactness testing.
-    pub const ALL: [Method; 44] = [
+    pub const ALL: [Method; 51] = [
         Method::RawCm,
         Method::RawCmNoWord,
         Method::StructHoist,
@@ -323,6 +351,13 @@ impl Method {
         Method::ColumnWordTokenPhraseFreq,
         Method::ColumnWordTokenFront,
         Method::ColumnWordTokenAffix,
+        Method::Grammar,
+        Method::GrammarMtf,
+        Method::GrammarMr,
+        Method::GrammarRrank,
+        Method::GrammarFirstUse,
+        Method::GrammarOneShot,
+        Method::Lzbe,
     ];
 
     /// Whether this method runs the structural-hoisting transform.
@@ -550,6 +585,26 @@ impl Method {
         }
     }
 
+    /// Phase 5: the grammar mode, if any.
+    #[cfg(feature = "grammar")]
+    fn grammar_mode(self) -> Option<GrammarMode> {
+        match self {
+            Method::Grammar => Some(GrammarMode::Verbatim),
+            Method::GrammarMtf => Some(GrammarMode::Mtf),
+            Method::GrammarMr => Some(GrammarMode::Mr),
+            Method::GrammarRrank => Some(GrammarMode::Rrank),
+            Method::GrammarFirstUse => Some(GrammarMode::FirstUse),
+            Method::GrammarOneShot => Some(GrammarMode::OneShot),
+            _ => None,
+        }
+    }
+
+    /// Phase 5.8: whether the LZBE transform runs.
+    #[cfg_attr(not(feature = "grammar"), allow(dead_code))]
+    fn lzbe(self) -> bool {
+        cfg!(feature = "grammar") && matches!(self, Method::Lzbe)
+    }
+
     fn config(self, n: usize) -> ModelConfig {
         let base = ModelConfig::for_size(n as u64);
         let base = match self {
@@ -616,6 +671,18 @@ impl Method {
         };
         base.with_info(self.info())
     }
+}
+
+// Phase 5: grammar induction/serialization modes.
+#[cfg(feature = "grammar")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GrammarMode {
+    Verbatim,
+    Mtf,
+    Mr,
+    Rrank,
+    FirstUse,
+    OneShot,
 }
 
 // --- transform plumbing, feature-gated so binary cost is measurable ---------
@@ -788,6 +855,84 @@ fn maybe_unstem(_method: Method, data: Vec<u8>) -> Vec<u8> {
     data
 }
 
+// Phase 5: grammar transform, applied first (standalone for the screen).
+#[cfg(feature = "grammar")]
+const GRAMMAR_MAX_RULES: usize = 256;
+#[cfg(feature = "grammar")]
+const GRAMMAR_MIN_COUNT: u32 = 8;
+
+#[cfg(feature = "grammar")]
+fn maybe_grammar(method: Method, data: Vec<u8>) -> Vec<u8> {
+    match method.grammar_mode() {
+        Some(GrammarMode::Verbatim) => {
+            crate::grammar::encode_ex(&data, GRAMMAR_MAX_RULES, GRAMMAR_MIN_COUNT, false, false)
+        }
+        Some(GrammarMode::Mtf) => {
+            crate::grammar::encode_ex(&data, GRAMMAR_MAX_RULES, GRAMMAR_MIN_COUNT, true, false)
+        }
+        Some(GrammarMode::Mr) => {
+            crate::grammar::encode_ex(&data, GRAMMAR_MAX_RULES, GRAMMAR_MIN_COUNT, false, true)
+        }
+        Some(GrammarMode::Rrank) => {
+            crate::grammar::encode_rrank(&data, GRAMMAR_MAX_RULES, GRAMMAR_MIN_COUNT)
+        }
+        Some(GrammarMode::FirstUse) => {
+            crate::grammar::encode_firstuse(&data, GRAMMAR_MAX_RULES, GRAMMAR_MIN_COUNT)
+        }
+        Some(GrammarMode::OneShot) => {
+            crate::grammar::encode_oneshot(&data, GRAMMAR_MAX_RULES, GRAMMAR_MIN_COUNT)
+        }
+        None => data,
+    }
+}
+
+#[cfg(not(feature = "grammar"))]
+fn maybe_grammar(_method: Method, data: Vec<u8>) -> Vec<u8> {
+    data
+}
+
+#[cfg(feature = "grammar")]
+fn maybe_ungrammar(method: Method, data: Vec<u8>) -> Vec<u8> {
+    match method.grammar_mode() {
+        Some(GrammarMode::FirstUse) => crate::grammar::decode_firstuse(&data),
+        Some(_) => crate::grammar::decode(&data),
+        None => data,
+    }
+}
+
+#[cfg(not(feature = "grammar"))]
+fn maybe_ungrammar(_method: Method, data: Vec<u8>) -> Vec<u8> {
+    data
+}
+
+#[cfg(feature = "grammar")]
+fn maybe_lzbe(method: Method, data: Vec<u8>) -> Vec<u8> {
+    if method.lzbe() {
+        crate::grammar::lzbe_encode(&data, 256, 64)
+    } else {
+        data
+    }
+}
+
+#[cfg(not(feature = "grammar"))]
+fn maybe_lzbe(_method: Method, data: Vec<u8>) -> Vec<u8> {
+    data
+}
+
+#[cfg(feature = "grammar")]
+fn maybe_unlzbe(method: Method, data: Vec<u8>) -> Vec<u8> {
+    if method.lzbe() {
+        crate::grammar::lzbe_decode(&data)
+    } else {
+        data
+    }
+}
+
+#[cfg(not(feature = "grammar"))]
+fn maybe_unlzbe(_method: Method, data: Vec<u8>) -> Vec<u8> {
+    data
+}
+
 // --- codec ------------------------------------------------------------------
 
 /// The method and tune of the currently accepted candidate. `encode` uses these
@@ -819,7 +964,9 @@ pub fn encode_with(input: &[u8], method: Method) -> Vec<u8> {
 /// additional executable bytes; the value is stored in the header and the
 /// decoder reconstructs the identical model.
 pub fn encode_tuned(input: &[u8], method: Method, tune: u8) -> Vec<u8> {
-    let stemmed = maybe_stem(method, input.to_vec());
+    let lzbed = maybe_lzbe(method, input.to_vec());
+    let grammared = maybe_grammar(method, lzbed);
+    let stemmed = maybe_stem(method, grammared);
     let hoisted = maybe_hoist(method, &stemmed);
     let cased = maybe_case(method, hoisted);
     let tokened = maybe_token(method, cased);
@@ -906,6 +1053,13 @@ pub fn decode(archive: &[u8]) -> Option<Vec<u8>> {
         41 => Method::ColumnWordTokenPhraseFreq,
         42 => Method::ColumnWordTokenFront,
         43 => Method::ColumnWordTokenAffix,
+        44 => Method::Grammar,
+        45 => Method::GrammarMtf,
+        46 => Method::GrammarMr,
+        47 => Method::GrammarRrank,
+        48 => Method::GrammarFirstUse,
+        49 => Method::GrammarOneShot,
+        50 => Method::Lzbe,
         _ => return None,
     };
     let mut len_bytes = [0u8; 8];
@@ -950,7 +1104,9 @@ pub fn decode(archive: &[u8]) -> Option<Vec<u8>> {
     let untokened = maybe_untoken(method, unpermuted);
     let uncased = maybe_uncase(method, untokened);
     let unhoisted = maybe_unhoist(method, uncased);
-    Some(maybe_unstem(method, unhoisted))
+    let unstemmed = maybe_unstem(method, unhoisted);
+    let ungrammared = maybe_ungrammar(method, unstemmed);
+    Some(maybe_unlzbe(method, ungrammared))
 }
 
 /// Peek the coded length from an archive header without decoding it. Used by

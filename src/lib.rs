@@ -33,6 +33,8 @@ pub mod context;
 pub mod corpus;
 pub mod entropy;
 pub mod evidence;
+#[cfg(feature = "grammar")]
+pub mod grammar;
 pub mod ir;
 pub mod memory;
 pub mod mixer;
