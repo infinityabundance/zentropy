@@ -45,6 +45,14 @@ pub enum CtxKind {
     Word,
     /// The previous completed word together with the current prefix.
     WordBigram,
+    /// A17: the byte at the same column of the previous line, plus the byte to
+    /// the left and the column bucket. Detects tabular/structured line geometry.
+    Column,
+    /// A17 negative control: the byte at a deliberately wrong column.
+    ColumnShuffled,
+    /// A17 null control: no previous-line byte at all (left byte + column only).
+    /// Isolates the value of *vertical alignment* from that of the column bucket.
+    ColumnNoLine,
 }
 
 /// Specification of a single expert. Ablation removes a spec.
@@ -263,6 +271,9 @@ fn compute_parents(specs: &[ModelSpec]) -> Vec<Option<usize>> {
             CtxKind::Word | CtxKind::WordBigram => {
                 parents[i] = order1.or(order0);
             }
+            CtxKind::Column | CtxKind::ColumnShuffled | CtxKind::ColumnNoLine => {
+                parents[i] = order1.or(order0);
+            }
         }
     }
     parents
@@ -374,6 +385,28 @@ impl ModelConfig {
         self
     }
 
+    /// A17: append a previous-line/column expert. `shuffled` selects the
+    /// negative control (a deliberately wrong column).
+    pub fn with_column(self, shuffled: bool) -> Self {
+        let kind = if shuffled {
+            CtxKind::ColumnShuffled
+        } else {
+            CtxKind::Column
+        };
+        self.with_column_kind(kind)
+    }
+
+    /// A17: append an expert of the given column family.
+    pub fn with_column_kind(mut self, kind: CtxKind) -> Self {
+        let bits = self.specs[0].bits.min(20);
+        self.specs.push(ModelSpec {
+            kind,
+            bits,
+            rate: 5,
+        });
+        self
+    }
+
     /// A20: map a tuning variant to a mixer learning rate. Variant 0 is the
     /// frozen parent behaviour (lr = 12); higher variants explore the update-law
     /// family without changing the executable, since the variant is carried in
@@ -424,6 +457,10 @@ pub struct Predictor {
     last_byte: u8,
     word_cur: u64,
     word_prev: u64,
+    /// Start offset of the current line (after the most recent newline).
+    line_start: usize,
+    /// Start offset of the previous line.
+    prev_line_start: usize,
     pr: i32,
     inputs: Vec<i32>,
 }
@@ -453,6 +490,8 @@ impl Predictor {
             last_byte: 0,
             word_cur: 0,
             word_prev: 0,
+            line_start: 0,
+            prev_line_start: 0,
             pr: 2048,
             inputs: vec![0; n_inputs],
         }
@@ -482,6 +521,45 @@ impl Predictor {
                     let h = word_add(h, (self.word_cur & 0xff) as u8) ^ (self.word_cur >> 8);
                     h as u32
                 }
+                CtxKind::Column | CtxKind::ColumnShuffled | CtxKind::ColumnNoLine => {
+                    #[cfg(feature = "column-model")]
+                    {
+                        let pos = n;
+                        let col = pos.saturating_sub(self.line_start);
+                        let prev_len = if self.line_start > 0 {
+                            self.line_start.saturating_sub(1 + self.prev_line_start)
+                        } else {
+                            0
+                        };
+                        // `above` is the byte at the aligned column of the
+                        // previous line; controls deliberately corrupt it.
+                        let above = match spec.kind {
+                            CtxKind::ColumnNoLine => 0,
+                            CtxKind::ColumnShuffled => {
+                                if prev_len > 0 {
+                                    let c = (col + 1) % prev_len;
+                                    self.buf[self.prev_line_start + c]
+                                } else {
+                                    0
+                                }
+                            }
+                            _ => {
+                                if col < prev_len {
+                                    self.buf[self.prev_line_start + col]
+                                } else {
+                                    0
+                                }
+                            }
+                        };
+                        let left = if col > 0 { self.buf[pos - 1] } else { 0 };
+                        hash_bytes(&[above, left, (col.min(63)) as u8])
+                    }
+                    #[cfg(not(feature = "column-model"))]
+                    {
+                        // Measurement build without the mechanism: neutral.
+                        0
+                    }
+                }
             };
             self.ctx[i] = c;
         }
@@ -503,6 +581,10 @@ impl Predictor {
                 self.word_cur = 0;
             }
             self.last_byte = b;
+            if b == b'\n' {
+                self.prev_line_start = self.line_start;
+                self.line_start = self.buf.len();
+            }
         }
         self.refresh_contexts();
         self.match_model.byte_boundary(&self.buf);

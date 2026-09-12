@@ -26,9 +26,9 @@ diagnostics. A mechanism is admitted only when its **complete** marginal cost
 |---|---|
 | Exactness | Every transform and archive round-trips exactly; 51 unit/property tests + 7 scripted courts pass |
 | enwik9 | exact full-corpus reconstruction at **182,949,204 bytes (1.4636 bpc)**, 3.58 GB peak RAM |
-| enwik8 | exact reconstruction at **22,372,738 bytes (1.7898 bpc)** (accepted config, Optimization A) |
+| enwik8 | exact reconstruction at **22,313,281 bytes (1.7851 bpc)** (accepted config: struct-hoist + column expert + tune 7) |
 | Reference | gzip 36.4 MB · bzip2 29.0 MB · xz -9e 24.8 MB · brotli 25.7 MB · **zentropy 22.5 MB** |
-| Submission path | scored stub (313,792 B) compresses/decompresses; self-extracting `archive9` reconstructs with no inputs |
+| Submission path | scored stub (324,328 B) compresses/decompresses; self-extracting `archive9` reconstructs with no inputs; OOM-protected (`--max-ram`, `ZENTROPY_MAX_RAM_BYTES`) |
 | Phase | 0–2 measured; 3–12 in progress / proposed (see the architecture doc) |
 
 > No claim of competitiveness against the 110 MB record is made yet. The

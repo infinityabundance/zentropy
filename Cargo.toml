@@ -43,7 +43,7 @@ path = "src/bin/zentropy_sfx.rs"
 # Only ADOPTED mechanisms are in the default (scored) build. Rejected or
 # experimental mechanisms are compiled in explicitly with --features so they
 # reproduce but do not cost submission bytes.
-default = ["struct-hoist"]
+default = ["struct-hoist", "column-model", "mem-guard"]
 # Gates the Phase-3 structural-hoisting transform into the binary. Disabling it
 # yields an otherwise-identical binary used ONLY to measure the mechanism's
 # real executable-byte cost. `S` is authority: an estimate is never allowed to
@@ -53,6 +53,11 @@ struct-hoist = []
 alphabet-perm = []
 # A3: information-inheritance cold starts for direct context models.
 info-inherit = []
+# A17: previous-line / structural-column expert.
+column-model = []
+# Out-of-memory protection in the scored stub. On by default; disabling it
+# yields an otherwise-identical binary used to measure its executable cost.
+mem-guard = []
 # `submission` gates out research-only machinery from the decoder stub.
 submission = []
 
@@ -64,8 +69,11 @@ submission = []
 # ---------------------------------------------------------------------------
 [profile.release]
 opt-level = 3
-lto = "fat"
-codegen-units = 1
+# `thin` LTO + multiple codegen units keeps rustc's own peak memory modest so a
+# research build cannot OOM a workstation. The scored `submission` profile below
+# keeps `fat`/1 for the smallest artifact.
+lto = "thin"
+codegen-units = 4
 panic = "abort"
 debug = false
 strip = "symbols"
@@ -83,3 +91,11 @@ overflow-checks = true
 
 [profile.bench]
 inherits = "release"
+
+# Fast research build: no LTO, many codegen units, lowest rustc memory. Use for
+# quick iteration; not for scored artifacts.
+[profile.research]
+inherits = "release"
+lto = "off"
+codegen-units = 16
+opt-level = 2

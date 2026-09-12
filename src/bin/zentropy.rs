@@ -18,6 +18,7 @@
 //! zentropy corrupt-court
 //! zentropy negative-court
 //! zentropy gate
+//! zentropy meminfo    [file] [--max-ram <size>]
 //! zentropy selftest
 //! ```
 
@@ -31,6 +32,7 @@ use zentropy::archive::{self, Method};
 use zentropy::corpus::{self, hex, sha256};
 use zentropy::evidence::RunReceipt;
 use zentropy::ir::{self, Kind, Stats};
+use zentropy::memory;
 use zentropy::score::{Record, Score, Targets};
 
 fn main() -> ExitCode {
@@ -54,6 +56,7 @@ fn main() -> ExitCode {
         "corrupt-court" => cmd_corrupt_court(),
         "negative-court" => cmd_negative_court(),
         "gate" => cmd_gate(),
+        "meminfo" => cmd_meminfo(&args[2..]),
         "selftest" => cmd_selftest(),
         "help" | "-h" | "--help" => {
             usage();
@@ -89,6 +92,26 @@ fn usage() {
 
 fn read(path: &str) -> Result<Vec<u8>, String> {
     fs::read(path).map_err(|e| format!("cannot read {path}: {e}"))
+}
+
+/// `--max-ram <size>` override, if present.
+fn max_ram_override(args: &[String]) -> Option<u64> {
+    args.iter()
+        .position(|a| a == "--max-ram")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| memory::parse_size(s))
+}
+
+/// Refuse to start a memory-heavy operation that would exceed the budget.
+fn guard_encode(n: u64, max_ram: Option<u64>) -> Result<(), String> {
+    memory::check(memory::projected_encode(n, 2), memory::budget(max_ram))
+}
+
+fn guard_decode(archive_len: u64, n: u64, max_ram: Option<u64>) -> Result<(), String> {
+    memory::check(
+        memory::projected_decode(archive_len, n),
+        memory::budget(max_ram),
+    )
 }
 
 fn write(path: &str, data: &[u8]) -> Result<(), String> {
@@ -146,6 +169,7 @@ fn cmd_compress(args: &[String]) -> Result<(), String> {
         return Err("compress: need <in> <archive>".into());
     }
     let data = read(&args[0])?;
+    guard_encode(data.len() as u64, max_ram_override(args))?;
     let t0 = Instant::now();
     let arch = archive::encode(&data);
     let dt = t0.elapsed();
@@ -164,6 +188,9 @@ fn cmd_decompress(args: &[String]) -> Result<(), String> {
         return Err("decompress: need <archive> <out>".into());
     }
     let arch = read(&args[0])?;
+    if let Some(n) = archive::peek_len(&arch) {
+        guard_decode(arch.len() as u64, n, max_ram_override(args))?;
+    }
     let t0 = Instant::now();
     let out = archive::decode(&arch).ok_or("decompress: malformed archive")?;
     let dt = t0.elapsed();
@@ -183,6 +210,9 @@ fn cmd_verify(args: &[String]) -> Result<(), String> {
     }
     let original = read(&args[0])?;
     let arch = read(&args[1])?;
+    if let Some(n) = archive::peek_len(&arch) {
+        guard_decode(arch.len() as u64, n, max_ram_override(args))?;
+    }
     let t0 = Instant::now();
     let out = archive::decode(&arch).ok_or("verify: malformed archive")?;
     let dt = t0.elapsed();
@@ -211,12 +241,16 @@ fn cmd_bench(args: &[String]) -> Result<(), String> {
         .and_then(|i| args.get(i + 1))
         .cloned();
     let data = read(path)?;
+    guard_encode(data.len() as u64, max_ram_override(args))?;
 
     let input_receipt = corpus::CorpusReceipt::of(path, &data);
     let t0 = Instant::now();
     let arch = archive::encode(&data);
     let c_time = t0.elapsed();
 
+    if let Some(n) = archive::peek_len(&arch) {
+        guard_decode(arch.len() as u64, n, max_ram_override(args))?;
+    }
     let t1 = Instant::now();
     let out = archive::decode(&arch).ok_or("bench: malformed archive")?;
     let d_time = t1.elapsed();
@@ -421,6 +455,7 @@ fn cmd_pack_sfx(args: &[String]) -> Result<(), String> {
 fn cmd_hoist(args: &[String]) -> Result<(), String> {
     let path = args.first().ok_or("hoist: need <in>")?;
     let data = read(path)?;
+    guard_encode(data.len() as u64, max_ram_override(args))?;
 
     let t0 = Instant::now();
     let base = archive::encode_with(&data, Method::RawCm);
@@ -571,6 +606,7 @@ fn cmd_eval(args: &[String]) -> Result<(), String> {
         .unwrap_or(archive::ACCEPTED_TUNE);
 
     let data = read(path)?;
+    guard_encode(data.len() as u64, max_ram_override(args))?;
 
     let t0 = Instant::now();
     let parent_arch = archive::encode_tuned(&data, parent, parent_tune);
@@ -687,6 +723,7 @@ fn cmd_sweep(args: &[String]) -> Result<(), String> {
     };
     let receipt_path = get("--receipt");
     let data = read(path)?;
+    guard_encode(data.len() as u64, max_ram_override(args))?;
     let n = data.len() as f64;
 
     let mut best: Option<(u8, usize)> = None;
@@ -828,6 +865,38 @@ fn cmd_negative_court() -> Result<(), String> {
         return Err("negative control did not reconstruct exactly".into());
     }
     println!("negative-court OK");
+    Ok(())
+}
+
+fn cmd_meminfo(args: &[String]) -> Result<(), String> {
+    let b = memory::budget(max_ram_override(args));
+    println!("{}", memory::summary());
+    println!(
+        "budget_bytes={} ({:.2} GiB)",
+        b,
+        b as f64 / (1024.0 * 1024.0 * 1024.0)
+    );
+    if let Some(path) = args.iter().find(|a| !a.starts_with("--")) {
+        let data = read(path)?;
+        let n = data.len() as u64;
+        let pe = memory::projected_encode(n, 2);
+        let pd = memory::projected_decode(n / 3 + (1 << 20), n);
+        let g = 1024.0 * 1024.0 * 1024.0;
+        println!("file={path} bytes={n}");
+        println!(
+            "projected_encode={} ({:.2} GiB) {}",
+            pe,
+            pe as f64 / g,
+            if pe <= b { "OK" } else { "BLOCKED" }
+        );
+        println!(
+            "projected_decode={} ({:.2} GiB) {}",
+            pd,
+            pd as f64 / g,
+            if pd <= b { "OK" } else { "BLOCKED" }
+        );
+        println!("model_bytes={}", memory::model_bytes(n as usize));
+    }
     Ok(())
 }
 

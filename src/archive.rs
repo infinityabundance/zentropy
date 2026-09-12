@@ -66,6 +66,12 @@ pub enum Method {
     InfoUnrelated = 6,
     /// A2 + A3 combined.
     AlphabetPermInfo = 7,
+    /// A17: structural hoisting + previous-line/column expert.
+    Column = 8,
+    /// A17 negative control: wrong-column expert.
+    ColumnShuffled = 9,
+    /// A17 null control: no previous-line byte (left + column only).
+    ColumnNoLine = 10,
 }
 
 impl Method {
@@ -79,6 +85,9 @@ impl Method {
             Method::InfoInherit => "info-inherit",
             Method::InfoUnrelated => "info-unrelated",
             Method::AlphabetPermInfo => "alphabet-perm+info-inherit",
+            Method::Column => "column",
+            Method::ColumnShuffled => "column-shuffled",
+            Method::ColumnNoLine => "column-noline",
         }
     }
 
@@ -92,12 +101,15 @@ impl Method {
             "info-inherit" => Method::InfoInherit,
             "info-unrelated" => Method::InfoUnrelated,
             "alphabet-perm+info-inherit" => Method::AlphabetPermInfo,
+            "column" => Method::Column,
+            "column-shuffled" => Method::ColumnShuffled,
+            "column-noline" => Method::ColumnNoLine,
             _ => return None,
         })
     }
 
     /// All methods, for exhaustive exactness testing.
-    pub const ALL: [Method; 8] = [
+    pub const ALL: [Method; 11] = [
         Method::RawCm,
         Method::RawCmNoWord,
         Method::StructHoist,
@@ -106,6 +118,9 @@ impl Method {
         Method::InfoInherit,
         Method::InfoUnrelated,
         Method::AlphabetPermInfo,
+        Method::Column,
+        Method::ColumnShuffled,
+        Method::ColumnNoLine,
     ];
 
     /// Whether this method runs the structural-hoisting transform.
@@ -118,6 +133,9 @@ impl Method {
                 | Method::InfoInherit
                 | Method::InfoUnrelated
                 | Method::AlphabetPermInfo
+                | Method::Column
+                | Method::ColumnShuffled
+                | Method::ColumnNoLine
         );
         cfg!(feature = "struct-hoist") && wants
     }
@@ -153,6 +171,12 @@ impl Method {
                 let keep: Vec<usize> = (0..base.specs.len().saturating_sub(2)).collect();
                 base.ablated(&keep)
             }
+            _ => base,
+        };
+        let base = match self {
+            Method::Column => base.with_column(false),
+            Method::ColumnShuffled => base.with_column(true),
+            Method::ColumnNoLine => base.with_column_kind(crate::context::CtxKind::ColumnNoLine),
             _ => base,
         };
         base.with_info(self.info())
@@ -232,7 +256,7 @@ fn maybe_unperm(data: Vec<u8>, _perm: Option<&[u8; PERM_LEN]>) -> Vec<u8> {
 /// The method and tune of the currently accepted candidate. `encode` uses these
 /// so the production path (bench, compress, SFX) always reflects the best
 /// measured configuration. Optimization-A experiments override both explicitly.
-pub const ACCEPTED_METHOD: Method = Method::StructHoist;
+pub const ACCEPTED_METHOD: Method = Method::Column;
 /// A20: mixer learning rate 24 was adopted on enwik7 screening and confirmed on
 /// enwik8 (−76,483 B at zero executable cost).
 pub const ACCEPTED_TUNE: u8 = 7;
@@ -300,6 +324,9 @@ pub fn decode(archive: &[u8]) -> Option<Vec<u8>> {
         5 => Method::InfoInherit,
         6 => Method::InfoUnrelated,
         7 => Method::AlphabetPermInfo,
+        8 => Method::Column,
+        9 => Method::ColumnShuffled,
+        10 => Method::ColumnNoLine,
         _ => return None,
     };
     let mut len_bytes = [0u8; 8];
@@ -342,6 +369,22 @@ pub fn decode(archive: &[u8]) -> Option<Vec<u8>> {
 
     let unpermuted = maybe_unperm(decoded, perm.as_ref());
     Some(maybe_unhoist(method, unpermuted))
+}
+
+/// Peek the coded length from an archive header without decoding it. Used by
+/// the memory guard to decide whether a decode can start safely.
+pub fn peek_len(archive: &[u8]) -> Option<u64> {
+    if archive.len() < HEADER_LEN || &archive[0..4] != MAGIC {
+        return None;
+    }
+    let mut b = [0u8; 8];
+    b.copy_from_slice(&archive[6..14]);
+    let n = u64::from_le_bytes(b);
+    if n > MAX_OUTPUT {
+        None
+    } else {
+        Some(n)
+    }
 }
 
 /// Convenience: compress and report the score against the canonical corpus.

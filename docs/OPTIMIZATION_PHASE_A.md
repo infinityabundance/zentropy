@@ -50,11 +50,40 @@ executable bytes.
 | `info-unrelated` | A3 negative control | control |
 | `alphabet-perm+info-inherit` | A2+A3 | **REJECTED** |
 | `tune 0..15` | A20 mixer update-law variants | **tune 7 ADOPTED** |
+| `column` | A17 aligned previous-line/column expert | **ADOPTED** |
+| `column-shuffled` | A17 wrong-column control | control |
+| `column-noline` | A17 no-vertical null control | control |
 
-Rejected/experimental mechanisms are **not** in the default (scored) build;
-they reproduce via `--features struct-hoist,alphabet-perm,info-inherit`.
+Rejected/experimental mechanisms are **not** in the default (scored) build; they
+reproduce with
+`--no-default-features --features struct-hoist,alphabet-perm,info-inherit,column-model`.
 
 ## Results
+
+### A17 — previous-line / structural-column expert (ADOPTED)
+
+The expert's context is the byte at the aligned column of the previous line, plus
+the byte to the left and a column bucket. Two controls isolate the signal:
+`column-shuffled` takes a deliberately *wrong* column (still vertical), and
+`column-noline` drops the previous-line byte entirely (left + column only).
+
+| Method | enwik7 ΔS |
+|---|---|
+| `column` (aligned) | **−8,689** |
+| `column-shuffled` (wrong column) | −4,983 |
+| `column-noline` (no vertical byte) | −3,445 |
+
+Dose-response is clean: no-vertical −3,445, misaligned −4,983, aligned −8,689.
+Vertical alignment is worth ~5.2 KB, and the column bucket/left context alone is
+worth ~3.4 KB. enwik8 confirmation:
+
+```
+parent    struct-hoist         22,372,738  1.7898 bpc
+candidate column             22,313,281  1.7851 bpc
+archive_delta = -59,457 bytes; measured marginal cost 720 B; DeltaS = -58,737
+```
+
+Accepted configuration is now **`struct-hoist + column expert + tune 7`**.
 
 ### A20 — optimizer update-law sweep (ADOPTED)
 
@@ -153,6 +182,11 @@ antagonistic; recorded for A28.
 Every executed experiment wrote a receipt to `evidence/runs/receipts.jsonl`
 (candidate, parent, archive delta, measured binary cost, ΔS, decision).
 
+The accepted-configuration stub is **324,328 B**. Relative to the frozen parent
+(315,760 B) the +8,568 B is Phase-A framework scaffolding plus the adopted column
+expert and the OOM guard, all charged; the enwik8 archive saving of ~135 KB
+dominates it.
+
 ## Next highest-value actions
 
 1. **A1 / A26 case-factorized frequency-ordered tokenization** — the largest
@@ -164,6 +198,40 @@ Every executed experiment wrote a receipt to `evidence/runs/receipts.jsonl`
 3. **A17 previous-line expert** — cheap, targets Wikipedia tables/lists.
 4. **Wave C parsing** — entropy-repriced optimal parsing + MRU carousel +
    matched-literal residuals; a genuinely different family from context mixing.
+
+## Out-of-memory protection
+
+A workstation that runs an editor and a compressor must not have its memory
+exhausted by the compressor: the kernel's OOM killer does not distinguish
+between them. Every memory-heavy path now **fails closed**:
+
+- `src/memory.rs` computes a conservative projected peak (`projected_encode`,
+  `projected_decode`) and compares it against a budget.
+- Budget precedence: `--max-ram <size>` › `ZENTROPY_MAX_RAM_BYTES` ›
+  `min(3/4 x MemAvailable, 8 GiB)`.
+- Guards are wired into `compress`, `decompress`, `verify`, `bench`, `eval`,
+  `sweep`, `hoist`, the corruption court, and the submission stub
+  (`zentropy-sfx`) for compress, decompress and the self-extracting path.
+- `zentropy meminfo [file]` reports available memory, the budget, and the
+  projected encode/decode for a file.
+
+```
+meminfo enwik9              -> projected_encode 4.41 GiB  OK (budget 8.00 GiB)
+meminfo enwik9 --max-ram 4G -> projected_encode 4.41 GiB  BLOCKED
+```
+
+The estimator is deliberately conservative: a false refusal is cheap, an OOM
+kill is not.
+
+**Measured cost.** The guard adds **4,544 B** to the scored submission stub
+(measured `--no-default-features --features struct-hoist,column-model` versus
+`…,mem-guard`). It is charged, kept on by default because the protection is the
+point, and flagged as a Phase-11 size target.
+
+**Build memory.** The research `release` profile now uses `thin` LTO with 4
+codegen units (was `fat`/1) so rustc's own peak memory cannot OOM a workstation;
+a new `research` profile (no LTO, 16 units) is available for quick iteration.
+The scored `submission` profile keeps `fat`/1 for the smallest artifact.
 
 ## Standing rules
 

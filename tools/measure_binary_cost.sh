@@ -13,7 +13,7 @@ set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 TARGET="${1:-struct-hoist}"
-ALL="struct-hoist,alphabet-perm,info-inherit"
+ALL="struct-hoist,alphabet-perm,info-inherit,column-model"
 
 # ALL minus TARGET (comma list).
 REST=$(printf '%s' "$ALL" | tr ',' '\n' | grep -vx "$TARGET" | paste -sd, -)

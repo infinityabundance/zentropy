@@ -43,8 +43,12 @@ fn run(args: &[String]) -> Result<(), String> {
     if args.len() == 4 && (args[1] == "c" || args[1] == "d") {
         let data = fs::read(&args[2]).map_err(|e| format!("read {}: {e}", args[2]))?;
         let out = if args[1] == "c" {
+            #[cfg(feature = "mem-guard")]
+            guard_encode(data.len() as u64)?;
             zentropy::archive::encode(&data)
         } else {
+            #[cfg(feature = "mem-guard")]
+            guard_decode(&data)?;
             zentropy::archive::decode(&data).ok_or("malformed archive")?
         };
         fs::write(&args[3], &out).map_err(|e| format!("write {}: {e}", args[3]))?;
@@ -55,6 +59,8 @@ fn run(args: &[String]) -> Result<(), String> {
     // the `decomp9.exe + archive9.bhm` relaxation.
     if args.len() == 3 {
         let arch = fs::read(&args[1]).map_err(|e| format!("read {}: {e}", args[1]))?;
+        #[cfg(feature = "mem-guard")]
+        guard_decode(&arch)?;
         let out = zentropy::archive::decode(&arch).ok_or("malformed archive")?;
         fs::write(&args[2], &out).map_err(|e| format!("write {}: {e}", args[2]))?;
         return Ok(());
@@ -65,6 +71,8 @@ fn run(args: &[String]) -> Result<(), String> {
         let exe = env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
         let bytes = fs::read(&exe).map_err(|e| format!("read self: {e}"))?;
         let archive = extract_sfx(&bytes).ok_or("no appended archive (is this a packaged sfx?)")?;
+        #[cfg(feature = "mem-guard")]
+        guard_decode(archive)?;
         let out = zentropy::archive::decode(archive).ok_or("malformed appended archive")?;
         // Default output name per the Hutter convention; overridable by env.
         let name = env::var("ZENTROPY_OUT").unwrap_or_else(|_| "data9".to_string());
@@ -77,4 +85,36 @@ fn run(args: &[String]) -> Result<(), String> {
          zentropy-sfx d <archive> <out> (decompress)\n       \
          zentropy-sfx <archive> <out>"
         .into())
+}
+
+/// Refuse a run that would exceed the memory budget. The submission stub uses
+/// the same budget logic as the driver so a judged run cannot OOM the host.
+/// The check is formatting-free to keep the scored binary small.
+#[cfg(feature = "mem-guard")]
+#[inline]
+fn guard_encode(n: u64) -> Result<(), String> {
+    if zentropy::memory::fits(
+        zentropy::memory::projected_encode(n, 2),
+        zentropy::memory::budget(None),
+    ) {
+        Ok(())
+    } else {
+        Err("projected memory exceeds budget (set ZENTROPY_MAX_RAM_BYTES to raise)".into())
+    }
+}
+
+#[cfg(feature = "mem-guard")]
+#[inline]
+fn guard_decode(archive: &[u8]) -> Result<(), String> {
+    if let Some(n) = zentropy::archive::peek_len(archive) {
+        if !zentropy::memory::fits(
+            zentropy::memory::projected_decode(archive.len() as u64, n),
+            zentropy::memory::budget(None),
+        ) {
+            return Err(
+                "projected memory exceeds budget (set ZENTROPY_MAX_RAM_BYTES to raise)".into(),
+            );
+        }
+    }
+    Ok(())
 }

@@ -34,6 +34,7 @@ pub mod corpus;
 pub mod entropy;
 pub mod evidence;
 pub mod ir;
+pub mod memory;
 pub mod mixer;
 pub mod score;
 // The transform module is needed by either transform-based feature.
