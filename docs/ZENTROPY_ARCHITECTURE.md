@@ -137,7 +137,7 @@ Honest status as of the current revision. `MEASURED` means the number exists in
 | 0 | Rules, corpus, evidence constitution, score calculator, baseline harness | **MEASURED** |
 | 1 | Exact Wikipedia IR (ZIR-0) with RAW escape and full round-trip | **MEASURED** (exact on enwik6/8; **not yet in the pipeline**) |
 | 2 | Minimal coding floor: range coder, rANS option, context model | **MEASURED** |
-| 3 | Structural factorization, typed streams, structural hoisting | **PARTIAL** — fixed 31-entry structural hoisting adopted; IR-driven field hoisting and typed streams not yet wired |
+| 3 | Structural factorization, typed streams, structural hoisting | **COMPLETE (closed by measurement)** — fixed 31-entry hoisting ADOPTED and at saturation; IR-driven field hoisting and typed streams REJECTED at archive level (see §7.1) |
 | 4 | Transformed lexical/phrase dictionary, long/sparse matches, repeat refs | **PARTIAL** — corpus-derived 255-word dictionary adopted (A1.1); larger-vocabulary v2 REJECTED (A26); repeat-offset state not started |
 | 5 | Procedural grammar + rank/enumerative state | PROPOSED |
 | 6 | Serious context-mixing floor (ICM/ISSE, state maps, word/stem, SSE) | **PARTIAL** — direct contexts + word/bigram + previous-line/column + match + 2 APM; no ICM/ISSE/state maps |
@@ -193,6 +193,50 @@ Reference baselines measured on enwik8 by `tools/baseline.sh` (archive bytes):
 22,181,992**. The floor sits between `xz` and the PAQ lineage; the work of
 Phases 3–8 is the climb to the frontier (`lpaq1` ≈ 1.98 bpc, `paq8` ≈ 1.44,
 `cmix` ≈ 1.17, `fx2-cmix` ≈ 0.88).
+
+### Phase 3 completion — structural modeling on the IR
+
+Phase 3's remaining scope (`PRIOR_ART_MECHANISMS.md` ranks 8–9: reversible enwik
+preprocessors, metadata/field hoisting, typed streams) was evaluated against the
+accepted model on enwik7. All of it is closed by measurement.
+
+**Tag census.** All XML tags total 261,442 B (2.6% of the corpus). The fixed
+31-entry hoist covers 228,062 B (87%) by prefix; 33,380 B is uncovered. The
+largest uncovered item is `<text xml:space="preserve">` (27 B x 1,326 = 34.5 KB
+raw). Replacing it with a one-byte code changes the archive by **-309 B** — 34.5
+KB of raw structure is worth 0.3 KB to the model. The code space is full
+(`0x01..=0x1F` is 31 codes and `0x20` is a literal space), so extending the table
+would require *dropping* an entry to gain ~300 B, within the binary cost of the
+edit. Tag hoisting is saturated.
+
+**Metadata census.** `sha1`, `parentid`, `ns`, `model`, `format` do not occur at
+all — the enwik dump strips them. Present fields (contributor 118 KB, comment
+62 KB, timestamp 57 KB, id 53 KB, title 39 KB) total ~3.5% of the corpus, and
+98.7% of bytes live inside `<revision>`, i.e. article text. Neutralising the
+contents of timestamp/id/username/ip/comment at equal length shrinks the enwik7
+archive by **9,440 B (0.38%)** with mixed fills and **32,091 B (1.31%)** with a
+uniform fill — the hard upper bound on any field production. Naive productions
+make it *worse*: binary-packing timestamps to 7 B (raw -17,238 B) **increases**
+the archive by 1,319 B, and varint-packing `<id>` (raw -9,839 B) increases it by
+2,158 B. The CM models ASCII digit structure better than a compact binary field.
+
+**Typed streams.** The prerequisite claim — that the model cannot see structure —
+is false: the 309 B figure above shows the model already predicts structural
+strings from prefix context. Explicit type markers would spend bytes carrying
+information the model already has.
+
+**Verdict.** Fixed structural hoisting is adopted and at saturation; IR-driven
+field hoisting and typed streams are rejected at the archive level. enwik's
+bytes are not in its structure (5–6% of bytes, and cheap for the CM); they are in
+its article text (98.7%), which is Phase 4/6 work.
+
+> **Method note.** These are archive-level *screenings* (a Python transform of
+> the corpus plus the accepted `compress` path), not fully-packaged candidates.
+> They are decision-grade for rejection: a real implementation inherits the same
+transformed representation and can only add binary cost. A production that
+> preserves the ASCII/logical form (rather than packing to binary) was not found;
+> that is the one avenue left open, and the neutralisation bound says it is worth
+> at most ~1.3% of the archive before its own cost.
 
 ### Submission-plane measurement
 

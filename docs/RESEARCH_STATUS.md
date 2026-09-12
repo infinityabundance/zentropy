@@ -51,10 +51,14 @@
 - The context-mixing stack uses only *direct* probability models; it has no
   ICM/ISSE bit histories, no state maps, no SSE beyond two APM stages, and no
   bidirectional/structural contexts.
-- Structural hoisting exists but is narrow (31 fixed strings). There is still
-  no general lexical/phrase dictionary transform, no grammar, no rank/enumerative
-  coding, no article reordering, no learned residual model, and no representation
-  optimiser.
+- **Phase 3 (structural modeling on the IR) is closed by measurement.** The
+  31-entry structural hoist is adopted and saturated: covering the largest
+  remaining tag gap (34.5 KB raw) changes the archive by only −309 B, and all
+  metadata field hoisting is bounded at ≤1.3% of the archive while naive binary
+  packing loses. The IR (ZIR-0) is exact but not worth wiring into the pipeline.
+  What remains absent is elsewhere: no general lexical/phrase transform beyond the
+  adopted 255-word dictionary, no grammar, no rank/enumerative coding, no article
+  reordering, no learned residual model, and no representation optimiser.
 - The submission stub has not been size-optimised (Phase 11).
 - The model has only been timed on this machine, not on a Geigerbench-scored
   reference machine.
