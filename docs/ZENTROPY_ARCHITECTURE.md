@@ -72,13 +72,24 @@ licence inventory must be trivial. Even SHA-256 is implemented in-tree.
 ## 4. The pipeline (currently implemented)
 
 ```
-bytes ──► [ZIR-0 tokenisation]  (Phase 1, exact, measured)
-      ──► [context models: orders 1,2,3,4,6,8 + match model]
-      ──► [logistic mixer over expert predictions]
+bytes ──► [reversible structural hoist]      (Phase 3, fixed 31-entry table)
+      ──► [reversible case marking]          (A1.2; evaluated, REJECTED)
+      ──► [reversible dynamic word tokens]   (Phase 4 / A1.1, ADOPTED)
+      ──► [context models: orders 0..16, word, word-bigram,
+           previous-line/column, match model]
+      ──► [logistic mixer over expert predictions]   (A20, tune 7)
       ──► [APM/SSE calibration ×2]
       ──► [binary range coder]
       ──► archive9
 ```
+
+Every transform carries a universal literal escape and is an exact bijection, so
+the inverse chain reconstructs the original byte-for-byte.
+
+> **ZIR-0 is implemented and exact but is NOT yet in the coding pipeline.** The
+> source-native Wikipedia IR (`src/ir/`) currently backs only the `tokenize` and
+> `selftest` commands. Wiring IR typing into the pipeline — typed streams and
+> metadata/field hoisting — is the remaining Phase 3 work.
 
 Decoding is the exact inverse with identical model state. The configuration is a
 deterministic function of the declared output length, so it is not transmitted.
@@ -123,37 +134,33 @@ Honest status as of the current revision. `MEASURED` means the number exists in
 
 | Phase | Deliverable | Status |
 |---|---|---|
-| 0 | Rules, corpus, evidence constitution, score calculator, baseline harness | **MEASURED** (this repo) |
-| 1 | Exact Wikipedia IR (ZIR-0) with RAW escape and full round-trip | **MEASURED** (exact on enwik6/8) |
-| 2 | Minimal coding floor: range coder, rANS option, context model | **MEASURED** (enwik8 = 22,584,607 B) |
-| 3 | Structural factorization, typed streams, structural hoisting | PROPOSED |
-| 4 | Transformed lexical/phrase dictionary, long/sparse matches, repeat refs | PROPOSED |
+| 0 | Rules, corpus, evidence constitution, score calculator, baseline harness | **MEASURED** |
+| 1 | Exact Wikipedia IR (ZIR-0) with RAW escape and full round-trip | **MEASURED** (exact on enwik6/8; **not yet in the pipeline**) |
+| 2 | Minimal coding floor: range coder, rANS option, context model | **MEASURED** |
+| 3 | Structural factorization, typed streams, structural hoisting | **PARTIAL** — fixed 31-entry structural hoisting adopted; IR-driven field hoisting and typed streams not yet wired |
+| 4 | Transformed lexical/phrase dictionary, long/sparse matches, repeat refs | **PARTIAL** — corpus-derived 255-word dictionary adopted (A1.1); larger-vocabulary v2 REJECTED (A26); repeat-offset state not started |
 | 5 | Procedural grammar + rank/enumerative state | PROPOSED |
-| 6 | Serious context-mixing floor (ICM/ISSE, word/stem, SSE) | PARTIAL (direct models + word/bigram + match) |
+| 6 | Serious context-mixing floor (ICM/ISSE, state maps, word/stem, SSE) | **PARTIAL** — direct contexts + word/bigram + previous-line/column + match + 2 APM; no ICM/ISSE/state maps |
 | 7 | Article-layout compiler (semantic/structural/residual/predictor orders) | PROPOSED |
 | 8 | Learned residual corrector (model-size Pareto campaign) | PROPOSED |
 | 9 | Global search (DSFB observer, frf-fuzz mutation, Gemel memory) | PROPOSED |
 | 10 | Equivalence-preserving representation optimizer | PROPOSED |
-| 11 | Resource closure (RAM/CPU/disk/binary size/determinism) | PROPOSED |
-| 12 | Submission closure (SFX, source, doc, receipts, licence, checklist) | PARTIAL (SFX stub + container) |
+| 11 | Resource closure (RAM/CPU/disk/binary size/determinism) | **PARTIAL** — OOM guard + deterministic integer model in place; scored stub (346,208 B) not yet size-optimised |
+| 12 | Submission closure (SFX, source, doc, receipts, licence, checklist) | **PARTIAL** — SFX stub + container + packaging court work; not yet a submission |
 
 ## 7. Measured results
 
-`RawCm` is the Phase-2 floor: raw bytes through the context-mixing predictor, no
-structural transform yet. All runs reconstruct exactly.
+The **accepted configuration** is `struct-hoist + column + word-token-reverse +
+tune 7`; the Phase-2 floor (`rawcm`) is raw bytes through the predictor with no
+transform. Every number below reconstructs exactly and is bound to an immutable
+receipt in `evidence/runs/receipts.jsonl`.
 
-`RawCm` is the current floor: raw bytes through the context-mixing predictor
-(orders 1,2,3,4,6,8 + word + word-bigram + match model), no structural transform
-yet. All runs reconstruct exactly; each is bound to an immutable receipt in
-`evidence/runs/receipts.jsonl`.
-
-| Corpus | bytes | archive | bits/byte | ratio | wall (C+D) | peak RSS |
+| Corpus | bytes | archive (accepted) | bits/byte | ratio | encode wall | peak RSS |
 |---|---|---|---|---|---|---|
-| selftest (synthetic) | 3,375,560 | 66,434 | 0.157 | 50.81 | — | — |
-| enwik6 | 1,000,000 | 273,356 | 2.1868 | 3.66 | ~0.8 s | 22.8 MB |
-| enwik7 | 10,000,000 | 2,485,288 | 1.9882 | 4.02 | 10.2 s | 76.0 MB |
-| enwik8 | 100,000,000 | 22,313,281 (accepted config) | 1.7851 | 4.48 | 177.0 s | 447.0 MB |
-| enwik9 | 1,000,000,000 | 182,949,204 | 1.4636 | 5.47 | 2,492.2 s | 3.58 GB |
+| enwik6 | 1,000,000 | 272,066 | 2.1765 | 3.68 | 0.5 s | — |
+| enwik7 | 10,000,000 | 2,455,390 | 1.9643 | 4.07 | 6.0 s | — |
+| enwik8 | 100,000,000 | 22,181,992 | 1.7746 | 4.51 | 95.3 s | — |
+| enwik9 | 1,000,000,000 | 180,079,678 | 1.4406 | 5.55 | 1,362.9 s | 4.35 GiB |
 
 Mechanisms admitted by measurement (each a sequential experiment; a mechanism
 only counts when the *complete* `ΔS` is negative):
@@ -165,6 +172,7 @@ only counts when the *complete* `ΔS` is negative):
 | structural hoisting (fixed dictionary in `.rodata`) | complete ΔS with **measured** 1,712 B executable cost: **+322 B on enwik6 (REJECTED)**, −4,472 B on enwik7, −15,130 B on enwik8 | **ADOPTED for ≥ enwik7** |
 | A20 mixer learning rate 24 (tune 7, zero executable cost) | −9,492 B on enwik7; **−76,483 B on enwik8** | **ADOPTED** |
 | A17 previous-line/column expert | −8,689 B on enwik7; **−58,737 B on enwik8** (measured 720 B cost) | **ADOPTED** |
+| A1.1/A26 dynamic word tokenizer (corpus-derived dictionary in the archive, reverse ids) | complete ΔS with **measured** 21,848 B executable cost: **+14,805 B on enwik7 (REJECTED)**, −109,441 B on enwik8, **−1,702,081 B on enwik9** | **ADOPTED for large corpora** |
 
 > **Accounting note.** The executable cost of a mechanism is *measured*, never
 > estimated: build an otherwise-identical submission binary with and without the
@@ -173,27 +181,29 @@ only counts when the *complete* `ΔS` is negative):
 > which is enough to flip the enwik6 verdict from ADOPTED to REJECTED. This is
 > precisely the class of error the constitution exists to prevent.
 
-The enwik9 run is the first full-corpus milestone: exact 10⁹-byte
-reconstruction, beating every generic compressor (`xz -9e` ≈ 197 MB, `bzip2 -9`
-≈ 254 MB, `gzip -9` ≈ 322 MB), and ~5.4× above the 110 MB record. Peak RAM
-3.58 GB is inside the 10 GB Hutter limit.
+The enwik9 run is the full-corpus milestone: exact 10⁹-byte reconstruction,
+beating every generic compressor (`xz -9e` ≈ 197 MB, `bzip2 -9` ≈ 254 MB,
+`gzip -9` ≈ 322 MB). It is ~1.63× above the accepted Hutter record (`fx2-cmix`,
+110,793,128 B) — a gap of ~69.3 MB — and peak RSS 4.35 GiB is inside the 10 GB
+limit.
 
 Reference baselines measured on enwik8 by `tools/baseline.sh` (archive bytes):
 `gzip -9` 36,445,248 · `bzip2 -9` 29,008,758 · `brotli -q 11` 25,742,001 ·
-`zstd --ultra -22` 25,272,471 · `xz -9e` 24,831,656 · **zentropy RawCm
-22,584,607**. The floor sits between `xz` and the PAQ lineage; the work of
+`zstd --ultra -22` 25,272,471 · `xz -9e` 24,831,656 · **zentropy accepted
+22,181,992**. The floor sits between `xz` and the PAQ lineage; the work of
 Phases 3–8 is the climb to the frontier (`lpaq1` ≈ 1.98 bpc, `paq8` ≈ 1.44,
 `cmix` ≈ 1.17, `fx2-cmix` ≈ 0.88).
 
 ### Submission-plane measurement
 
 The scored stub (`target/submission/zentropy-sfx`, `opt-level="z"`, LTO,
-stripped) is both `comp9a` and `decomp9`. For enwik6 (`program = 315,760 B`,
-`bhm = 273,356 B`, `archive9 = 589,139 B`) the two legal packaging forms score:
+stripped) is both `comp9a` and `decomp9` and is currently **346,208 B**. For
+enwik6 (`bhm = 272,066 B`, `archive9 = 618,297 B`) the two legal packaging forms
+score:
 
 ```
-S(self-extracting:  comp9 + archive9)          =   904,899
-S(separate, comp9a = decomp9:  2P + bhm)       =   904,876
+S(self-extracting:  comp9 + archive9)          =   964,505
+S(separate, comp9a = decomp9:  2P + bhm)       =   964,482
 ```
 
 The two differ by exactly 23 bytes — the SFX marker (15) plus the length field
