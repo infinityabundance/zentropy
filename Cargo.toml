@@ -55,9 +55,12 @@ alphabet-perm = []
 info-inherit = []
 # A17: previous-line / structural-column expert.
 column-model = []
-# A1.2: case factorization (merge lexical identity; markers). Not in default
-# until measured on enwik7/enwik8.
+# A1.2: case factorization. REJECTED (merge reverses at enwik8, mark-only
+# reverses at enwik9); kept only to reproduce the negative result.
 case-model = []
+# A1.1/A26: corpus-derived frequency-ranked word vocabulary (dictionary stored in
+# the archive and charged). Not in default until measured.
+word-token = []
 # Out-of-memory protection in the scored stub. On by default; disabling it
 # yields an otherwise-identical binary used to measure its executable cost.
 mem-guard = []

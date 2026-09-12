@@ -33,6 +33,7 @@ charged; the value is measured in the all-features configuration):
 | `info-inherit` (A3) | 64 B |
 | `column-model` (A17) | 720 B |
 | `case-model` (A1.2, incl. composite methods) | 976 B |
+| `word-token` (A1.1/A26, incl. composite methods) | 576 B |
 
 ## Mechanism registry
 
@@ -59,6 +60,10 @@ executable bytes.
 | `case-mark` | A1.2 mark-only (no hoist) | screening only |
 | `column-case` | A1.2 merge on the accepted parent | **REJECTED** (enwik8 reversal) |
 | `column-case-mark` | A1.2 mark-only on the accepted parent | **REJECTED** (enwik9 reversal) |
+| `word-token` | A1.1/A26 frequency-ranked vocabulary | screening |
+| `word-token-reverse` | A1.1/A26 reverse-id control | screening |
+| `column-word-token` | A1.1/A26 frequency-ranked on the accepted parent | ADOPTED at enwik8 |
+| `column-word-token-reverse` | A1.1/A26 reverse ids on the accepted parent | **ADOPTED at enwik8**; enwik9 gate running |
 
 Rejected/experimental mechanisms are **not** in the default (scored) build; they
 reproduce with
@@ -125,6 +130,67 @@ so no mechanism's verdict is affected by it.
 > **A29 discipline.** enwik9 has **not** been re-run under the accepted
 > configuration, and the enwik8 saving is **not** extrapolated to it. A full
 > enwik9 run is the next milestone gate.
+
+### A1.1 / A26 — dynamic frequency-ranked word vocabulary (screening-positive; enwik9 pending)
+
+Unlike `struct-hoist` (a fixed 31-entry table in `.rodata`, zero archive
+metadata), this vocabulary is **derived from the input** and must be *stored* in
+the archive and charged. The dictionary is written as a prefix of the same
+modelled stream, so the predictor entropy-codes it and its cost is fully
+accounted for. Body encoding is injective:
+
+```
+token          = 0x00 id          (id in 1..=255, two bytes)
+literal 0x00   = 0x00 0x00        (id 0 is never a token)
+other byte     = copied verbatim
+```
+
+Vocabulary construction: candidate words have length >= 3 and count >= 2 and
+survive only if a two-byte token recovers more than the entry's raw definition
+cost; survivors are ordered by descending frequency (ties by word), truncated to
+the 255-entry id space, and the list is written as `count, (len, bytes)*`. The
+transform runs after hoisting and case (`hoist -> case -> token -> perm`); its
+`0x00` prefix composes exactly with the other byte transforms. Feature
+`word-token`, measured marginal cost **576 B**.
+
+Standalone (vs the `rawcm` floor) and on the accepted parent (vs `column`):
+
+| corpus | `word-token` vs `rawcm` | `word-token-reverse` vs `rawcm` | `column-word-token` vs `column` | `column-word-token-reverse` vs `column` |
+|---|---|---|---|---|
+| enwik6 | +1,970 REJECTED | +1,139 REJECTED | — | — |
+| enwik7 | −6,467 ADOPTED | −11,980 ADOPTED | +4,320 **REJECTED** | −4,389 ADOPTED |
+| enwik8 | — | — | −70,187 ADOPTED | **−130,713 ADOPTED** |
+| enwik9 | — | — | — | **running (the adoption gate)** |
+
+`word-token-reverse` selects the same 255 words but assigns ids in *reverse*
+frequency order (least frequent word gets id 1); it is the control that isolates
+the value of frequency ranking from substitution itself.
+
+**Finding 1 — frequency ranking is the wrong objective.** The reverse-order
+control beats frequency-ranked ids at both enwik7 (−11,980 vs −6,467 standalone)
+and enwik8 (−130,713 vs −70,187 on the accepted parent). This reproduces the A2
+result in a different mechanism: for a bitwise MSB-first predictor, raw symbol
+frequency is not the right objective. FOT's variable-length frequency ranking is
+not what a context-mixing backend wants.
+
+**Finding 2 — word substitution on a mature parent is a large win at enwik8.**
+`column-word-token-reverse` saves **130,713 B** at enwik8, ~2.2x the column
+expert's 58,737 B, at 576 B measured cost. Note the strong overlap with
+existing mechanisms (A28): the same variant saves 11,980 B standalone but only
+4,389 B on top of hoist + column at enwik7, i.e. much of the redundancy it
+removes was already captured.
+
+> **Gate (A29).** enwik9 is running. The A1.2 precedent is explicit: a −10,062 B
+> enwik8 win became a **+427,246 B** enwik9 loss. No adoption decision is made
+> before the full-corpus run completes.
+
+> **Open caveat.** The causal story for reverse ordering is not established — it
+> may be an artefact of the id byte's interaction with the CM's bit tree rather
+> than a genuine ranking effect. A control assigning ids by an unrelated
+> criterion (word length, say) would separate "ordering" from "substitution".
+> Also note the transform's word-count `HashMap` is **not** included in the
+> `memory::projected_encode` estimate; it is small relative to the model on
+> enwik9 but should be added to the guard.
 
 ### A1.2 — case factorization (merge REJECTED; mark-only screening-positive)
 
@@ -238,7 +304,7 @@ antagonistic; recorded for A28.
 | A | A3 information inheritance | **DONE** — REJECTED; state-map/ICM is the fair follow-up |
 | A | A20 optimizer sweep | **DONE** — ADOPTED (lr 24) |
 | A | A17 previous-line structural expert | **DONE** — ADOPTED |
-| B | A1 / A26 / A27 case-factorized FOT tokenization | **A1.2 DONE — REJECTED** (merge and mark-only both reverse at scale); A1.1/A26 vocabulary not started |
+| B | A1 / A26 / A27 case-factorized FOT tokenization | A1.2 **DONE — REJECTED** (merge and mark-only both reverse at scale); A1.1/A26 dynamic vocabulary **screening-positive at enwik8, enwik9 gate running** |
 | C | A5–A11 parsing (entropy-repriced optimal parse, MRU carousel, matched-literal residuals, distance floors, ROLZ ranks) | NOT RUN |
 | D | A4 CTS, A16 DMC | NOT RUN |
 | E | A12–A15 grammar refinements | NOT RUN |
@@ -255,14 +321,15 @@ dominates it.
 
 ## Next highest-value actions
 
-1. **A1 / A26 case-factorized frequency-ordered tokenization** — the largest
-   unexplored item: dynamic corpus-derived vocabulary (possibly BPE), the
-   dictionary itself compressed and charged (`Method::Token*`). Note the A1.2
-   warning: any marker/substitution mechanism must be gated on enwik9, because
-   enwik8 screening reversed twice here.
-2. **A2.2 coder-in-the-loop alphabet search** — cheap; the control proves the
+1. **A1.1/A26 enwik9 gate** — the full enwik9 comparison of
+   `column-word-token-reverse` vs `column` is running. Do not adopt before it;
+   A1.2's enwik8→enwik9 reversal is the precedent. It will also give a second
+   independent enwik9 measurement of the accepted baseline.
+2. **A1.1/FOT follow-ups** — a case-independent id-ordering control (A32), and
+   a comparison of words vs BPE/subword vs hybrid units (A26).
+3. **A2.2 coder-in-the-loop alphabet search** — cheap; the A2 control proves the
    signal exists and frequency is the wrong objective.
-3. **Wave C parsing** — entropy-repriced optimal parsing + MRU carousel +
+4. **Wave C parsing** — entropy-repriced optimal parsing + MRU carousel +
    matched-literal residuals; a genuinely different family from context mixing.
 
 ## Out-of-memory protection

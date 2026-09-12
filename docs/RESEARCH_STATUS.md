@@ -38,7 +38,9 @@
   demonstrates the mechanism is real but the heuristic is wrong. A1.2 case
   factorization is **rejected in full**: merging lexical identity wins on
   enwik6/7 and reverses on enwik8, and marking alone wins on enwik7/enwik8 then
-  reverses by +427,246 B on enwik9. Both are kept out of the default build. See
+  reverses by +427,246 B on enwik9. A1.1/A26 dynamic word tokenization is
+  **screening-positive at enwik8** (`column-word-token-reverse` −130,713 B) but is
+  not adopted until the running enwik9 gate completes. See
   [`OPTIMIZATION_PHASE_A.md`](OPTIMIZATION_PHASE_A.md).
 
 ## What is *not* true yet

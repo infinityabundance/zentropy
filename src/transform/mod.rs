@@ -373,6 +373,153 @@ pub fn case_decode_markonly(input: &[u8]) -> Vec<u8> {
     out
 }
 
+// --- A1.1 / A26: dynamic frequency-ranked word vocabulary -------------------
+//
+// Unlike [`DICT`] (a fixed 31-entry table in `.rodata`, zero archive metadata),
+// this vocabulary is derived from the input and must therefore be *stored* in
+// the archive and charged. The dictionary is written as a prefix of the same
+// modelled stream, so it is entropy-coded by the same predictor as the body and
+// its cost is fully accounted for.
+//
+// Body encoding is injective:
+//   * a token is `0x00 id` (id in 1..=255, two bytes),
+//   * a literal `0x00` byte is escaped as `0x00 0x00`,
+//   * every other byte is copied verbatim.
+// `id == 0` is unused, so `0x00 0x00` is unambiguous.
+pub const TOK_ESC: u8 = 0x00;
+/// Largest vocabulary the one-byte id space can address (ids 1..=255).
+pub const MAX_TOKENS: usize = 255;
+
+#[inline]
+fn is_word_byte(b: u8) -> bool {
+    b.is_ascii_alphabetic()
+}
+
+/// Build the corpus-derived vocabulary.
+///
+/// Candidate words have length >= 3 and count >= 2, and are kept only when a
+/// two-byte token recovers more than the entry's raw definition cost. Survivors
+/// are ordered by descending frequency (ties by word) and truncated to the id
+/// space, which makes the result deterministic regardless of hash order.
+/// `reverse` flips the id assignment while keeping the same word set; it is the
+/// control that isolates the value of *frequency ranking* from substitution.
+pub fn build_word_vocab(input: &[u8], reverse: bool) -> Vec<Vec<u8>> {
+    use std::collections::HashMap;
+    let mut counts: HashMap<Vec<u8>, u64> = HashMap::new();
+    let mut i = 0;
+    while i < input.len() {
+        if is_word_byte(input[i]) {
+            let mut j = i;
+            while j < input.len() && is_word_byte(input[j]) {
+                j += 1;
+            }
+            *counts.entry(input[i..j].to_vec()).or_insert(0) += 1;
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    let mut cand: Vec<(Vec<u8>, u64)> = counts
+        .into_iter()
+        .filter(|(w, c)| w.len() >= 3 && *c >= 2)
+        .filter(|(w, c)| {
+            let len = w.len() as i64;
+            let count = *c as i64;
+            // Two-byte token: save (len - 2) per occurrence, pay (len + 1) once.
+            count * (len - 2) - (len + 1) > 0
+        })
+        .collect();
+    cand.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    cand.truncate(MAX_TOKENS);
+    if reverse {
+        cand.reverse();
+    }
+    cand.into_iter().map(|(w, _)| w).collect()
+}
+
+/// Encode `input`, emitting `vocabulary || body`.
+pub fn word_token_encode(input: &[u8], reverse: bool) -> Vec<u8> {
+    use std::collections::HashMap;
+    let vocab = build_word_vocab(input, reverse);
+    let mut ids: HashMap<&[u8], u8> = HashMap::with_capacity(vocab.len());
+    let mut out = Vec::with_capacity(input.len());
+    out.push(vocab.len() as u8);
+    for (k, w) in vocab.iter().enumerate() {
+        out.push(w.len() as u8);
+        out.extend_from_slice(w);
+        ids.insert(w.as_slice(), (k + 1) as u8);
+    }
+    let mut i = 0;
+    while i < input.len() {
+        let b = input[i];
+        if is_word_byte(b) {
+            let mut j = i;
+            while j < input.len() && is_word_byte(input[j]) {
+                j += 1;
+            }
+            match ids.get(&input[i..j]) {
+                Some(&id) => {
+                    out.push(TOK_ESC);
+                    out.push(id);
+                }
+                None => out.extend_from_slice(&input[i..j]),
+            }
+            i = j;
+        } else if b == TOK_ESC {
+            out.push(TOK_ESC);
+            out.push(0);
+            i += 1;
+        } else {
+            out.push(b);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Exact inverse of [`word_token_encode`]. Total on malformed input.
+pub fn word_token_decode(data: &[u8]) -> Vec<u8> {
+    if data.is_empty() {
+        return Vec::new();
+    }
+    let count = data[0] as usize;
+    let mut i = 1usize;
+    let mut dict: Vec<&[u8]> = Vec::with_capacity(count);
+    for _ in 0..count {
+        if i >= data.len() {
+            break;
+        }
+        let l = data[i] as usize;
+        i += 1;
+        if i + l > data.len() {
+            break;
+        }
+        dict.push(&data[i..i + l]);
+        i += l;
+    }
+    let mut out = Vec::new();
+    while i < data.len() {
+        let b = data[i];
+        if b == TOK_ESC {
+            if i + 1 < data.len() {
+                let id = data[i + 1] as usize;
+                i += 2;
+                if id == 0 {
+                    out.push(0);
+                } else if id <= dict.len() {
+                    out.extend_from_slice(dict[id - 1]);
+                }
+            } else {
+                i += 1;
+            }
+        } else {
+            out.push(b);
+            i += 1;
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -550,5 +697,73 @@ mod tests {
             case_encode_markonly(b"of Q"),
             [&b"of "[..], &[CASE_TITLE][..], b"Q"].concat()
         );
+    }
+
+    // --- A1.1 / A26 dynamic word vocabulary --------------------------------
+
+    fn token_roundtrip(data: &[u8]) {
+        for reverse in [false, true] {
+            assert_eq!(
+                word_token_decode(&word_token_encode(data, reverse)),
+                data,
+                "word token roundtrip (reverse={reverse})"
+            );
+        }
+    }
+
+    #[test]
+    fn token_roundtrip_examples() {
+        token_roundtrip(b"");
+        token_roundtrip(b"the quick brown fox and the lazy dog");
+        token_roundtrip(b"compression compression compression algorithm");
+        token_roundtrip(b"<page><title>Zentropy</title></page>\n");
+    }
+
+    #[test]
+    fn token_roundtrip_all_bytes_and_noise() {
+        token_roundtrip(&(0..=255u8).collect::<Vec<u8>>());
+        for seed in 1..=32u64 {
+            token_roundtrip(&xorshift_bytes(seed, 4096));
+        }
+        let mut mix = Vec::new();
+        for seed in 1..=8u64 {
+            mix.extend_from_slice(b"the theory of the compression of the data ");
+            mix.extend_from_slice(&xorshift_bytes(seed * 11, 512));
+        }
+        token_roundtrip(&mix);
+    }
+
+    #[test]
+    fn token_vocab_is_deterministic_and_gain_ranked() {
+        // "the" is the most frequent qualifying word and must rank first.
+        let text = b"the cat the dog the bird the fish the the the";
+        let v = build_word_vocab(text, false);
+        assert_eq!(v.first().map(|w| w.as_slice()), Some(&b"the"[..]));
+        // Rebuilding is deterministic regardless of hashing order.
+        for _ in 0..8 {
+            assert_eq!(build_word_vocab(text, false), v);
+        }
+        // The control keeps the same word set but reverses the id assignment.
+        let mut rev = v.clone();
+        rev.reverse();
+        assert_eq!(build_word_vocab(text, true), rev);
+    }
+
+    #[test]
+    fn token_replaces_frequent_word_and_stores_dictionary() {
+        let text = b"compression compression compression";
+        let enc = word_token_encode(text, false);
+        // Shorter than the input despite carrying the dictionary: the three
+        // occurrences collapse to two bytes each.
+        assert!(enc.len() < text.len(), "token stream did not shrink");
+        assert_eq!(word_token_decode(&enc), text);
+    }
+
+    #[test]
+    fn token_escapes_literal_nul() {
+        // A literal 0x00 must never be confused with a token prefix, and id 0
+        // must never be a valid token id.
+        let text = b"a\x00b a\x00b a\x00b";
+        assert_eq!(word_token_decode(&word_token_encode(text, false)), text);
     }
 }

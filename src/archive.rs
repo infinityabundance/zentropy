@@ -57,6 +57,17 @@ enum CaseKind {
     MarkOnly,
 }
 
+/// A1.1/A26 dynamic word-vocabulary mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(feature = "word-token"), allow(dead_code))]
+enum TokenKind {
+    None,
+    /// Frequency-ranked ids (most frequent word gets id 1).
+    Words,
+    /// Control: same word set, reversed id assignment.
+    Reverse,
+}
+
 /// Coding method. New mechanisms are added as variants so each is ablatable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -91,6 +102,14 @@ pub enum Method {
     ColumnCase = 13,
     /// A1.2 control on the accepted parent: hoisting + column + case marking only.
     ColumnCaseMark = 14,
+    /// A1.1/A26: corpus-derived frequency-ranked word vocabulary.
+    WordToken = 15,
+    /// A1.1/A26 control: same vocabulary, reversed id assignment.
+    WordTokenReverse = 16,
+    /// A1.1/A26 on the accepted parent: hoisting + column + frequency-ranked tokens.
+    ColumnWordToken = 17,
+    /// A1.1/A26 control on the accepted parent: hoisting + column + reversed ids.
+    ColumnWordTokenReverse = 18,
 }
 
 impl Method {
@@ -111,6 +130,10 @@ impl Method {
             Method::CaseMark => "case-mark",
             Method::ColumnCase => "column-case",
             Method::ColumnCaseMark => "column-case-mark",
+            Method::WordToken => "word-token",
+            Method::WordTokenReverse => "word-token-reverse",
+            Method::ColumnWordToken => "column-word-token",
+            Method::ColumnWordTokenReverse => "column-word-token-reverse",
         }
     }
 
@@ -131,12 +154,16 @@ impl Method {
             "case-mark" => Method::CaseMark,
             "column-case" => Method::ColumnCase,
             "column-case-mark" => Method::ColumnCaseMark,
+            "word-token" => Method::WordToken,
+            "word-token-reverse" => Method::WordTokenReverse,
+            "column-word-token" => Method::ColumnWordToken,
+            "column-word-token-reverse" => Method::ColumnWordTokenReverse,
             _ => return None,
         })
     }
 
     /// All methods, for exhaustive exactness testing.
-    pub const ALL: [Method; 15] = [
+    pub const ALL: [Method; 19] = [
         Method::RawCm,
         Method::RawCmNoWord,
         Method::StructHoist,
@@ -152,6 +179,10 @@ impl Method {
         Method::CaseMark,
         Method::ColumnCase,
         Method::ColumnCaseMark,
+        Method::WordToken,
+        Method::WordTokenReverse,
+        Method::ColumnWordToken,
+        Method::ColumnWordTokenReverse,
     ];
 
     /// Whether this method runs the structural-hoisting transform.
@@ -169,6 +200,8 @@ impl Method {
                 | Method::ColumnNoLine
                 | Method::ColumnCase
                 | Method::ColumnCaseMark
+                | Method::ColumnWordToken
+                | Method::ColumnWordTokenReverse
         );
         cfg!(feature = "struct-hoist") && wants
     }
@@ -212,6 +245,19 @@ impl Method {
         }
     }
 
+    /// A1.1/A26 dynamic word-vocabulary mode.
+    #[cfg_attr(not(feature = "word-token"), allow(dead_code))]
+    fn token_kind(self) -> TokenKind {
+        if !cfg!(feature = "word-token") {
+            return TokenKind::None;
+        }
+        match self {
+            Method::WordToken | Method::ColumnWordToken => TokenKind::Words,
+            Method::WordTokenReverse | Method::ColumnWordTokenReverse => TokenKind::Reverse,
+            _ => TokenKind::None,
+        }
+    }
+
     fn config(self, n: usize) -> ModelConfig {
         let base = ModelConfig::for_size(n as u64);
         let base = match self {
@@ -222,7 +268,11 @@ impl Method {
             _ => base,
         };
         let base = match self {
-            Method::Column | Method::ColumnCase | Method::ColumnCaseMark => base.with_column(false),
+            Method::Column
+            | Method::ColumnCase
+            | Method::ColumnCaseMark
+            | Method::ColumnWordToken
+            | Method::ColumnWordTokenReverse => base.with_column(false),
             Method::ColumnShuffled => base.with_column(true),
             Method::ColumnNoLine => base.with_column_kind(crate::context::CtxKind::ColumnNoLine),
             _ => base,
@@ -333,6 +383,36 @@ fn maybe_uncase(_method: Method, data: Vec<u8>) -> Vec<u8> {
     data
 }
 
+// A1.1/A26 dynamic word vocabulary. Applied after hoisting and case so it sees
+// normalized text; its `0x00` prefix is escaped, so it composes with the other
+// byte transforms exactly.
+#[cfg(feature = "word-token")]
+fn maybe_token(method: Method, data: Vec<u8>) -> Vec<u8> {
+    match method.token_kind() {
+        TokenKind::None => data,
+        TokenKind::Words => crate::transform::word_token_encode(&data, false),
+        TokenKind::Reverse => crate::transform::word_token_encode(&data, true),
+    }
+}
+
+#[cfg(not(feature = "word-token"))]
+fn maybe_token(_method: Method, data: Vec<u8>) -> Vec<u8> {
+    data
+}
+
+#[cfg(feature = "word-token")]
+fn maybe_untoken(method: Method, data: Vec<u8>) -> Vec<u8> {
+    match method.token_kind() {
+        TokenKind::None => data,
+        TokenKind::Words | TokenKind::Reverse => crate::transform::word_token_decode(&data),
+    }
+}
+
+#[cfg(not(feature = "word-token"))]
+fn maybe_untoken(_method: Method, data: Vec<u8>) -> Vec<u8> {
+    data
+}
+
 // --- codec ------------------------------------------------------------------
 
 /// The method and tune of the currently accepted candidate. `encode` uses these
@@ -360,7 +440,8 @@ pub fn encode_with(input: &[u8], method: Method) -> Vec<u8> {
 pub fn encode_tuned(input: &[u8], method: Method, tune: u8) -> Vec<u8> {
     let hoisted = maybe_hoist(method, input);
     let cased = maybe_case(method, hoisted);
-    let (data, perm) = maybe_perm(method, cased);
+    let tokened = maybe_token(method, cased);
+    let (data, perm) = maybe_perm(method, tokened);
     let n = data.len();
 
     let mut out = Vec::with_capacity(HEADER_LEN + PERM_LEN + n / 2);
@@ -414,6 +495,10 @@ pub fn decode(archive: &[u8]) -> Option<Vec<u8>> {
         12 => Method::CaseMark,
         13 => Method::ColumnCase,
         14 => Method::ColumnCaseMark,
+        15 => Method::WordToken,
+        16 => Method::WordTokenReverse,
+        17 => Method::ColumnWordToken,
+        18 => Method::ColumnWordTokenReverse,
         _ => return None,
     };
     let mut len_bytes = [0u8; 8];
@@ -455,7 +540,8 @@ pub fn decode(archive: &[u8]) -> Option<Vec<u8>> {
     }
 
     let unpermuted = maybe_unperm(decoded, perm.as_ref());
-    let uncased = maybe_uncase(method, unpermuted);
+    let untokened = maybe_untoken(method, unpermuted);
+    let uncased = maybe_uncase(method, untokened);
     Some(maybe_unhoist(method, uncased))
 }
 
