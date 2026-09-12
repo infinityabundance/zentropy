@@ -33,7 +33,17 @@ charged; the value is measured in the all-features configuration):
 | `info-inherit` (A3) | 64 B |
 | `column-model` (A17) | 720 B |
 | `case-model` (A1.2, incl. composite methods) | 976 B |
-| `word-token` (A1.1/A26, incl. composite methods) | 576 B |
+| `word-token` (A1.1/A26, incl. composite methods) | **21,848 B** |
+
+> **A31, learned the hard way.** The first `word-token` measurement read **576 B**
+> because `ACCEPTED_METHOD` was still `Column`: with `lto = "fat"` the optimizer
+> proved the token transform unreachable from the scored entry point and
+> **dead-code-eliminated** it. Once the accepted method actually uses tokens the
+> same measurement is **21,848 B** (the `std::HashMap` machinery for the word
+> count), and it is consistent across feature sets. A mechanism's executable cost
+> must therefore be measured with the mechanism *reachable from the accepted
+> method*, not merely compiled in. The three earlier enwik7/enwik8 receipts that
+> charged 576 B were re-issued at 21,848 B.
 
 ## Mechanism registry
 
@@ -62,8 +72,8 @@ executable bytes.
 | `column-case-mark` | A1.2 mark-only on the accepted parent | **REJECTED** (enwik9 reversal) |
 | `word-token` | A1.1/A26 frequency-ranked vocabulary | screening |
 | `word-token-reverse` | A1.1/A26 reverse-id control | screening |
-| `column-word-token` | A1.1/A26 frequency-ranked on the accepted parent | ADOPTED at enwik8 |
-| `column-word-token-reverse` | A1.1/A26 reverse ids on the accepted parent | **ADOPTED at enwik8**; enwik9 gate running |
+| `column-word-token` | A1.1/A26 frequency-ranked on the accepted parent | ADOPTED enwik8 |
+| `column-word-token-reverse` | A1.1/A26 reverse ids on the accepted parent | **ADOPTED (accepted configuration)** |
 
 Rejected/experimental mechanisms are **not** in the default (scored) build; they
 reproduce with
@@ -131,7 +141,7 @@ so no mechanism's verdict is affected by it.
 > configuration, and the enwik8 saving is **not** extrapolated to it. A full
 > enwik9 run is the next milestone gate.
 
-### A1.1 / A26 — dynamic frequency-ranked word vocabulary (screening-positive; enwik9 pending)
+### A1.1 / A26 — dynamic word vocabulary (ADOPTED)
 
 Unlike `struct-hoist` (a fixed 31-entry table in `.rodata`, zero archive
 metadata), this vocabulary is **derived from the input** and must be *stored* in
@@ -148,49 +158,68 @@ other byte     = copied verbatim
 Vocabulary construction: candidate words have length >= 3 and count >= 2 and
 survive only if a two-byte token recovers more than the entry's raw definition
 cost; survivors are ordered by descending frequency (ties by word), truncated to
-the 255-entry id space, and the list is written as `count, (len, bytes)*`. The
-transform runs after hoisting and case (`hoist -> case -> token -> perm`); its
-`0x00` prefix composes exactly with the other byte transforms. Feature
-`word-token`, measured marginal cost **576 B**.
-
-Standalone (vs the `rawcm` floor) and on the accepted parent (vs `column`):
-
-| corpus | `word-token` vs `rawcm` | `word-token-reverse` vs `rawcm` | `column-word-token` vs `column` | `column-word-token-reverse` vs `column` |
-|---|---|---|---|---|
-| enwik6 | +1,970 REJECTED | +1,139 REJECTED | — | — |
-| enwik7 | −6,467 ADOPTED | −11,980 ADOPTED | +4,320 **REJECTED** | −4,389 ADOPTED |
-| enwik8 | — | — | −70,187 ADOPTED | **−130,713 ADOPTED** |
-| enwik9 | — | — | — | **running (the adoption gate)** |
-
+the 255-entry id space, and written as `count, (len, bytes)*`. The transform runs
+after hoisting and case (`hoist -> case -> token -> perm`). Feature `word-token`,
+measured scored-configuration marginal cost **21,848 B** (see the A31 note above).
 `word-token-reverse` selects the same 255 words but assigns ids in *reverse*
 frequency order (least frequent word gets id 1); it is the control that isolates
 the value of frequency ranking from substitution itself.
 
-**Finding 1 — frequency ranking is the wrong objective.** The reverse-order
-control beats frequency-ranked ids at both enwik7 (−11,980 vs −6,467 standalone)
-and enwik8 (−130,713 vs −70,187 on the accepted parent). This reproduces the A2
-result in a different mechanism: for a bitwise MSB-first predictor, raw symbol
-frequency is not the right objective. FOT's variable-length frequency ranking is
-not what a context-mixing backend wants.
+Archive deltas are cost-independent; ΔS charges the 21,848 B:
 
-**Finding 2 — word substitution on a mature parent is a large win at enwik8.**
-`column-word-token-reverse` saves **130,713 B** at enwik8, ~2.2x the column
-expert's 58,737 B, at 576 B measured cost. Note the strong overlap with
-existing mechanisms (A28): the same variant saves 11,980 B standalone but only
-4,389 B on top of hoist + column at enwik7, i.e. much of the redundancy it
-removes was already captured.
+| corpus | variant | parent | archive Δ | ΔS | verdict |
+|---|---|---|---|---|---|
+| enwik6 | `word-token` | `rawcm` | +1,394 | +23,242 | REJECTED |
+| enwik6 | `word-token-reverse` | `rawcm` | +563 | +22,411 | REJECTED |
+| enwik7 | `word-token` | `rawcm` | −7,043 | +14,805 | REJECTED |
+| enwik7 | `word-token-reverse` | `rawcm` | −12,556 | +9,292 | REJECTED |
+| enwik7 | `column-word-token` | `column` | +3,744 | +25,592 | REJECTED |
+| enwik7 | `column-word-token-reverse` | `column` | −4,965 | +16,883 | REJECTED |
+| enwik8 | `column-word-token` | `column` | −70,763 | −48,915 | ADOPTED |
+| enwik8 | `column-word-token-reverse` | `column` | **−131,289** | **−109,441** | ADOPTED |
+| enwik9 | `column-word-token-reverse` | `column` | **−1,723,929** | **−1,702,081** | **ADOPTED** |
 
-> **Gate (A29).** enwik9 is running. The A1.2 precedent is explicit: a −10,062 B
-> enwik8 win became a **+427,246 B** enwik9 loss. No adoption decision is made
-> before the full-corpus run completes.
+**Finding 1 — the mechanism is `REJECTED_SMALL_ADOPTED_LARGE`.** Every rung
+through enwik7 is rejected once the 21,848 B fixed cost is charged; the archive
+delta turns positive at enwik8 and strongly positive at enwik9. This is precisely
+the pattern A29 exists to protect: the small-rung rejects are correct *for the
+small rung*, and only the full-corpus run decides.
+
+**Finding 2 — frequency ranking is the wrong objective.** The reverse-order
+control beats frequency-ranked ids at every rung that matters (enwik8: −131,289
+vs −70,763 archive; enwik9 uses the reverse variant). This reproduces A2 in a
+different mechanism: for a bitwise MSB-first predictor, raw symbol frequency is
+not the right objective, so FOT-style variable-length frequency ranking is not
+what a context-mixing backend wants.
+
+**Finding 3 — large overlap with existing mechanisms (A28).** The same variant
+saves 12,556 B on enwik9-scale text standalone but only 4,965 B on top of
+hoist + column at enwik7 (and *loses* there once cost is charged), i.e. at small
+scale it mostly removes redundancy the classical stack already captured. Its
+enwik9 value comes from the long tail of repeated words that direct contexts
+cannot reach.
+
+**Adopted.** The accepted configuration is now
+`struct-hoist + column expert + word-token-reverse + tune 7`:
+
+```
+enwik9   column (previous accepted)      181,803,607  1.4544 bpc
+        column-word-token-reverse       180,079,678  1.4406 bpc   exact=true
+        archive_delta -1,723,929 ; charged cost 21,848 ; DeltaS -1,702,081
+```
+
+The scored submission stub is now **346,208 B** (was 324,360 B): +21,848 B is the
+measured token-transform cost, charged and kept. Eliminating `std::HashMap` (a
+sorted-run or custom open-addressing counter would do) is a concrete Phase-11
+size target worth ~20 KB.
 
 > **Open caveat.** The causal story for reverse ordering is not established — it
 > may be an artefact of the id byte's interaction with the CM's bit tree rather
-> than a genuine ranking effect. A control assigning ids by an unrelated
-> criterion (word length, say) would separate "ordering" from "substitution".
-> Also note the transform's word-count `HashMap` is **not** included in the
-> `memory::projected_encode` estimate; it is small relative to the model on
-> enwik9 but should be added to the guard.
+> than a genuine ranking effect. A control assigning ids by an unrelated criterion
+> (word length, say) would separate "ordering" from "substitution". Also, the
+> transform's word-count `HashMap` pushed measured enwik9 peak RSS to 4.67 GB,
+> which is **above** the 4.41 GiB projection; `memory::projected_encode` does not
+> yet account for transform aux memory and should be extended.
 
 ### A1.2 — case factorization (merge REJECTED; mark-only screening-positive)
 
@@ -304,7 +333,7 @@ antagonistic; recorded for A28.
 | A | A3 information inheritance | **DONE** — REJECTED; state-map/ICM is the fair follow-up |
 | A | A20 optimizer sweep | **DONE** — ADOPTED (lr 24) |
 | A | A17 previous-line structural expert | **DONE** — ADOPTED |
-| B | A1 / A26 / A27 case-factorized FOT tokenization | A1.2 **DONE — REJECTED** (merge and mark-only both reverse at scale); A1.1/A26 dynamic vocabulary **screening-positive at enwik8, enwik9 gate running** |
+| B | A1 / A26 / A27 case-factorized FOT tokenization | A1.2 **DONE — REJECTED**; A1.1/A26 **DONE — ADOPTED** (dynamic word vocabulary, reverse ids; −1,723,929 B archive at enwik9) |
 | C | A5–A11 parsing (entropy-repriced optimal parse, MRU carousel, matched-literal residuals, distance floors, ROLZ ranks) | NOT RUN |
 | D | A4 CTS, A16 DMC | NOT RUN |
 | E | A12–A15 grammar refinements | NOT RUN |
@@ -321,12 +350,11 @@ dominates it.
 
 ## Next highest-value actions
 
-1. **A1.1/A26 enwik9 gate** — the full enwik9 comparison of
-   `column-word-token-reverse` vs `column` is running. Do not adopt before it;
-   A1.2's enwik8→enwik9 reversal is the precedent. It will also give a second
-   independent enwik9 measurement of the accepted baseline.
-2. **A1.1/FOT follow-ups** — a case-independent id-ordering control (A32), and
-   a comparison of words vs BPE/subword vs hybrid units (A26).
+1. **A1.1/FOT follow-ups** — a case-independent id-ordering control (A32);
+   words vs BPE/subword vs hybrid units (A26); and reclaiming the ~21.8 KB of
+   `std::HashMap` code with a custom word counter (Phase-11 size).
+2. **Extend `memory::projected_encode`** to include transform aux memory (the
+   token `HashMap`), since measured enwik9 peak RSS exceeded the projection.
 3. **A2.2 coder-in-the-loop alphabet search** — cheap; the A2 control proves the
    signal exists and frequency is the wrong objective.
 4. **Wave C parsing** — entropy-repriced optimal parsing + MRU carousel +

@@ -43,7 +43,7 @@ path = "src/bin/zentropy_sfx.rs"
 # Only ADOPTED mechanisms are in the default (scored) build. Rejected or
 # experimental mechanisms are compiled in explicitly with --features so they
 # reproduce but do not cost submission bytes.
-default = ["struct-hoist", "column-model", "mem-guard"]
+default = ["struct-hoist", "column-model", "word-token", "mem-guard"]
 # Gates the Phase-3 structural-hoisting transform into the binary. Disabling it
 # yields an otherwise-identical binary used ONLY to measure the mechanism's
 # real executable-byte cost. `S` is authority: an estimate is never allowed to
@@ -59,7 +59,8 @@ column-model = []
 # reverses at enwik9); kept only to reproduce the negative result.
 case-model = []
 # A1.1/A26: corpus-derived frequency-ranked word vocabulary (dictionary stored in
-# the archive and charged). Not in default until measured.
+# the archive and charged). ADOPTED at enwik9 (-1,723,929 B); the reverse-id
+# variant is the accepted one.
 word-token = []
 # Out-of-memory protection in the scored stub. On by default; disabling it
 # yields an otherwise-identical binary used to measure its executable cost.

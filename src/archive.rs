@@ -418,7 +418,11 @@ fn maybe_untoken(_method: Method, data: Vec<u8>) -> Vec<u8> {
 /// The method and tune of the currently accepted candidate. `encode` uses these
 /// so the production path (bench, compress, SFX) always reflects the best
 /// measured configuration. Optimization-A experiments override both explicitly.
-pub const ACCEPTED_METHOD: Method = Method::Column;
+///
+/// A1.1/A26: corpus-derived word tokenization with reverse-frequency ids on top
+/// of structural hoisting and the column expert. Adopted at enwik9 after the
+/// enwik8 screen (ΔS -1,723,353 at 576 B measured executable cost).
+pub const ACCEPTED_METHOD: Method = Method::ColumnWordTokenReverse;
 /// A20: mixer learning rate 24 was adopted on enwik7 screening and confirmed on
 /// enwik8 (−76,483 B at zero executable cost).
 pub const ACCEPTED_TUNE: u8 = 7;
@@ -622,7 +626,16 @@ mod tests {
         // `encode` uses the accepted method/tune.
         assert_eq!(arch[4], ACCEPTED_METHOD as u8);
         assert_eq!(arch[5], ACCEPTED_TUNE);
-        assert_eq!(u64::from_le_bytes(arch[6..14].try_into().unwrap()), 5);
+        // The length field is the length of the *transformed* stream, which the
+        // inverse transforms map back to the input. It is therefore >= the input
+        // length, not equal to it (a token/hoist transform can lengthen or
+        // shorten it). The binding invariant is that decode is exact.
+        let coded_len = u64::from_le_bytes(arch[6..14].try_into().unwrap());
+        assert!(
+            coded_len >= 5,
+            "coded length {coded_len} does not cover the input"
+        );
+        assert_eq!(decode(&arch).unwrap(), b"hello");
     }
 
     #[test]
