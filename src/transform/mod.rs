@@ -184,6 +184,195 @@ pub fn invert_perm(perm: &[u8; 256]) -> [u8; 256] {
     inv
 }
 
+/// A1.2 case-factorization markers.
+pub const CASE_ESC: u8 = 0x00;
+pub const CASE_TITLE: u8 = 0x01;
+pub const CASE_UPPER: u8 = 0x02;
+pub const CASE_MIXED: u8 = 0x03;
+
+/// Classify an all-letters word: 0 = lower, 1 = Title, 2 = UPPER, 3 = mixed.
+#[inline]
+fn word_class(w: &[u8]) -> u8 {
+    if w.iter().all(|b| b.is_ascii_lowercase()) {
+        return 0;
+    }
+    if w[0].is_ascii_uppercase() && w[1..].iter().all(|b| b.is_ascii_lowercase()) {
+        return 1;
+    }
+    if w.iter().all(|b| b.is_ascii_uppercase()) {
+        return 2;
+    }
+    3
+}
+
+/// A1.2: separate lexical identity from orthographic case.
+///
+/// Lowercase words are emitted unchanged (the common case, so no expansion);
+/// Title/UPPER words are emitted as a marker plus the *lowercased* word, so the
+/// predictor sees one lexical form instead of many; mixed-case words are emitted
+/// verbatim behind a marker (rare). Literal marker bytes are escaped.
+pub fn case_encode(input: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(input.len());
+    let mut i = 0;
+    while i < input.len() {
+        let b = input[i];
+        if b.is_ascii_alphabetic() {
+            let mut j = i;
+            while j < input.len() && input[j].is_ascii_alphabetic() {
+                j += 1;
+            }
+            let w = &input[i..j];
+            match word_class(w) {
+                0 => out.extend_from_slice(w),
+                1 => {
+                    out.push(CASE_TITLE);
+                    for &c in w {
+                        out.push(c.to_ascii_lowercase());
+                    }
+                }
+                2 => {
+                    out.push(CASE_UPPER);
+                    for &c in w {
+                        out.push(c.to_ascii_lowercase());
+                    }
+                }
+                _ => {
+                    out.push(CASE_MIXED);
+                    out.extend_from_slice(w);
+                }
+            }
+            i = j;
+        } else if b <= CASE_MIXED {
+            out.push(CASE_ESC);
+            out.push(b);
+            i += 1;
+        } else {
+            out.push(b);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Exact inverse of [`case_encode`].
+pub fn case_decode(input: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(input.len());
+    let mut i = 0;
+    while i < input.len() {
+        let b = input[i];
+        if b == CASE_ESC {
+            if i + 1 < input.len() {
+                out.push(input[i + 1]);
+                i += 2;
+            } else {
+                out.push(CASE_ESC);
+                i += 1;
+            }
+        } else if b == CASE_TITLE {
+            i += 1;
+            let s = i;
+            while i < input.len() && input[i].is_ascii_lowercase() {
+                i += 1;
+            }
+            if i > s {
+                out.push(input[s].to_ascii_uppercase());
+                out.extend_from_slice(&input[s + 1..i]);
+            }
+        } else if b == CASE_UPPER {
+            i += 1;
+            let s = i;
+            while i < input.len() && input[i].is_ascii_lowercase() {
+                i += 1;
+            }
+            for &c in &input[s..i] {
+                out.push(c.to_ascii_uppercase());
+            }
+        } else if b == CASE_MIXED {
+            i += 1;
+            let s = i;
+            while i < input.len() && input[i].is_ascii_alphabetic() {
+                i += 1;
+            }
+            out.extend_from_slice(&input[s..i]);
+        } else {
+            out.push(b);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// A1.2 control: mark case but do **not** merge lexical identity (words are left
+/// untouched behind a marker). Isolates the value of merging from the cost of
+/// the markers themselves.
+pub fn case_encode_markonly(input: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(input.len());
+    let mut i = 0;
+    while i < input.len() {
+        let b = input[i];
+        if b.is_ascii_alphabetic() {
+            let mut j = i;
+            while j < input.len() && input[j].is_ascii_alphabetic() {
+                j += 1;
+            }
+            let w = &input[i..j];
+            match word_class(w) {
+                0 => out.extend_from_slice(w),
+                1 => {
+                    out.push(CASE_TITLE);
+                    out.extend_from_slice(w);
+                }
+                2 => {
+                    out.push(CASE_UPPER);
+                    out.extend_from_slice(w);
+                }
+                _ => {
+                    out.push(CASE_MIXED);
+                    out.extend_from_slice(w);
+                }
+            }
+            i = j;
+        } else if b <= CASE_MIXED {
+            out.push(CASE_ESC);
+            out.push(b);
+            i += 1;
+        } else {
+            out.push(b);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Exact inverse of [`case_encode_markonly`].
+pub fn case_decode_markonly(input: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(input.len());
+    let mut i = 0;
+    while i < input.len() {
+        let b = input[i];
+        if b == CASE_ESC {
+            if i + 1 < input.len() {
+                out.push(input[i + 1]);
+                i += 2;
+            } else {
+                out.push(CASE_ESC);
+                i += 1;
+            }
+        } else if b >= CASE_TITLE && b <= CASE_MIXED {
+            i += 1;
+            let s = i;
+            while i < input.len() && input[i].is_ascii_alphabetic() {
+                i += 1;
+            }
+            out.extend_from_slice(&input[s..i]);
+        } else {
+            out.push(b);
+            i += 1;
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,5 +445,110 @@ mod tests {
         let enc = apply_perm(&data, &perm);
         let inv = invert_perm(&perm);
         assert_eq!(apply_perm(&enc, &inv), data);
+    }
+
+    // --- A1.2 case factorization -------------------------------------------
+
+    fn case_roundtrip(data: &[u8]) {
+        assert_eq!(
+            case_decode(&case_encode(data)),
+            data,
+            "case merge roundtrip"
+        );
+        assert_eq!(
+            case_decode_markonly(&case_encode_markonly(data)),
+            data,
+            "case mark-only roundtrip"
+        );
+    }
+
+    /// Deterministic pseudo-random bytes, for property tests without a dev-dep.
+    fn xorshift_bytes(seed: u64, len: usize) -> Vec<u8> {
+        let mut s = seed | 1;
+        (0..len)
+            .map(|_| {
+                s ^= s << 13;
+                s ^= s >> 7;
+                s ^= s << 17;
+                (s >> 24) as u8
+            })
+            .collect()
+    }
+
+    #[test]
+    fn case_roundtrip_examples() {
+        case_roundtrip(b"");
+        case_roundtrip(b"The Quick BROWN fox jumps over the lazy dog.");
+        case_roundtrip(b"HelloWorld mixedCASE iPhone McDonald");
+        case_roundtrip(b"aA Aa AA aa a A");
+        case_roundtrip(b"<page><title>Zentropy</title></page>\n");
+    }
+
+    #[test]
+    fn case_roundtrip_all_bytes() {
+        case_roundtrip(&(0..=255u8).collect::<Vec<u8>>());
+    }
+
+    #[test]
+    fn case_roundtrip_marker_heavy() {
+        // Every case marker and escape byte, adjacent to word and non-word runs.
+        for tail in [
+            &b"\x00"[..],
+            &b"\x01"[..],
+            &b"\x02"[..],
+            &b"\x03"[..],
+            &b"\x00\x01\x02\x03"[..],
+            &b"\x01Abc\x02X\x03aB\x00"[..],
+            &b"Ab\x01ab\x00cd\x02"[..],
+        ] {
+            case_roundtrip(tail);
+        }
+    }
+
+    #[test]
+    fn case_roundtrip_random() {
+        for seed in 1..=32u64 {
+            case_roundtrip(&xorshift_bytes(seed, 4096));
+        }
+        // A mixture of text-like bytes and full-range noise.
+        let mut mix = Vec::new();
+        for seed in 1..=8u64 {
+            mix.extend_from_slice(b"Some Words Are Capitalized. others are not! ");
+            mix.extend_from_slice(&xorshift_bytes(seed * 7, 512));
+        }
+        case_roundtrip(&mix);
+    }
+
+    #[test]
+    fn case_merge_folds_identity_and_marks_case() {
+        // Title and UPPER words are lowercased behind a one-byte marker, so the
+        // lexical identity the predictor sees is a single form.
+        assert_eq!(
+            case_encode(b"Compression COMPRESSION compression"),
+            [
+                &[CASE_TITLE][..],
+                b"compression ",
+                &[CASE_UPPER][..],
+                b"compression compression",
+            ]
+            .concat()
+        );
+        // Mixed case is preserved verbatim, but still marked so it is exact.
+        assert_eq!(
+            case_encode(b"iPhone"),
+            [&[CASE_MIXED][..], b"iPhone"].concat()
+        );
+        // Literal control bytes must be escaped, never confused with markers.
+        assert_eq!(case_encode(b"\x01"), [CASE_ESC, 0x01]);
+    }
+
+    #[test]
+    fn case_markonly_does_not_merge_identity() {
+        // The control marks case but leaves the word itself untouched, so it
+        // isolates marker cost from the value of merging lexical identity.
+        assert_eq!(
+            case_encode_markonly(b"of Q"),
+            [&b"of "[..], &[CASE_TITLE][..], b"Q"].concat()
+        );
     }
 }

@@ -46,6 +46,17 @@ enum PermKind {
     Random,
 }
 
+/// A1.2 case-factorization mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(feature = "case-model"), allow(dead_code))]
+enum CaseKind {
+    None,
+    /// Merge lexical identity: lower-case words behind a case marker.
+    Merge,
+    /// Control: mark case but leave lexical identity untouched.
+    MarkOnly,
+}
+
 /// Coding method. New mechanisms are added as variants so each is ablatable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -72,6 +83,14 @@ pub enum Method {
     ColumnShuffled = 9,
     /// A17 null control: no previous-line byte (left + column only).
     ColumnNoLine = 10,
+    /// A1.2: case factorization (merge lexical identity behind case markers).
+    Case = 11,
+    /// A1.2 control: mark case without merging lexical identity.
+    CaseMark = 12,
+    /// A1.2 on the accepted parent: structural hoisting + column expert + case merge.
+    ColumnCase = 13,
+    /// A1.2 control on the accepted parent: hoisting + column + case marking only.
+    ColumnCaseMark = 14,
 }
 
 impl Method {
@@ -88,6 +107,10 @@ impl Method {
             Method::Column => "column",
             Method::ColumnShuffled => "column-shuffled",
             Method::ColumnNoLine => "column-noline",
+            Method::Case => "case",
+            Method::CaseMark => "case-mark",
+            Method::ColumnCase => "column-case",
+            Method::ColumnCaseMark => "column-case-mark",
         }
     }
 
@@ -104,12 +127,16 @@ impl Method {
             "column" => Method::Column,
             "column-shuffled" => Method::ColumnShuffled,
             "column-noline" => Method::ColumnNoLine,
+            "case" => Method::Case,
+            "case-mark" => Method::CaseMark,
+            "column-case" => Method::ColumnCase,
+            "column-case-mark" => Method::ColumnCaseMark,
             _ => return None,
         })
     }
 
     /// All methods, for exhaustive exactness testing.
-    pub const ALL: [Method; 11] = [
+    pub const ALL: [Method; 15] = [
         Method::RawCm,
         Method::RawCmNoWord,
         Method::StructHoist,
@@ -121,6 +148,10 @@ impl Method {
         Method::Column,
         Method::ColumnShuffled,
         Method::ColumnNoLine,
+        Method::Case,
+        Method::CaseMark,
+        Method::ColumnCase,
+        Method::ColumnCaseMark,
     ];
 
     /// Whether this method runs the structural-hoisting transform.
@@ -136,6 +167,8 @@ impl Method {
                 | Method::Column
                 | Method::ColumnShuffled
                 | Method::ColumnNoLine
+                | Method::ColumnCase
+                | Method::ColumnCaseMark
         );
         cfg!(feature = "struct-hoist") && wants
     }
@@ -164,6 +197,21 @@ impl Method {
         }
     }
 
+    /// A1.2 case-factorization mode.
+    #[cfg_attr(not(feature = "case-model"), allow(dead_code))]
+    fn case_kind(self) -> CaseKind {
+        if !cfg!(feature = "case-model") {
+            return CaseKind::None;
+        }
+        match self {
+            Method::Case => CaseKind::Merge,
+            Method::CaseMark => CaseKind::MarkOnly,
+            Method::ColumnCase => CaseKind::Merge,
+            Method::ColumnCaseMark => CaseKind::MarkOnly,
+            _ => CaseKind::None,
+        }
+    }
+
     fn config(self, n: usize) -> ModelConfig {
         let base = ModelConfig::for_size(n as u64);
         let base = match self {
@@ -174,7 +222,7 @@ impl Method {
             _ => base,
         };
         let base = match self {
-            Method::Column => base.with_column(false),
+            Method::Column | Method::ColumnCase | Method::ColumnCaseMark => base.with_column(false),
             Method::ColumnShuffled => base.with_column(true),
             Method::ColumnNoLine => base.with_column_kind(crate::context::CtxKind::ColumnNoLine),
             _ => base,
@@ -251,6 +299,40 @@ fn maybe_unperm(data: Vec<u8>, _perm: Option<&[u8; PERM_LEN]>) -> Vec<u8> {
     data
 }
 
+// A1.2 case factorization runs *after* structural hoisting: hoisting replaces
+// structural strings with codes in 0x01..=0x1F, and case markers reuse the low
+// bytes 0x00..=0x03. Running case second is what keeps them from colliding: the
+// only hoist codes case must escape are the first few dictionary codes, which
+// are rare, while every case marker costs exactly one byte. It is a bijection
+// with a universal escape, so `maybe_uncase` inverts it exactly.
+#[cfg(feature = "case-model")]
+fn maybe_case(method: Method, data: Vec<u8>) -> Vec<u8> {
+    match method.case_kind() {
+        CaseKind::None => data,
+        CaseKind::Merge => crate::transform::case_encode(&data),
+        CaseKind::MarkOnly => crate::transform::case_encode_markonly(&data),
+    }
+}
+
+#[cfg(not(feature = "case-model"))]
+fn maybe_case(_method: Method, data: Vec<u8>) -> Vec<u8> {
+    data
+}
+
+#[cfg(feature = "case-model")]
+fn maybe_uncase(method: Method, data: Vec<u8>) -> Vec<u8> {
+    match method.case_kind() {
+        CaseKind::None => data,
+        CaseKind::Merge => crate::transform::case_decode(&data),
+        CaseKind::MarkOnly => crate::transform::case_decode_markonly(&data),
+    }
+}
+
+#[cfg(not(feature = "case-model"))]
+fn maybe_uncase(_method: Method, data: Vec<u8>) -> Vec<u8> {
+    data
+}
+
 // --- codec ------------------------------------------------------------------
 
 /// The method and tune of the currently accepted candidate. `encode` uses these
@@ -277,7 +359,8 @@ pub fn encode_with(input: &[u8], method: Method) -> Vec<u8> {
 /// decoder reconstructs the identical model.
 pub fn encode_tuned(input: &[u8], method: Method, tune: u8) -> Vec<u8> {
     let hoisted = maybe_hoist(method, input);
-    let (data, perm) = maybe_perm(method, hoisted);
+    let cased = maybe_case(method, hoisted);
+    let (data, perm) = maybe_perm(method, cased);
     let n = data.len();
 
     let mut out = Vec::with_capacity(HEADER_LEN + PERM_LEN + n / 2);
@@ -327,6 +410,10 @@ pub fn decode(archive: &[u8]) -> Option<Vec<u8>> {
         8 => Method::Column,
         9 => Method::ColumnShuffled,
         10 => Method::ColumnNoLine,
+        11 => Method::Case,
+        12 => Method::CaseMark,
+        13 => Method::ColumnCase,
+        14 => Method::ColumnCaseMark,
         _ => return None,
     };
     let mut len_bytes = [0u8; 8];
@@ -368,7 +455,8 @@ pub fn decode(archive: &[u8]) -> Option<Vec<u8>> {
     }
 
     let unpermuted = maybe_unperm(decoded, perm.as_ref());
-    Some(maybe_unhoist(method, unpermuted))
+    let uncased = maybe_uncase(method, unpermuted);
+    Some(maybe_unhoist(method, uncased))
 }
 
 /// Peek the coded length from an archive header without decoding it. Used by

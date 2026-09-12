@@ -31,6 +31,8 @@ charged; the value is measured in the all-features configuration):
 | `struct-hoist` (Phase 3) | 1,712 B |
 | `alphabet-perm` (A2) | 472 B |
 | `info-inherit` (A3) | 64 B |
+| `column-model` (A17) | 720 B |
+| `case-model` (A1.2, incl. composite methods) | 976 B |
 
 ## Mechanism registry
 
@@ -53,6 +55,10 @@ executable bytes.
 | `column` | A17 aligned previous-line/column expert | **ADOPTED** |
 | `column-shuffled` | A17 wrong-column control | control |
 | `column-noline` | A17 no-vertical null control | control |
+| `case` | A1.2 case merge (no hoist) | screening only |
+| `case-mark` | A1.2 mark-only (no hoist) | screening only |
+| `column-case` | A1.2 merge on the accepted parent | **REJECTED** (scaling reversal) |
+| `column-case-mark` | A1.2 mark-only on the accepted parent | **screening-positive**; enwik9 pending |
 
 Rejected/experimental mechanisms are **not** in the default (scored) build; they
 reproduce with
@@ -120,6 +126,56 @@ so no mechanism's verdict is affected by it.
 > configuration, and the enwik8 saving is **not** extrapolated to it. A full
 > enwik9 run is the next milestone gate.
 
+### A1.2 — case factorization (merge REJECTED; mark-only screening-positive)
+
+A1.2 separates lexical identity from orthographic case. The transform is applied
+**after** structural hoisting (`hoist → case → perm`): hoisting replaces structural
+strings with one-byte codes in `0x01..=0x1F`, and case markers reuse the low bytes
+`0x00..=0x03`. Running case second is what keeps the two from colliding — the only
+hoist codes case must escape are `0x01/0x02/0x03` (`<page>`, `</page>`, `<title>`),
+which are rare (≈4 KB on enwik7), while every case marker costs exactly one byte.
+Both transforms remain exact bijections; `decode` unhoists after uncasing.
+
+Two variants and their control, `column-case` = hoist + column + merge (lower-case
+and mark `Title`/`UPPER`/`MIXED`), `column-case-mark` = hoist + column + mark only
+(identity preserved). Marker incidence on enwik7: 339,833 marked words
+(`Title` 321,318 / `UPPER` 15,385 / `MIXED` 3,130).
+
+| corpus | `column-case` (merge) | `column-case-mark` (mark only) |
+|---|---|---|
+| enwik6 | −985 **ADOPTED** | +9 **REJECTED** (fixed cost on a small archive) |
+| enwik7 | −7,875 **ADOPTED** | −7,129 **ADOPTED** |
+| enwik8 | **+5,379 REJECTED** | **−10,062 ADOPTED** |
+
+Measured marginal cost `case-model` = **976 B**; all ΔS above charge it.
+
+**Finding 1 — merging lexical identity reverses sign at scale.** The merge variant
+wins on enwik6/enwik7 and *loses* on enwik8. Lower-casing `The → the` collapses
+distinct forms the predictor was already exploiting cheaply, and the loss grows
+with corpus size. This is the WRT warning reproduced on Zentropy: a substitution
+that helps a weak backend can hurt a stronger one. `column-case` is **REJECTED**
+per the scaling-reversal hard stop (A29/A40).
+
+**Finding 2 — explicit case marking alone is screening-positive.** `column-case-mark`
+keeps the word verbatim and inserts one `0x01/0x02/0x03` byte before each marked
+word. It loses 9 B on enwik6 (the 976 B fixed cost dominates a small archive) and
+wins at enwik7 and enwik8. The gain is not explained by *merging* identity, since
+this variant does not merge. The markup context this changes is real but small
+(≈0.05 % of archive at enwik8).
+
+> **Caveat (A32).** The mark-only variant is the dose-response control for the
+> *merge* claim, and it is what falsifies that claim. It is **not** yet a
+> case-independent control for the *marker* claim: a control that inserts
+> identical markers on a case-independent predicate (word length parity, say) is
+> still required before attributing the gain to case semantics rather than to
+> generic word-start boundary marking. Until then the mechanism is described, not
+> explained.
+
+> **Gate (A29).** enwik9 has not been run for this mechanism. The merge variant
+> already reversed from enwik7 to enwik8, so no smaller-rung result authorises
+> adoption on the full corpus. `case-model` therefore stays **out of the default
+> (scored) build** pending a full enwik9 comparison.
+
 ### A2 — bitwise alphabet geometry (REJECTED)
 
 | Method | enwik7 archive | ΔS vs parent |
@@ -171,8 +227,8 @@ antagonistic; recorded for A28.
 | A | A2 alphabet geometry | **DONE** — REJECTED; coder-in-the-loop search is the follow-up |
 | A | A3 information inheritance | **DONE** — REJECTED; state-map/ICM is the fair follow-up |
 | A | A20 optimizer sweep | **DONE** — ADOPTED (lr 24) |
-| A | A17 previous-line structural expert | NOT RUN |
-| B | A1 / A26 / A27 case-factorized FOT tokenization | NOT RUN (next) |
+| A | A17 previous-line structural expert | **DONE** — ADOPTED |
+| B | A1 / A26 / A27 case-factorized FOT tokenization | **IN PROGRESS** — A1.2 done: merge REJECTED, mark-only screening-positive, enwik9 pending; A1.1/A26 vocabulary not started |
 | C | A5–A11 parsing (entropy-repriced optimal parse, MRU carousel, matched-literal residuals, distance floors, ROLZ ranks) | NOT RUN |
 | D | A4 CTS, A16 DMC | NOT RUN |
 | E | A12–A15 grammar refinements | NOT RUN |
@@ -189,14 +245,19 @@ dominates it.
 
 ## Next highest-value actions
 
-1. **A1 / A26 case-factorized frequency-ordered tokenization** — the largest
-   unexplored item and the one the external review ranked first. Dynamic
-   corpus-derived vocabulary (possibly BPE), case as a separate low-entropy
-   stream, dictionary itself compressed, all charged.
-2. **A2.2 coder-in-the-loop alphabet search** — cheap; the control proves the
+1. **A1.2 enwik9 gate** — a full enwik9 comparison of `column-case-mark` vs
+   `column`. This also produces the first enwik9 number under the accepted
+   (hoist + column + tune 7) configuration, which is currently unknown. Do not
+   adopt the marker mechanism before this run.
+2. **A1.2 case-independent marker control** — insert the same markers on a
+   case-independent predicate to decide whether the gain is case semantics or
+   generic word-start marking (A32).
+3. **A1 / A26 case-factorized frequency-ordered tokenization** — the largest
+   unexplored item: dynamic corpus-derived vocabulary (possibly BPE), the
+   dictionary itself compressed and charged (`Method::Token*`).
+4. **A2.2 coder-in-the-loop alphabet search** — cheap; the control proves the
    signal exists and frequency is the wrong objective.
-3. **A17 previous-line expert** — cheap, targets Wikipedia tables/lists.
-4. **Wave C parsing** — entropy-repriced optimal parsing + MRU carousel +
+5. **Wave C parsing** — entropy-repriced optimal parsing + MRU carousel +
    matched-literal residuals; a genuinely different family from context mixing.
 
 ## Out-of-memory protection

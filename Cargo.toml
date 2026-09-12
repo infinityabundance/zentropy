@@ -55,6 +55,9 @@ alphabet-perm = []
 info-inherit = []
 # A17: previous-line / structural-column expert.
 column-model = []
+# A1.2: case factorization (merge lexical identity; markers). Not in default
+# until measured on enwik7/enwik8.
+case-model = []
 # Out-of-memory protection in the scored stub. On by default; disabling it
 # yields an otherwise-identical binary used to measure its executable cost.
 mem-guard = []

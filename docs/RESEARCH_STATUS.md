@@ -6,7 +6,7 @@
 
 ## What is true right now
 
-- **Exactness holds.** 45 unit/property tests plus 7 scripted courts pass. The
+- **Exactness holds.** 68 unit/property tests plus 7 scripted courts pass. The
   Wikipedia IR (`ZIR-0`) round-trips arbitrary and malformed input exactly. The
   archive decoder rejects corruption without panicking or allocating without
   bound. A deterministic incompressible stream does not compress.
@@ -27,9 +27,17 @@
 - **Hutter score accounting is sealed:** the three legal submission forms are
   unit-tested constructors, and no mechanism's adoption decision uses an
   estimated byte cost.
-- **The submission path works.** The scored stub (313,792 B) is both `comp9a`
+- **The submission path works.** The scored stub (324,328 B) is both `comp9a`
   and `decomp9`; a packed self-extracting `archive9` reconstructs byte-identically
   with no external inputs.
+- **Optimization Phase A is running.** A17 (previous-line/column expert) and the
+  A20 learning-rate variant (`tune 7`) are adopted; A2 (alphabet permutation) and
+  A3 (information inheritance) are rejected, each with a negative control that
+  demonstrates the mechanism is real but the heuristic is wrong. A1.2 case
+  factorization: merging lexical identity is **rejected** (wins on enwik6/7,
+  loses on enwik8 — a scaling reversal), while case *marking alone* is
+  screening-positive on enwik7/enwik8 and pending a full enwik9 gate. See
+  [`OPTIMIZATION_PHASE_A.md`](OPTIMIZATION_PHASE_A.md).
 
 ## What is *not* true yet
 
@@ -124,7 +132,7 @@ item 2/7: a cheap probe, not an optimisation campaign.
   mechanism is gated on that, not on our hardware.
 - **Memory.** The model already uses ~450 MB for enwik8; enwik9 needs a
   careful allocation budget under 10 GB.
-- **Binary size.** The stub is 313,792 B. If the model grows, the scored
+- **Binary size.** The stub is 324,328 B. If the model grows, the scored
   `compressor_bytes` grows with it; Phase 11 must reclaim this.
 - **Determinism.** All arithmetic is integer-only today. This must be preserved
   if any floating-point learned component enters the submission.
