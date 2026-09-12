@@ -65,6 +65,8 @@ word-token = []
 # A1.1/A26 v2: escape-extended word vocabulary (thousands of tokens).
 # Experimental; not in the default build until measured on the ladder.
 word-token2 = []
+# Phase 4.1: long-distance match tier (a second, longer-minimum match index).
+long-match = []
 # Out-of-memory protection in the scored stub. On by default; disabling it
 # yields an otherwise-identical binary used to measure its executable cost.
 mem-guard = []

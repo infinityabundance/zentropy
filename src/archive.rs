@@ -70,6 +70,7 @@ enum TokenKind {
     /// Control: same word set, reversed id assignment.
     Reverse,
     /// v2: escape-extended ids, vocabulary far past 255.
+    #[cfg_attr(not(feature = "word-token2"), allow(dead_code))]
     V2,
 }
 
@@ -119,6 +120,16 @@ pub enum Method {
     WordToken2 = 19,
     /// A1.1/A26 v2 on the accepted parent: hoisting + column + extended vocabulary.
     ColumnWordToken2 = 20,
+    /// Phase 4.1 control: accepted config + a redundant second short (min 6) tier.
+    LongMatch6 = 21,
+    /// Phase 4.1: accepted config + a long-distance match tier, min 8.
+    LongMatch8 = 22,
+    /// Phase 4.1: accepted config + a long-distance match tier, min 12.
+    LongMatch12 = 23,
+    /// Phase 4.1: accepted config + a long-distance match tier, min 16.
+    LongMatch16 = 24,
+    /// Phase 4.1: accepted config + a long-distance match tier, min 24.
+    LongMatch24 = 25,
 }
 
 impl Method {
@@ -145,6 +156,11 @@ impl Method {
             Method::ColumnWordTokenReverse => "column-word-token-reverse",
             Method::WordToken2 => "word-token2",
             Method::ColumnWordToken2 => "column-word-token2",
+            Method::LongMatch6 => "long-match6",
+            Method::LongMatch8 => "long-match8",
+            Method::LongMatch12 => "long-match12",
+            Method::LongMatch16 => "long-match16",
+            Method::LongMatch24 => "long-match24",
         }
     }
 
@@ -171,12 +187,17 @@ impl Method {
             "column-word-token-reverse" => Method::ColumnWordTokenReverse,
             "word-token2" => Method::WordToken2,
             "column-word-token2" => Method::ColumnWordToken2,
+            "long-match6" => Method::LongMatch6,
+            "long-match8" => Method::LongMatch8,
+            "long-match12" => Method::LongMatch12,
+            "long-match16" => Method::LongMatch16,
+            "long-match24" => Method::LongMatch24,
             _ => return None,
         })
     }
 
     /// All methods, for exhaustive exactness testing.
-    pub const ALL: [Method; 21] = [
+    pub const ALL: [Method; 26] = [
         Method::RawCm,
         Method::RawCmNoWord,
         Method::StructHoist,
@@ -198,6 +219,11 @@ impl Method {
         Method::ColumnWordTokenReverse,
         Method::WordToken2,
         Method::ColumnWordToken2,
+        Method::LongMatch6,
+        Method::LongMatch8,
+        Method::LongMatch12,
+        Method::LongMatch16,
+        Method::LongMatch24,
     ];
 
     /// Whether this method runs the structural-hoisting transform.
@@ -218,6 +244,11 @@ impl Method {
                 | Method::ColumnWordToken
                 | Method::ColumnWordTokenReverse
                 | Method::ColumnWordToken2
+                | Method::LongMatch6
+                | Method::LongMatch8
+                | Method::LongMatch12
+                | Method::LongMatch16
+                | Method::LongMatch24
         );
         cfg!(feature = "struct-hoist") && wants
     }
@@ -270,7 +301,13 @@ impl Method {
         #[cfg(feature = "word-token")]
         match self {
             Method::WordToken | Method::ColumnWordToken => return TokenKind::Words,
-            Method::WordTokenReverse | Method::ColumnWordTokenReverse => return TokenKind::Reverse,
+            Method::WordTokenReverse
+            | Method::ColumnWordTokenReverse
+            | Method::LongMatch6
+            | Method::LongMatch8
+            | Method::LongMatch12
+            | Method::LongMatch16
+            | Method::LongMatch24 => return TokenKind::Reverse,
             _ => {}
         }
         #[cfg(feature = "word-token2")]
@@ -280,6 +317,22 @@ impl Method {
         }
         let _ = self;
         TokenKind::None
+    }
+
+    /// Phase 4.1: the long-distance match tier's minimum length, if any.
+    #[cfg_attr(not(feature = "long-match"), allow(dead_code))]
+    fn match2_min(self) -> Option<usize> {
+        if !cfg!(feature = "long-match") {
+            return None;
+        }
+        match self {
+            Method::LongMatch6 => Some(6),
+            Method::LongMatch8 => Some(8),
+            Method::LongMatch12 => Some(12),
+            Method::LongMatch16 => Some(16),
+            Method::LongMatch24 => Some(24),
+            _ => None,
+        }
     }
 
     fn config(self, n: usize) -> ModelConfig {
@@ -297,10 +350,19 @@ impl Method {
             | Method::ColumnCaseMark
             | Method::ColumnWordToken
             | Method::ColumnWordTokenReverse
-            | Method::ColumnWordToken2 => base.with_column(false),
+            | Method::ColumnWordToken2
+            | Method::LongMatch6
+            | Method::LongMatch8
+            | Method::LongMatch12
+            | Method::LongMatch16
+            | Method::LongMatch24 => base.with_column(false),
             Method::ColumnShuffled => base.with_column(true),
             Method::ColumnNoLine => base.with_column_kind(crate::context::CtxKind::ColumnNoLine),
             _ => base,
+        };
+        let base = match self.match2_min() {
+            Some(m) => base.with_match2(m),
+            None => base,
         };
         base.with_info(self.info())
     }
@@ -532,6 +594,11 @@ pub fn decode(archive: &[u8]) -> Option<Vec<u8>> {
         18 => Method::ColumnWordTokenReverse,
         19 => Method::WordToken2,
         20 => Method::ColumnWordToken2,
+        21 => Method::LongMatch6,
+        22 => Method::LongMatch8,
+        23 => Method::LongMatch12,
+        24 => Method::LongMatch16,
+        25 => Method::LongMatch24,
         _ => return None,
     };
     let mut len_bytes = [0u8; 8];

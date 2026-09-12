@@ -157,7 +157,7 @@ pub struct MatchModel {
 }
 
 impl MatchModel {
-    pub fn new(bits: u32) -> Self {
+    pub fn new(bits: u32, min_len: usize) -> Self {
         let n = 1usize << bits;
         let table = StretchTable::new();
         let mut st_tab = vec![0i32; 64];
@@ -166,7 +166,7 @@ impl MatchModel {
             *s = table.stretch(p.clamp(1, 4094));
         }
         MatchModel {
-            min_len: MATCH_MIN,
+            min_len,
             table: vec![0u32; n],
             table_mask: n - 1,
             ptr: 0,
@@ -244,6 +244,19 @@ impl MatchModel {
     }
 }
 
+/// The ordered list of match tiers for a configuration: the short tier always,
+/// then the optional long-distance tier (Phase 4.1).
+fn match_tiers(cfg: &ModelConfig) -> Vec<MatchSpec> {
+    let mut v = vec![MatchSpec {
+        bits: cfg.match_bits,
+        min_len: MATCH_MIN,
+    }];
+    if let Some(s) = cfg.match2 {
+        v.push(s);
+    }
+    v
+}
+
 /// Compute the A3 inheritance parent of every expert: the most specific
 /// lower-order expert already present. Word/bigram experts inherit from the
 /// order-1 expert (or order-0) because their contexts have no order relation.
@@ -279,11 +292,21 @@ fn compute_parents(specs: &[ModelSpec]) -> Vec<Option<usize>> {
     parents
 }
 
+/// A match tier: table size and minimum match length. Phase 4 uses more than one
+/// tier so short recent repeats and long far repeats have separate indexes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MatchSpec {
+    pub bits: u32,
+    pub min_len: usize,
+}
+
 /// Configuration for the classical prediction floor.
 #[derive(Debug, Clone)]
 pub struct ModelConfig {
     pub specs: Vec<ModelSpec>,
     pub match_bits: u32,
+    /// Phase 4.1: an optional second (long-distance) match tier.
+    pub match2: Option<MatchSpec>,
     pub mixer_lr: i32,
     pub apm1_ctx: usize,
     pub apm2_ctx: usize,
@@ -372,11 +395,23 @@ impl ModelConfig {
         ModelConfig {
             specs,
             match_bits,
+            match2: None,
             mixer_lr: 12,
             apm1_ctx: 4096,
             apm2_ctx: 65536,
             info: InfoMode::None,
         }
+    }
+
+    /// Phase 4.1: append a long-distance match tier with the given minimum match
+    /// length. The short tier still exists; this adds a separate index that is
+    /// not evicted by short-range traffic.
+    pub fn with_match2(mut self, min_len: usize) -> Self {
+        self.match2 = Some(MatchSpec {
+            bits: self.match_bits,
+            min_len,
+        });
+        self
     }
 
     /// Set the information-inheritance mode (A3).
@@ -432,6 +467,9 @@ impl ModelConfig {
             m += (1u64 << s.bits) * 2;
         }
         m += (1u64 << self.match_bits) * 4;
+        if let Some(spec) = self.match2 {
+            m += (1u64 << spec.bits) * 4;
+        }
         m += (self.apm1_ctx as u64) * 33 * 4;
         m += (self.apm2_ctx as u64) * 33 * 4;
         m
@@ -446,7 +484,7 @@ pub struct Predictor {
     /// For each expert, the lower-order expert that seeds its cold slots (A3).
     parent: Vec<Option<usize>>,
     info: InfoMode,
-    match_model: MatchModel,
+    match_models: Vec<MatchModel>,
     mixer: Mixer,
     apm1: Apm,
     apm2: Apm,
@@ -472,14 +510,18 @@ impl Predictor {
             .iter()
             .map(|s| ContextModel::new(s.bits, s.rate))
             .collect();
-        let n_inputs = models.len() + 1;
+        let n_inputs = models.len() + match_tiers(cfg).len();
+        let mut match_models: Vec<MatchModel> = Vec::new();
+        for spec in match_tiers(cfg) {
+            match_models.push(MatchModel::new(spec.bits, spec.min_len));
+        }
         Predictor {
             models,
             parent: compute_parents(&cfg.specs),
             info: cfg.info,
             specs: cfg.specs.clone(),
             ctx: vec![0; cfg.specs.len()],
-            match_model: MatchModel::new(cfg.match_bits),
+            match_models,
             mixer: Mixer::new(n_inputs, 4096),
             apm1: Apm::new(cfg.apm1_ctx, 7),
             apm2: Apm::new(cfg.apm2_ctx, 7),
@@ -587,14 +629,18 @@ impl Predictor {
             }
         }
         self.refresh_contexts();
-        self.match_model.byte_boundary(&self.buf);
-        self.match_model.begin_byte(&self.buf);
+        for mm in &mut self.match_models {
+            mm.byte_boundary(&self.buf);
+            mm.begin_byte(&self.buf);
+        }
     }
 
     /// Initialise contexts (call once, before coding, with an empty buffer).
     pub fn prime(&mut self) {
         self.refresh_contexts();
-        self.match_model.begin_byte(&self.buf);
+        for mm in &mut self.match_models {
+            mm.begin_byte(&self.buf);
+        }
     }
 
     /// `P(bit = 1)` in `[1, 4094]`.
@@ -618,8 +664,15 @@ impl Predictor {
             };
             self.inputs[i] = self.models[i].predict(self.c0, &self.st, seed);
         }
-        let mstate = self.match_model.state();
-        self.inputs[nm] = self.match_model.predict(self.bitpos);
+        let mstate = self
+            .match_models
+            .iter()
+            .map(|m| m.state())
+            .max()
+            .unwrap_or(0);
+        for (k, mm) in self.match_models.iter_mut().enumerate() {
+            self.inputs[nm + k] = mm.predict(self.bitpos);
+        }
 
         let word_open = if self.word_cur != 0 { 1usize } else { 0 };
         let mix_cx = (self.c0 as usize & 0xff) | (mstate << 8) | (word_open << 10);
@@ -640,7 +693,9 @@ impl Predictor {
         for m in &mut self.models {
             m.update(bit);
         }
-        self.match_model.update(bit);
+        for mm in &mut self.match_models {
+            mm.update(bit);
+        }
 
         self.c0 = (self.c0 << 1) | bit;
         self.bitpos += 1;
@@ -662,7 +717,9 @@ impl Predictor {
         for x in &self.models {
             m += x.memory_bytes();
         }
-        m += self.match_model.memory_bytes();
+        for mm in &self.match_models {
+            m += mm.memory_bytes();
+        }
         m + self.buf.capacity() as u64
     }
 }
@@ -754,7 +811,7 @@ mod tests {
     #[test]
     fn match_model_finds_a_repeat() {
         let buf: Vec<u8> = b"hello world hello world".to_vec();
-        let mut mm = MatchModel::new(16);
+        let mut mm = MatchModel::new(16, MATCH_MIN);
         for i in 1..=buf.len() {
             mm.byte_boundary(&buf[..i]);
         }
