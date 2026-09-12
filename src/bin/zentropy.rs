@@ -616,7 +616,11 @@ fn cmd_eval(args: &[String]) -> Result<(), String> {
     let cand_s = t1.elapsed();
 
     let parent_ok = archive::decode(&parent_arch).as_deref() == Some(&data[..]);
-    let cand_ok = archive::decode(&cand_arch).as_deref() == Some(&data[..]);
+    // Decode the candidate once: the exactness court and the receipt's
+    // decoded digest both need the result, and on enwik9 a second decode costs
+    // ~20 minutes.
+    let cand_dec = archive::decode(&cand_arch);
+    let cand_ok = cand_dec.as_deref() == Some(&data[..]);
 
     let n = data.len() as f64;
     let archive_delta = cand_arch.len() as i64 - parent_arch.len() as i64;
@@ -671,7 +675,7 @@ fn cmd_eval(args: &[String]) -> Result<(), String> {
         r.corpus = path.clone();
         r.input_sha256 = hex(&sha256(&data));
         r.archive_sha256 = hex(&sha256(&cand_arch));
-        r.decoded_sha256 = hex(&sha256(&archive::decode(&cand_arch).unwrap_or_default()));
+        r.decoded_sha256 = hex(&sha256(cand_dec.as_deref().unwrap_or_default()));
         r.exact = cand_ok;
         r.compressor_bytes = bin_cost;
         r.archive_bytes = cand_arch.len() as u64;
