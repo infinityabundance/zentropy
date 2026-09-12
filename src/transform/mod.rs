@@ -404,21 +404,7 @@ fn is_word_byte(b: u8) -> bool {
 /// `reverse` flips the id assignment while keeping the same word set; it is the
 /// control that isolates the value of *frequency ranking* from substitution.
 pub fn build_word_vocab(input: &[u8], reverse: bool) -> Vec<Vec<u8>> {
-    use std::collections::HashMap;
-    let mut counts: HashMap<Vec<u8>, u64> = HashMap::new();
-    let mut i = 0;
-    while i < input.len() {
-        if is_word_byte(input[i]) {
-            let mut j = i;
-            while j < input.len() && is_word_byte(input[j]) {
-                j += 1;
-            }
-            *counts.entry(input[i..j].to_vec()).or_insert(0) += 1;
-            i = j;
-        } else {
-            i += 1;
-        }
-    }
+    let counts = word_counts(input);
     let mut cand: Vec<(Vec<u8>, u64)> = counts
         .into_iter()
         .filter(|(w, c)| w.len() >= 3 && *c >= 2)
@@ -515,6 +501,167 @@ pub fn word_token_decode(data: &[u8]) -> Vec<u8> {
         } else {
             out.push(b);
             i += 1;
+        }
+    }
+    out
+}
+
+// --- A1.1/A26 v2: escape-extended vocabulary (many more tokens) -------------
+//
+// v1 addresses only 255 tokens with a two-byte `0x00 id`. v2 keeps two-byte
+// tokens for the 254 most common words and adds an escape-extended three-byte id
+// for the long tail, so coverage can grow by orders of magnitude:
+//
+//   dictionary = [u16 count LE][ (u8 len, bytes) * count ]
+//   body       = 0x00 0x00            -> literal NUL
+//                0x00 id  (1..=254)   -> token id
+//                0x00 0xFF hi lo      -> token id = 255 + (hi<<8 | lo)
+//                other byte           -> copied verbatim
+pub const MAX_TOKENS2: usize = 65534;
+const TOK2_EXT: u8 = 0xFF;
+/// Ids at or below this are encoded in two bytes; larger ids take three.
+const TOK2_TWO_BYTE: usize = 254;
+
+/// Count maximal ASCII-letter runs. Shared by v1 and v2 vocabulary builders.
+fn word_counts(input: &[u8]) -> std::collections::HashMap<Vec<u8>, u64> {
+    let mut counts: std::collections::HashMap<Vec<u8>, u64> = std::collections::HashMap::new();
+    let mut i = 0;
+    while i < input.len() {
+        if is_word_byte(input[i]) {
+            let mut j = i;
+            while j < input.len() && is_word_byte(input[j]) {
+                j += 1;
+            }
+            *counts.entry(input[i..j].to_vec()).or_insert(0) += 1;
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    counts
+}
+
+/// Build the v2 vocabulary. Code length is assigned by *kept* rank (the first 254
+/// entries get two-byte tokens), and a word is admitted only when its token
+/// recovers more than its definition cost at that code length.
+pub fn build_word_vocab2(input: &[u8]) -> Vec<Vec<u8>> {
+    let counts = word_counts(input);
+    let mut cand: Vec<(Vec<u8>, u64)> = counts
+        .into_iter()
+        .filter(|(w, c)| w.len() >= 3 && *c >= 2)
+        .collect();
+    cand.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    let mut kept: Vec<Vec<u8>> = Vec::new();
+    for (w, c) in cand {
+        let len = w.len() as i64;
+        let code_len = if kept.len() < TOK2_TWO_BYTE { 2 } else { 3 };
+        if c as i64 * (len - code_len) - (len + 1) > 0 {
+            kept.push(w);
+        }
+        if kept.len() >= MAX_TOKENS2 {
+            break;
+        }
+    }
+    kept
+}
+
+/// Encode `input`, emitting the v2 `dictionary || body`.
+pub fn word_token2_encode(input: &[u8]) -> Vec<u8> {
+    use std::collections::HashMap;
+    let vocab = build_word_vocab2(input);
+    let mut ids: HashMap<&[u8], u32> = HashMap::with_capacity(vocab.len());
+    let mut out = Vec::with_capacity(input.len());
+    out.extend_from_slice(&(vocab.len() as u16).to_le_bytes());
+    for (k, w) in vocab.iter().enumerate() {
+        out.push(w.len() as u8);
+        out.extend_from_slice(w);
+        ids.insert(w.as_slice(), (k + 1) as u32);
+    }
+    let mut i = 0;
+    while i < input.len() {
+        let b = input[i];
+        if is_word_byte(b) {
+            let mut j = i;
+            while j < input.len() && is_word_byte(input[j]) {
+                j += 1;
+            }
+            match ids.get(&input[i..j]) {
+                Some(&id) => {
+                    out.push(TOK_ESC);
+                    if id <= TOK2_TWO_BYTE as u32 {
+                        out.push(id as u8);
+                    } else {
+                        let v = id - 255;
+                        out.push(TOK2_EXT);
+                        out.push((v >> 8) as u8);
+                        out.push((v & 0xFF) as u8);
+                    }
+                }
+                None => out.extend_from_slice(&input[i..j]),
+            }
+            i = j;
+        } else if b == TOK_ESC {
+            out.push(TOK_ESC);
+            out.push(0);
+            i += 1;
+        } else {
+            out.push(b);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Exact inverse of [`word_token2_encode`]. Total on malformed input.
+pub fn word_token2_decode(data: &[u8]) -> Vec<u8> {
+    if data.len() < 2 {
+        return Vec::new();
+    }
+    let count = u16::from_le_bytes([data[0], data[1]]) as usize;
+    let mut i = 2usize;
+    let mut dict: Vec<&[u8]> = Vec::with_capacity(count);
+    for _ in 0..count {
+        if i >= data.len() {
+            break;
+        }
+        let l = data[i] as usize;
+        i += 1;
+        if i + l > data.len() {
+            break;
+        }
+        dict.push(&data[i..i + l]);
+        i += l;
+    }
+    let mut out = Vec::new();
+    while i < data.len() {
+        let b = data[i];
+        if b != TOK_ESC {
+            out.push(b);
+            i += 1;
+            continue;
+        }
+        if i + 1 >= data.len() {
+            break;
+        }
+        let x = data[i + 1];
+        if x == 0 {
+            out.push(0);
+            i += 2;
+        } else if x == TOK2_EXT {
+            if i + 3 >= data.len() {
+                break;
+            }
+            let id = 255 + (((data[i + 2] as usize) << 8) | data[i + 3] as usize);
+            i += 4;
+            if id >= 1 && id <= dict.len() {
+                out.extend_from_slice(dict[id - 1]);
+            }
+        } else {
+            let id = x as usize;
+            i += 2;
+            if id <= dict.len() {
+                out.extend_from_slice(dict[id - 1]);
+            }
         }
     }
     out
@@ -765,5 +912,59 @@ mod tests {
         // must never be a valid token id.
         let text = b"a\x00b a\x00b a\x00b";
         assert_eq!(word_token_decode(&word_token_encode(text, false)), text);
+    }
+
+    // --- A1.1/A26 v2 escape-extended vocabulary -----------------------------
+
+    fn token2_roundtrip(data: &[u8]) {
+        assert_eq!(word_token2_decode(&word_token2_encode(data)), data);
+    }
+
+    #[test]
+    fn token2_roundtrip_examples() {
+        token2_roundtrip(b"");
+        token2_roundtrip(b"the quick brown fox and the lazy dog");
+        token2_roundtrip(b"<page><title>Zentropy</title></page>\n");
+    }
+
+    #[test]
+    fn token2_roundtrip_all_bytes_and_noise() {
+        token2_roundtrip(&(0..=255u8).collect::<Vec<u8>>());
+        for seed in 1..=32u64 {
+            token2_roundtrip(&xorshift_bytes(seed, 4096));
+        }
+        let mut mix = Vec::new();
+        for seed in 1..=8u64 {
+            mix.extend_from_slice(b"the theory of the compression of the data ");
+            mix.extend_from_slice(&xorshift_bytes(seed * 13, 512));
+        }
+        token2_roundtrip(&mix);
+    }
+
+    #[test]
+    fn token2_exercises_three_byte_ids() {
+        // 600 distinct five-letter words, each repeated 8 times, force the
+        // vocabulary past the 254 two-byte-id budget so three-byte tokens are
+        // actually emitted and decoded.
+        let mut text = Vec::new();
+        for i in 0..600u32 {
+            let w = [
+                b'a' + (i % 26) as u8,
+                b'a' + ((i / 26) % 26) as u8,
+                b'a' + ((i / 676) % 26) as u8,
+                b'a' + ((i / 17576) % 26) as u8,
+                b'a' + ((i / 456976) % 26) as u8,
+            ];
+            for _ in 0..8 {
+                text.extend_from_slice(&w);
+                text.push(b' ');
+            }
+        }
+        let vocab = build_word_vocab2(&text);
+        assert!(
+            vocab.len() > TOK2_TWO_BYTE,
+            "vocab did not exceed the two-byte budget"
+        );
+        token2_roundtrip(&text);
     }
 }

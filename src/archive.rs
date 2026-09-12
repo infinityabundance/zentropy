@@ -59,13 +59,18 @@ enum CaseKind {
 
 /// A1.1/A26 dynamic word-vocabulary mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(not(feature = "word-token"), allow(dead_code))]
+#[cfg_attr(
+    not(any(feature = "word-token", feature = "word-token2")),
+    allow(dead_code)
+)]
 enum TokenKind {
     None,
     /// Frequency-ranked ids (most frequent word gets id 1).
     Words,
     /// Control: same word set, reversed id assignment.
     Reverse,
+    /// v2: escape-extended ids, vocabulary far past 255.
+    V2,
 }
 
 /// Coding method. New mechanisms are added as variants so each is ablatable.
@@ -110,6 +115,10 @@ pub enum Method {
     ColumnWordToken = 17,
     /// A1.1/A26 control on the accepted parent: hoisting + column + reversed ids.
     ColumnWordTokenReverse = 18,
+    /// A1.1/A26 v2: escape-extended vocabulary, standalone.
+    WordToken2 = 19,
+    /// A1.1/A26 v2 on the accepted parent: hoisting + column + extended vocabulary.
+    ColumnWordToken2 = 20,
 }
 
 impl Method {
@@ -134,6 +143,8 @@ impl Method {
             Method::WordTokenReverse => "word-token-reverse",
             Method::ColumnWordToken => "column-word-token",
             Method::ColumnWordTokenReverse => "column-word-token-reverse",
+            Method::WordToken2 => "word-token2",
+            Method::ColumnWordToken2 => "column-word-token2",
         }
     }
 
@@ -158,12 +169,14 @@ impl Method {
             "word-token-reverse" => Method::WordTokenReverse,
             "column-word-token" => Method::ColumnWordToken,
             "column-word-token-reverse" => Method::ColumnWordTokenReverse,
+            "word-token2" => Method::WordToken2,
+            "column-word-token2" => Method::ColumnWordToken2,
             _ => return None,
         })
     }
 
     /// All methods, for exhaustive exactness testing.
-    pub const ALL: [Method; 19] = [
+    pub const ALL: [Method; 21] = [
         Method::RawCm,
         Method::RawCmNoWord,
         Method::StructHoist,
@@ -183,6 +196,8 @@ impl Method {
         Method::WordTokenReverse,
         Method::ColumnWordToken,
         Method::ColumnWordTokenReverse,
+        Method::WordToken2,
+        Method::ColumnWordToken2,
     ];
 
     /// Whether this method runs the structural-hoisting transform.
@@ -202,6 +217,7 @@ impl Method {
                 | Method::ColumnCaseMark
                 | Method::ColumnWordToken
                 | Method::ColumnWordTokenReverse
+                | Method::ColumnWordToken2
         );
         cfg!(feature = "struct-hoist") && wants
     }
@@ -246,16 +262,24 @@ impl Method {
     }
 
     /// A1.1/A26 dynamic word-vocabulary mode.
-    #[cfg_attr(not(feature = "word-token"), allow(dead_code))]
+    #[cfg_attr(
+        not(any(feature = "word-token", feature = "word-token2")),
+        allow(dead_code)
+    )]
     fn token_kind(self) -> TokenKind {
-        if !cfg!(feature = "word-token") {
-            return TokenKind::None;
-        }
+        #[cfg(feature = "word-token")]
         match self {
-            Method::WordToken | Method::ColumnWordToken => TokenKind::Words,
-            Method::WordTokenReverse | Method::ColumnWordTokenReverse => TokenKind::Reverse,
-            _ => TokenKind::None,
+            Method::WordToken | Method::ColumnWordToken => return TokenKind::Words,
+            Method::WordTokenReverse | Method::ColumnWordTokenReverse => return TokenKind::Reverse,
+            _ => {}
         }
+        #[cfg(feature = "word-token2")]
+        match self {
+            Method::WordToken2 | Method::ColumnWordToken2 => return TokenKind::V2,
+            _ => {}
+        }
+        let _ = self;
+        TokenKind::None
     }
 
     fn config(self, n: usize) -> ModelConfig {
@@ -272,7 +296,8 @@ impl Method {
             | Method::ColumnCase
             | Method::ColumnCaseMark
             | Method::ColumnWordToken
-            | Method::ColumnWordTokenReverse => base.with_column(false),
+            | Method::ColumnWordTokenReverse
+            | Method::ColumnWordToken2 => base.with_column(false),
             Method::ColumnShuffled => base.with_column(true),
             Method::ColumnNoLine => base.with_column_kind(crate::context::CtxKind::ColumnNoLine),
             _ => base,
@@ -386,29 +411,31 @@ fn maybe_uncase(_method: Method, data: Vec<u8>) -> Vec<u8> {
 // A1.1/A26 dynamic word vocabulary. Applied after hoisting and case so it sees
 // normalized text; its `0x00` prefix is escaped, so it composes with the other
 // byte transforms exactly.
-#[cfg(feature = "word-token")]
+#[cfg(any(feature = "word-token", feature = "word-token2"))]
 fn maybe_token(method: Method, data: Vec<u8>) -> Vec<u8> {
     match method.token_kind() {
         TokenKind::None => data,
         TokenKind::Words => crate::transform::word_token_encode(&data, false),
         TokenKind::Reverse => crate::transform::word_token_encode(&data, true),
+        TokenKind::V2 => crate::transform::word_token2_encode(&data),
     }
 }
 
-#[cfg(not(feature = "word-token"))]
+#[cfg(not(any(feature = "word-token", feature = "word-token2")))]
 fn maybe_token(_method: Method, data: Vec<u8>) -> Vec<u8> {
     data
 }
 
-#[cfg(feature = "word-token")]
+#[cfg(any(feature = "word-token", feature = "word-token2"))]
 fn maybe_untoken(method: Method, data: Vec<u8>) -> Vec<u8> {
     match method.token_kind() {
         TokenKind::None => data,
         TokenKind::Words | TokenKind::Reverse => crate::transform::word_token_decode(&data),
+        TokenKind::V2 => crate::transform::word_token2_decode(&data),
     }
 }
 
-#[cfg(not(feature = "word-token"))]
+#[cfg(not(any(feature = "word-token", feature = "word-token2")))]
 fn maybe_untoken(_method: Method, data: Vec<u8>) -> Vec<u8> {
     data
 }
@@ -503,6 +530,8 @@ pub fn decode(archive: &[u8]) -> Option<Vec<u8>> {
         16 => Method::WordTokenReverse,
         17 => Method::ColumnWordToken,
         18 => Method::ColumnWordTokenReverse,
+        19 => Method::WordToken2,
+        20 => Method::ColumnWordToken2,
         _ => return None,
     };
     let mut len_bytes = [0u8; 8];

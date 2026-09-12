@@ -74,6 +74,7 @@ executable bytes.
 | `word-token-reverse` | A1.1/A26 reverse-id control | screening |
 | `column-word-token` | A1.1/A26 frequency-ranked on the accepted parent | ADOPTED enwik8 |
 | `column-word-token-reverse` | A1.1/A26 reverse ids on the accepted parent | **ADOPTED (accepted configuration)** |
+| `word-token2` / `column-word-token2` | A26 escape-extended vocabulary (65,534 cap) | **REJECTED** (+776,196 at enwik8) |
 
 Rejected/experimental mechanisms are **not** in the default (scored) build; they
 reproduce with
@@ -282,6 +283,36 @@ default build until the run completed.
 > markers at word starts can help a medium corpus and hurt a large one, so any
 > future boundary-marker mechanism must be gated on enwik9, never on enwik8.
 
+### A26 — v2 escape-extended vocabulary (REJECTED)
+
+v1 addresses only 255 tokens. v2 keeps two-byte tokens for the 254 most common
+words and adds an escape-extended three-byte id (`0x00 0xFF hi lo`) for the long
+tail, so the vocabulary can grow to 65,534 entries. New methods `word-token2`,
+`column-word-token2`, feature `word-token2`. The accepted v1 baseline is
+untouched (verified: the accepted enwik6 archive is unchanged at 272,066 B).
+
+Archive deltas vs the *accepted* v1 tokenizer (cost-independent):
+
+| corpus | cap | `column-word-token2` vs `column-word-token-reverse` |
+|---|---|---|
+| enwik7 | 65,534 | **+101,980** REJECTED |
+| enwik8 | 65,534 | **+776,196** REJECTED |
+| enwik7 | 1,024 | **+25,228** REJECTED |
+
+**Finding — more coverage is not better; the optimum is at or below 255.** The
+loss is monotone in the vocabulary cap, and dictionary size explains it: the
+65534 cap admits 33,521 words (305 KB raw) on enwik7 and hits the cap on enwik8
+(563 KB raw, compressed inside the modelled stream). v1's 255-entry dictionary
+costs ~2 KB. The per-word admission test (`count*(len-code_len) - (len+1) > 0`)
+is a *raw byte* profitability heuristic, and — exactly as A2 and A1.1's ordering
+result already warned — raw-byte accounting is not authority for a context-mixing
+backend: it ignores dictionary/model capacity, the loss of the replaced word's
+letters as context, and the fact that the CM already models the long tail well.
+Selecting vocabulary by *measured* archive impact (coder-in-the-loop) is the only
+sound version of A27, and it is expensive.
+
+A1.1 therefore stands at its 255-token v1 form, which is the adopted one.
+
 ### A2 — bitwise alphabet geometry (REJECTED)
 
 | Method | enwik7 archive | ΔS vs parent |
@@ -334,7 +365,7 @@ antagonistic; recorded for A28.
 | A | A3 information inheritance | **DONE** — REJECTED; state-map/ICM is the fair follow-up |
 | A | A20 optimizer sweep | **DONE** — ADOPTED (lr 24) |
 | A | A17 previous-line structural expert | **DONE** — ADOPTED |
-| B | A1 / A26 / A27 case-factorized FOT tokenization | A1.2 **DONE — REJECTED**; A1.1/A26 **DONE — ADOPTED** (dynamic word vocabulary, reverse ids; −1,723,929 B archive at enwik9) |
+| B | A1 / A26 / A27 case-factorized FOT tokenization | A1.2 **DONE — REJECTED**; A1.1/A26 **DONE — ADOPTED** (255-token vocabulary, reverse ids); A26 v2 extension **REJECTED** (coverage past 255 loses) |
 | C | A5–A11 parsing (entropy-repriced optimal parse, MRU carousel, matched-literal residuals, distance floors, ROLZ ranks) | NOT RUN |
 | D | A4 CTS, A16 DMC | NOT RUN |
 | E | A12–A15 grammar refinements | NOT RUN |
@@ -352,8 +383,9 @@ dominates it.
 ## Next highest-value actions
 
 1. **A1.1/FOT follow-ups** — a case-independent id-ordering control (A32);
-   words vs BPE/subword vs hybrid units (A26); and reclaiming the ~21.8 KB of
-   `std::HashMap` code with a custom word counter (Phase-11 size).
+   coder-in-the-loop vocabulary selection (the only sound form of A27, since the
+   raw-byte gain heuristic was falsified by the A26 v2 rejection); and reclaiming
+   the ~21.8 KB of `std::HashMap` code (Phase-11 size).
 2. **Extend `memory::projected_encode`** with an explicit transform-aux term (the
    token `HashMap`); measured enwik9 peak RSS stayed just under the projection,
    so the guard held, but the margin is thin.

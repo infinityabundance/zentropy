@@ -41,7 +41,8 @@
   enwik6/7 and reverses on enwik8, and marking alone wins on enwik7/enwik8 then
   reverses by +427,246 B on enwik9. A1.1/A26 dynamic word tokenization is
   **ADOPTED** (`column-word-token-reverse`): −1,723,929 B archive at enwik9 for a
-  charged 21,848 B of executable. See
+  charged 21,848 B of executable. A26's v2 extension of that vocabulary past 255
+  tokens is **REJECTED** (coverage loses at every cap tested). See
   [`OPTIMIZATION_PHASE_A.md`](OPTIMIZATION_PHASE_A.md).
 
 ## What is *not* true yet
