@@ -261,6 +261,8 @@ pub enum Method {
     ReorderCategorySet = 83,
     /// Phase 7.8: combined category-set + template-set order.
     ReorderFull = 84,
+    /// Phase 7.8: combined order with a residual (local-model novelty) tiebreak.
+    ReorderFullResidual = 85,
 }
 
 impl Method {
@@ -351,6 +353,7 @@ impl Method {
             Method::ReorderTemplateKey => "reorder-template-key",
             Method::ReorderCategorySet => "reorder-category-set",
             Method::ReorderFull => "reorder-full",
+            Method::ReorderFullResidual => "reorder-full-residual",
         }
     }
 
@@ -441,12 +444,13 @@ impl Method {
             "reorder-template-key" => Method::ReorderTemplateKey,
             "reorder-category-set" => Method::ReorderCategorySet,
             "reorder-full" => Method::ReorderFull,
+            "reorder-full-residual" => Method::ReorderFullResidual,
             _ => return None,
         })
     }
 
     /// All methods, for exhaustive exactness testing.
-    pub const ALL: [Method; 85] = [
+    pub const ALL: [Method; 86] = [
         Method::RawCm,
         Method::RawCmNoWord,
         Method::StructHoist,
@@ -532,6 +536,7 @@ impl Method {
         Method::ReorderTemplateKey,
         Method::ReorderCategorySet,
         Method::ReorderFull,
+        Method::ReorderFullResidual,
     ];
 
     /// Methods that extend the **accepted Phase-4 composite parent** unchanged:
@@ -577,6 +582,7 @@ impl Method {
                 | Method::ReorderTemplateKey
                 | Method::ReorderCategorySet
                 | Method::ReorderFull
+                | Method::ReorderFullResidual
         )
     }
 
@@ -599,6 +605,7 @@ impl Method {
                 | Method::ReorderTemplateKey
                 | Method::ReorderCategorySet
                 | Method::ReorderFull
+                | Method::ReorderFullResidual
                 | Method::Collision
                 | Method::CollisionCtl
                 | Method::Ppm
@@ -907,6 +914,7 @@ impl Method {
             Method::ReorderTemplateKey => Some(Order::TemplateKey),
             Method::ReorderCategorySet => Some(Order::CategorySet),
             Method::ReorderFull => Some(Order::Full),
+            Method::ReorderFullResidual => Some(Order::FullResidual),
             _ => None,
         }
     }
@@ -1617,6 +1625,7 @@ pub fn decode(archive: &[u8]) -> Option<Vec<u8>> {
         82 => Method::ReorderTemplateKey,
         83 => Method::ReorderCategorySet,
         84 => Method::ReorderFull,
+        85 => Method::ReorderFullResidual,
         _ => return None,
     };
     let mut len_bytes = [0u8; 8];
@@ -1855,6 +1864,7 @@ mod tests {
             Method::ReorderTemplateKey,
             Method::ReorderCategorySet,
             Method::ReorderFull,
+            Method::ReorderFullResidual,
         ] {
             let arch = encode_with(&data, m);
             assert_eq!(decode(&arch).unwrap(), data, "method {}", m.name());

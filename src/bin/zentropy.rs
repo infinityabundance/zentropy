@@ -557,6 +557,7 @@ fn cmd_reorder_out(args: &[String]) -> Result<(), String> {
         "category" => zentropy::reorder::Order::Category,
         "category-set" => zentropy::reorder::Order::CategorySet,
         "full" => zentropy::reorder::Order::Full,
+        "full-residual" => zentropy::reorder::Order::FullResidual,
         "template-key" => zentropy::reorder::Order::TemplateKey,
         "shuffle" => zentropy::reorder::Order::Shuffle,
         other => return Err(format!("reorder-out: unknown order {other}")),

@@ -39,6 +39,11 @@ pub enum Order {
     CategorySet,
     /// Combined markup order: category set, then template set, then title.
     Full,
+    /// Residual order: category set, template set, then a cheap local-model
+    /// novelty score (the page's residual under an order-2 model reset per page),
+    /// then title. Groups large categories by how much *novel* structure they
+    /// carry.
+    FullResidual,
     /// First-template order: group pages whose leading markup is the same kind.
     TemplateKey,
     /// Negative control: a deterministic shuffle destroys all locality while
@@ -59,6 +64,7 @@ impl Order {
             Order::Category => "category",
             Order::CategorySet => "category-set",
             Order::Full => "full",
+            Order::FullResidual => "full-residual",
             Order::TemplateKey => "template-key",
             Order::Shuffle => "shuffle",
         }
@@ -408,6 +414,46 @@ fn all_templates(page: &[u8]) -> Vec<u8> {
     out
 }
 
+/// A reusable scratch table for the residual proxy: fixed-size, generation-
+/// stamped so it never has to be cleared between pages.
+struct NoveltyScratch {
+    seen: Vec<u32>,
+    gen: u32,
+    mask: usize,
+}
+
+impl NoveltyScratch {
+    fn new(bits: u32) -> Self {
+        let n = 1usize << bits;
+        NoveltyScratch {
+            seen: vec![0u32; n],
+            gen: 0,
+            mask: n - 1,
+        }
+    }
+
+    /// Count first-time `(order-2 context, byte)` events in `page`. Higher means
+    /// the page carries more structure a local model has not seen.
+    fn novelty(&mut self, page: &[u8]) -> u64 {
+        self.gen = self.gen.wrapping_add(1);
+        if self.gen == 0 {
+            self.seen.iter_mut().for_each(|x| *x = 0);
+            self.gen = 1;
+        }
+        let mut ctx: u32 = 0;
+        let mut n = 0u64;
+        for &b in page {
+            let idx = (ctx.wrapping_mul(0x9E37_79B1) ^ b as u32) as usize & self.mask;
+            if self.seen[idx] != self.gen {
+                self.seen[idx] = self.gen;
+                n += 1;
+            }
+            ctx = (ctx << 8) | b as u32;
+        }
+        n
+    }
+}
+
 /// The first `{{Name...}}` in a page, lowercased, or empty.
 fn first_template(page: &[u8]) -> Vec<u8> {
     let n = page.len();
@@ -609,6 +655,32 @@ pub fn encode(input: &[u8], order: Order) -> Option<Vec<u8>> {
             });
             idx = key.into_iter().map(|(_, _, _, i)| i).collect();
         }
+        Order::FullResidual => {
+            let mut scratch = NoveltyScratch::new(18);
+            let novelty: Vec<u64> = s.pages.iter().map(|p| scratch.novelty(p)).collect();
+            let mut key: Vec<(Vec<u8>, Vec<u8>, u64, &[u8], usize)> = s
+                .pages
+                .iter()
+                .enumerate()
+                .map(|(i, p)| {
+                    (
+                        all_categories(p),
+                        all_templates(p),
+                        novelty[i],
+                        page_title(p),
+                        i,
+                    )
+                })
+                .collect();
+            key.sort_by(|a, b| {
+                a.0.cmp(&b.0)
+                    .then(a.1.cmp(&b.1))
+                    .then(a.2.cmp(&b.2))
+                    .then(a.3.cmp(b.3))
+                    .then(a.4.cmp(&b.4))
+            });
+            idx = key.into_iter().map(|(_, _, _, _, i)| i).collect();
+        }
         Order::TemplateKey => {
             let mut key: Vec<(Vec<u8>, &[u8], usize)> = s
                 .pages
@@ -722,6 +794,7 @@ mod tests {
             Order::Category,
             Order::CategorySet,
             Order::Full,
+            Order::FullResidual,
             Order::TemplateKey,
             Order::Shuffle,
         ] {

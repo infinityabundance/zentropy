@@ -87,6 +87,7 @@ below.
 | first-category | `reorder-category` | −16,566 | −278,299 |
 | all-categories (category set) | `reorder-category-set` | −20,306 | −311,046 |
 | **category set + template set** | `reorder-full` | **−21,722** | **−317,313** |
+| full + residual (novelty) tiebreak | `reorder-full-residual` | +1,094 vs full | +7,262 vs full |
 | size | `reorder-size` | +1,702 | — |
 | word-MinHash | `reorder-minhash` | +6,211 | — |
 | greedy nearest-neighbour | `reorder-greedy` | +6,153 | — |
@@ -110,6 +111,19 @@ Findings that refine the prior-art intuition:
 * **The effect grows with corpus size**: category-set gives −20.3 KB at enwik7
   and −311.0 KB at enwik8. `reorder-full` (category set, then template set, then
   title) is best on every rung: −21.7 KB / −317.3 KB.
+* **Residual/predictor orders do not help.** A local-model novelty tiebreak
+  within category groups (`reorder-full-residual`) is +1,094 / +7,262 vs the
+  plain full order, and the greedy nearest-neighbour "predictor proxy" is
+  +6,153 at enwik7. A true predictor-optimal order — greedily choosing the next
+  page by its measured incremental code length under the real model — would
+  require repeated full-model evaluation (O(pages²) predictor passes) and is
+  outside the runtime envelope; every cheap proxy of it loses, so the axis is
+  closed by measurement rather than deferred.
+
+Coverage of the phase's four named axes: **semantic** (word MinHash, greedy,
+boilerplate MinHash — all lose), **structural** (namespace, first-template,
+first-category, category set, category+template set — the adopted family),
+**residual** (novelty tiebreak — loses), **predictor** (greedy proxy — loses).
 
 ### Authority (enwik9)
 

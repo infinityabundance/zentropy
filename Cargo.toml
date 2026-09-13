@@ -1,6 +1,6 @@
 [package]
 name = "zentropy"
-version = "0.0.4"
+version = "0.0.5"
 edition = "2021"
 rust-version = "1.74"
 description = "Zentropy: the smallest legitimate executable explanation of enwik9. A Hutter Prize contender."
