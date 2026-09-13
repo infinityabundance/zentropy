@@ -18,11 +18,12 @@
   and `gzip -9` (36,445,248) on the same input.
 - **The full corpus reconstructs exactly.** The accepted configuration
   (`struct-hoist + word-token-reverse + column + Phase-4 match family + order-2
-  SSE stage + tune 7`) gives enwik9 `174,533,527` bytes (`1.3963` bpc), decoded
-  byte-identically. Progression: pre-column `182,949,204` (1.4636 bpc);
-  hoist+column `181,803,607` (1.4544); +A1.1 tokenizer `180,079,678` (1.4406);
-  +Phase 4 `176,204,762` (1.4096); **+Phase 6 SSE `174,533,527` (1.3963)**. This is
-  milestone G0 (exact 10⁹-byte reconstruction) and G1.
+  SSE stage + Phase-7 article layout + tune 7`) gives enwik9 `170,063,733` bytes
+  (`1.3605` bpc), decoded byte-identically. Progression: pre-column `182,949,204`
+  (1.4636 bpc); hoist+column `181,803,607` (1.4544); +A1.1 tokenizer `180,079,678`
+  (1.4406); +Phase 4 `176,204,762` (1.4096); +Phase 6 SSE `174,533,527` (1.3963);
+  **+Phase 7 article layout `170,063,733` (1.3605)**. This is milestone G0 (exact
+  10⁹-byte reconstruction) and G1.
 - **Mechanisms are adopted only by complete, measured cost:** word/bigram
   experts (−653,805 B on enwik8) and orders 0/5/12/16 (−118,676 B on enwik8).
   Structural hoisting is adopted for ≥ enwik7 (−15,130 B on enwik8) but
@@ -61,6 +62,18 @@
   directions: state maps win at enwik7/8 and reverse to **+754,671** at enwik9,
   and PPM-C wins at enwik7/8 (−49,505 / −121,466) and reverses to **+61,133**.
   See [`PHASE6_PLAN.md`](PHASE6_PLAN.md).
+
+- **Phase 7 (article-layout compiler) is complete and is the largest single
+  mechanism so far.** enwik9 pages are not title-sorted, but their page ids are
+  strictly ascending and travel inside each block, so the original order is
+  restored by a **free** stable sort on the id — the permutation costs 0 bytes
+  where an explicit one would cost 500,557. The encoder orders pages by their
+  category set, then template set, then title. Adopted at enwik9
+  **−4,469,794 B** (174,533,527 → 170,063,733) for a measured 24,208 B. The
+  identity control is exactly 0 and the shuffle control is +25,519, so the gain
+  is the ordering and not the machinery. Content-similarity orders (word
+  MinHash, greedy nearest-neighbour) *lose*; shared markup, not semantic
+  proximity, is what the predictor exploits. See [`PHASE7_PLAN.md`](PHASE7_PLAN.md).
 
 ## What is *not* true yet
 
@@ -119,11 +132,8 @@ only after the predictor is strong.
 1. **Seal exact Hutter accounting.** *(done this revision — see above.)* No
    further research until every reported `S` charges the correct program copies
    and every mechanism's binary cost is measured.
-2. **Cheap article-order oracle (Phase 7 probe).** Determine whether the reorder
-   signal is large and whether the permutation can be coded cheaper than the
-   gain. Do **not** spend serious optimisation effort yet. Established negative
-   input: enwik9 pages are not title-sorted, so restoration costs a stored
-   permutation.
+2. **Cheap article-order oracle (Phase 7 probe).** *(done — Phase 7 complete;
+   the layout compiler is adopted at enwik9 −4,469,794 B. See PHASE7_PLAN.md.)*
 3. **ICM + state maps + ISSE + proper SSE / context-dependent mixing (Phase 6).**
    The largest obvious block of technology still missing. This is the well-worn
    path from `lpaq1` toward `cmix` and is where most remaining classical gain
@@ -138,6 +148,7 @@ only after the predictor is strong.
    tests the project's central hypothesis rather than rediscovering known
    compression technology.
 7. **Re-run article-layout optimisation against the now-strong predictor.**
+   *(done — Phase 7; the layout is now part of the accepted configuration.)*
 8. **Residual-conditioned transformer last,** when it is genuinely learning the
    difficult remainder rather than compensating for missing classical machinery.
 
@@ -150,10 +161,10 @@ The first decisive question is not whether Zentropy reaches 100 MB. It is:
    saving after that floor**, rather than merely rediscovering what the predictor
    already captured?
 
-Today the floor is 174.5 MB (archive) / ~175.3 MB complete `S` and the
+Today the floor is 170.1 MB (archive) / ~170.5 MB complete `S` and the
 distinctly-Zentropy machinery has not yet been deployed. The gap to the pending
-frontier (`fx2-cmix-transformer`, 100.42 MB including compressor) is ~74.9 MB; to
-the accepted record (`fx2-cmix`, 110.79 MB) it is ~64.5 MB. It is not close, and
+frontier (`fx2-cmix-transformer`, 100.42 MB including compressor) is ~70.5 MB; to
+the accepted record (`fx2-cmix`, 110.79 MB) it is ~59.7 MB. It is not close, and
 the project does not pretend otherwise.
 
 ## Superseded earlier ordering
@@ -168,11 +179,10 @@ item 2/7: a cheap probe, not an optimisation campaign.
   mechanism is gated on that, not on our hardware.
 - **Memory.** The model already uses ~450 MB for enwik8; enwik9 needs a
   careful allocation budget under 10 GB.
-- **Binary size.** The stub is 366,744 B, of which 21,848 B is the word tokenizer
-  and ~5.6 KB is the Phase-4 match family. Phase 6 added ≈15 KB of dispatch for
-  the rejected context-mixing methods; Phase 11 must gate the rejected methods
-  out of the submission build. If the model grows, the scored
-  `compressor_bytes` grows with it.
+- **Binary size.** The stub is 391,720 B. Phase 6 and Phase 7 added ≈24 KB of
+  dispatch and encoder code; Phase 11 must gate the rejected methods out of the
+  submission build. The accepted mechanisms' own marginal cost is small (SSE
+  256 B, reorder 24,208 B).
 - **Determinism.** All arithmetic is integer-only today. This must be preserved
   if any floating-point learned component enters the submission.
 

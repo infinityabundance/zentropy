@@ -39,6 +39,11 @@ pub mod ir;
 pub mod memory;
 pub mod mixer;
 pub mod score;
+// Phase 7: the article-layout compiler (encoder-side orderings + the decoder
+// page-id sort). Compiled behind a feature so the rejected orderings do not
+// cost submission bytes.
+#[cfg(feature = "reorder")]
+pub mod reorder;
 // The transform module is needed by either transform-based feature.
 #[cfg(any(feature = "struct-hoist", feature = "alphabet-perm"))]
 pub mod transform;

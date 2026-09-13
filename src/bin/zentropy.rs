@@ -58,6 +58,8 @@ fn main() -> ExitCode {
         "gate" => cmd_gate(),
         "meminfo" => cmd_meminfo(&args[2..]),
         "prune" => cmd_prune(&args[2..]),
+        "reorder-info" => cmd_reorder_info(&args[2..]),
+        "reorder-out" => cmd_reorder_out(&args[2..]),
         "selftest" => cmd_selftest(),
         "help" | "-h" | "--help" => {
             usage();
@@ -511,6 +513,73 @@ fn cmd_prune(args: &[String]) -> Result<(), String> {
         println!("  idx {i:>3}  {label:<28}  marginal(S)={m:+}");
     }
     Ok(())
+}
+
+/// Phase 7 probe: report the page structure and the free-restoration
+/// preconditions of a corpus, plus the cost of an explicit permutation of the
+/// pages (7.7) so the saving from the id-sort is quantified, not assumed.
+#[cfg(feature = "reorder")]
+fn cmd_reorder_info(args: &[String]) -> Result<(), String> {
+    let path = args.first().ok_or("reorder-info: need <in>")?;
+    let data = read(path)?;
+    let (pages, ascending) = zentropy::reorder::info(&data);
+    let explicit = zentropy::reorder::explicit_permutation_bytes(pages);
+    println!("input_bytes={}", data.len());
+    println!("pages={pages}");
+    println!("page_id_strictly_ascending={ascending}");
+    println!("free_restoration_available={ascending}");
+    println!("explicit_permutation_bytes={explicit}");
+    println!("permutation_bytes_paid_by_id_sort=0");
+    Ok(())
+}
+
+#[cfg(not(feature = "reorder"))]
+fn cmd_reorder_info(_args: &[String]) -> Result<(), String> {
+    Err("reorder-info: built without the `reorder` feature".into())
+}
+
+/// Phase 7 research helper: write a corpus reordered under one of the orderings,
+/// so the transform can be inspected or fed to an external experiment.
+#[cfg(feature = "reorder")]
+fn cmd_reorder_out(args: &[String]) -> Result<(), String> {
+    if args.len() < 3 {
+        return Err("reorder-out: need <in> <order> <out>".into());
+    }
+    let data = read(&args[0])?;
+    let order = match args[1].as_str() {
+        "identity" => zentropy::reorder::Order::Identity,
+        "title" => zentropy::reorder::Order::Title,
+        "size" => zentropy::reorder::Order::Size,
+        "struct" => zentropy::reorder::Order::Struct,
+        "minhash" => zentropy::reorder::Order::MinHash,
+        "greedy" => zentropy::reorder::Order::Greedy,
+        "template" => zentropy::reorder::Order::Template,
+        "category" => zentropy::reorder::Order::Category,
+        "category-set" => zentropy::reorder::Order::CategorySet,
+        "full" => zentropy::reorder::Order::Full,
+        "template-key" => zentropy::reorder::Order::TemplateKey,
+        "shuffle" => zentropy::reorder::Order::Shuffle,
+        other => return Err(format!("reorder-out: unknown order {other}")),
+    };
+    let out = zentropy::reorder::encode(&data, order)
+        .ok_or("reorder-out: corpus does not satisfy the precondition")?;
+    let restored = zentropy::reorder::restore(&out);
+    if restored != data {
+        return Err("reorder-out: restore did not reproduce the input".into());
+    }
+    write(&args[2], &out)?;
+    eprintln!(
+        "reorder-out: {} -> {} bytes (order={})",
+        data.len(),
+        out.len(),
+        order.name()
+    );
+    Ok(())
+}
+
+#[cfg(not(feature = "reorder"))]
+fn cmd_reorder_out(_args: &[String]) -> Result<(), String> {
+    Err("reorder-out: built without the `reorder` feature".into())
 }
 
 /// Build a self-extracting `archive9` = stub + marker + length + archive.

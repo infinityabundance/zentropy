@@ -236,6 +236,31 @@ pub enum Method {
     /// Phase 6 final spine: Phase6 + the PPM-C expert, with the four direct
     /// order experts that PPM subsumes (4/8/12/16) pruned by measurement.
     Spine = 72,
+    /// Phase 7 control: the accepted config with the reorder machinery at the
+    /// identity order (isolates machinery cost from the ordering effect).
+    ReorderId = 73,
+    /// Phase 7.2: title order.
+    ReorderTitle = 74,
+    /// Phase 7.3: page-size order.
+    ReorderSize = 75,
+    /// Phase 7.4: namespace/structural order.
+    ReorderStruct = 76,
+    /// Phase 7.5: MinHash/LSH content-similarity order.
+    ReorderMinHash = 77,
+    /// Phase 7.6: windowed greedy nearest-neighbour order.
+    ReorderGreedy = 78,
+    /// Phase 7.7: boilerplate-signature (template/category) order.
+    ReorderTemplate = 79,
+    /// Phase 7 negative control: deterministic shuffle (locality destroyed).
+    ReorderShuffle = 80,
+    /// Phase 7.8: first-category structural order.
+    ReorderCategory = 81,
+    /// Phase 7.8: first-template structural order.
+    ReorderTemplateKey = 82,
+    /// Phase 7.8: all-categories (category-set) structural order.
+    ReorderCategorySet = 83,
+    /// Phase 7.8: combined category-set + template-set order.
+    ReorderFull = 84,
 }
 
 impl Method {
@@ -314,6 +339,18 @@ impl Method {
             Method::IsseCtl => "isse-ctl",
             Method::Phase6 => "phase6",
             Method::Spine => "spine",
+            Method::ReorderId => "reorder-id",
+            Method::ReorderTitle => "reorder-title",
+            Method::ReorderSize => "reorder-size",
+            Method::ReorderStruct => "reorder-struct",
+            Method::ReorderMinHash => "reorder-minhash",
+            Method::ReorderGreedy => "reorder-greedy",
+            Method::ReorderTemplate => "reorder-template",
+            Method::ReorderShuffle => "reorder-shuffle",
+            Method::ReorderCategory => "reorder-category",
+            Method::ReorderTemplateKey => "reorder-template-key",
+            Method::ReorderCategorySet => "reorder-category-set",
+            Method::ReorderFull => "reorder-full",
         }
     }
 
@@ -392,12 +429,24 @@ impl Method {
             "isse-ctl" => Method::IsseCtl,
             "phase6" => Method::Phase6,
             "spine" => Method::Spine,
+            "reorder-id" => Method::ReorderId,
+            "reorder-title" => Method::ReorderTitle,
+            "reorder-size" => Method::ReorderSize,
+            "reorder-struct" => Method::ReorderStruct,
+            "reorder-minhash" => Method::ReorderMinHash,
+            "reorder-greedy" => Method::ReorderGreedy,
+            "reorder-template" => Method::ReorderTemplate,
+            "reorder-shuffle" => Method::ReorderShuffle,
+            "reorder-category" => Method::ReorderCategory,
+            "reorder-template-key" => Method::ReorderTemplateKey,
+            "reorder-category-set" => Method::ReorderCategorySet,
+            "reorder-full" => Method::ReorderFull,
             _ => return None,
         })
     }
 
     /// All methods, for exhaustive exactness testing.
-    pub const ALL: [Method; 73] = [
+    pub const ALL: [Method; 85] = [
         Method::RawCm,
         Method::RawCmNoWord,
         Method::StructHoist,
@@ -471,6 +520,18 @@ impl Method {
         Method::IsseCtl,
         Method::Phase6,
         Method::Spine,
+        Method::ReorderId,
+        Method::ReorderTitle,
+        Method::ReorderSize,
+        Method::ReorderStruct,
+        Method::ReorderMinHash,
+        Method::ReorderGreedy,
+        Method::ReorderTemplate,
+        Method::ReorderShuffle,
+        Method::ReorderCategory,
+        Method::ReorderTemplateKey,
+        Method::ReorderCategorySet,
+        Method::ReorderFull,
     ];
 
     /// Methods that extend the **accepted Phase-4 composite parent** unchanged:
@@ -504,6 +565,18 @@ impl Method {
                 | Method::IsseCtl
                 | Method::Phase6
                 | Method::Spine
+                | Method::ReorderId
+                | Method::ReorderTitle
+                | Method::ReorderSize
+                | Method::ReorderStruct
+                | Method::ReorderMinHash
+                | Method::ReorderGreedy
+                | Method::ReorderTemplate
+                | Method::ReorderShuffle
+                | Method::ReorderCategory
+                | Method::ReorderTemplateKey
+                | Method::ReorderCategorySet
+                | Method::ReorderFull
         )
     }
 
@@ -514,6 +587,18 @@ impl Method {
             self,
             Method::Phase6
                 | Method::Spine
+                | Method::ReorderId
+                | Method::ReorderTitle
+                | Method::ReorderSize
+                | Method::ReorderStruct
+                | Method::ReorderMinHash
+                | Method::ReorderGreedy
+                | Method::ReorderTemplate
+                | Method::ReorderShuffle
+                | Method::ReorderCategory
+                | Method::ReorderTemplateKey
+                | Method::ReorderCategorySet
+                | Method::ReorderFull
                 | Method::Collision
                 | Method::CollisionCtl
                 | Method::Ppm
@@ -802,6 +887,52 @@ impl Method {
     #[cfg_attr(not(feature = "state-map"), allow(dead_code))]
     fn state_map_rep(self) -> bool {
         cfg!(feature = "state-map") && matches!(self, Method::StateMapRep)
+    }
+
+    /// Phase 7: the encoder-side order (None = no reorder). The decoder never
+    /// needs the order — it always restores by sorting on the page id.
+    #[cfg(feature = "reorder")]
+    fn reorder_kind(self) -> Option<crate::reorder::Order> {
+        use crate::reorder::Order;
+        match self {
+            Method::ReorderId => Some(Order::Identity),
+            Method::ReorderTitle => Some(Order::Title),
+            Method::ReorderSize => Some(Order::Size),
+            Method::ReorderStruct => Some(Order::Struct),
+            Method::ReorderMinHash => Some(Order::MinHash),
+            Method::ReorderGreedy => Some(Order::Greedy),
+            Method::ReorderTemplate => Some(Order::Template),
+            Method::ReorderShuffle => Some(Order::Shuffle),
+            Method::ReorderCategory => Some(Order::Category),
+            Method::ReorderTemplateKey => Some(Order::TemplateKey),
+            Method::ReorderCategorySet => Some(Order::CategorySet),
+            Method::ReorderFull => Some(Order::Full),
+            _ => None,
+        }
+    }
+
+    /// Phase 7: whether a decoded stream must be restored by a page-id sort.
+    /// Equal to `reorder_kind().is_some()`; kept separate so the decoder's path
+    /// is a single cheap predicate.
+    #[cfg(feature = "reorder")]
+    fn reorders(self) -> bool {
+        self.reorder_kind().is_some()
+    }
+
+    #[cfg(not(feature = "reorder"))]
+    #[cfg_attr(not(feature = "reorder"), allow(dead_code))]
+    fn reorders(self) -> bool {
+        let _ = self;
+        false
+    }
+
+    /// Phase 7: the method to fall back to when the free-restoration
+    /// precondition fails (the corpus is not page-id ascending). The accepted
+    /// configuration without the reorder.
+    #[cfg(feature = "reorder")]
+    fn reorder_parent(self) -> Method {
+        let _ = self;
+        Method::Sse3
     }
 
     /// Phase 6.4: `Some(false)` = order-2 key, `Some(true)` = distant control.
@@ -1222,6 +1353,23 @@ fn maybe_unlzbe(_method: Method, data: Vec<u8>) -> Vec<u8> {
     data
 }
 
+/// Phase 7 inverse: restore the original page order. `method.reorders()` is true
+/// only for a method the *encoder* actually reordered, so a corpus that failed
+/// the precondition (and was encoded under the parent method) is never sorted.
+#[cfg(feature = "reorder")]
+fn maybe_unreorder(method: Method, data: Vec<u8>) -> Vec<u8> {
+    if method.reorders() {
+        crate::reorder::restore(&data)
+    } else {
+        data
+    }
+}
+
+#[cfg(not(feature = "reorder"))]
+fn maybe_unreorder(_method: Method, data: Vec<u8>) -> Vec<u8> {
+    data
+}
+
 // --- codec ------------------------------------------------------------------
 
 /// The method and tune of the currently accepted candidate. `encode` uses these
@@ -1238,7 +1386,15 @@ fn maybe_unlzbe(_method: Method, data: Vec<u8>) -> Vec<u8> {
 /// Phase-4 composite. Adopted at enwik9: archive 174,533,527 (1.3963 bpc vs
 /// 1.4096), DeltaS -1,670,979 at a measured 256 B executable cost; the control
 /// (an uncorrelated key) is only -305,341.
-pub const ACCEPTED_METHOD: Method = Method::Sse3;
+///
+/// Phase 7 (7.8): the article-layout compiler is adopted on top of `sse-3`. The
+/// encoder orders `<page>` blocks by their category set, then template set, then
+/// title; the decoder restores the original order by a stable sort on the
+/// embedded ascending page id (zero permutation bytes). Adopted at enwik9:
+/// archive 170,063,733 (1.3605 bpc vs 1.3963), DeltaS -4,469,794 at a measured
+/// 10,256 B executable cost; the identity control is exactly 0 and the shuffle
+/// control is +25,519 at enwik7.
+pub const ACCEPTED_METHOD: Method = Method::ReorderFull;
 /// A20: mixer learning rate 24 was adopted on enwik7 screening and confirmed on
 /// enwik8 (−76,483 B at zero executable cost).
 pub const ACCEPTED_TUNE: u8 = 7;
@@ -1253,12 +1409,35 @@ pub fn encode_with(input: &[u8], method: Method) -> Vec<u8> {
     encode_tuned(input, method, 0)
 }
 
+/// Phase 7: apply the encoder-side article ordering. Returns the (possibly
+/// reordered) stream and the *effective* method: when the corpus does not
+/// satisfy the free-restoration precondition the method is downgraded to its
+/// parent, so the decoder never attempts a sort it cannot invert.
+#[cfg(feature = "reorder")]
+fn prepare_reorder(input: &[u8], method: Method) -> (Vec<u8>, Method) {
+    match method.reorder_kind() {
+        Some(order) => match crate::reorder::encode(input, order) {
+            Some(v) => (v, method),
+            None => (input.to_vec(), method.reorder_parent()),
+        },
+        None => (input.to_vec(), method),
+    }
+}
+
+#[cfg(not(feature = "reorder"))]
+fn prepare_reorder(input: &[u8], method: Method) -> (Vec<u8>, Method) {
+    (input.to_vec(), method)
+}
+
 /// Compress with an explicit method and optimizer tuning variant (A20).
 /// `tune` selects a learning-rate/update variant at *runtime*, so it costs no
 /// additional executable bytes; the value is stored in the header and the
 /// decoder reconstructs the identical model.
 pub fn encode_tuned(input: &[u8], method: Method, tune: u8) -> Vec<u8> {
-    let lzbed = maybe_lzbe(method, input.to_vec());
+    // Phase 7: the article-layout compiler runs outermost, on the raw corpus.
+    // The decoder's inverse is the very last step of `decode`.
+    let (input2, method) = prepare_reorder(input, method);
+    let lzbed = maybe_lzbe(method, input2);
     let grammared = maybe_grammar(method, lzbed);
     let stemmed = maybe_stem(method, grammared);
     let hoisted = maybe_hoist(method, &stemmed);
@@ -1305,7 +1484,10 @@ pub fn encode_specs(
     tune: u8,
     specs: &[crate::context::ModelSpec],
 ) -> Vec<u8> {
-    let lzbed = maybe_lzbe(method, input.to_vec());
+    // Phase 7: same outermost reorder as `encode_tuned`, so pruning measurements
+    // apply to the reordered representation.
+    let (input2, method) = prepare_reorder(input, method);
+    let lzbed = maybe_lzbe(method, input2);
     let grammared = maybe_grammar(method, lzbed);
     let stemmed = maybe_stem(method, grammared);
     let hoisted = maybe_hoist(method, &stemmed);
@@ -1423,6 +1605,18 @@ pub fn decode(archive: &[u8]) -> Option<Vec<u8>> {
         70 => Method::IsseCtl,
         71 => Method::Phase6,
         72 => Method::Spine,
+        73 => Method::ReorderId,
+        74 => Method::ReorderTitle,
+        75 => Method::ReorderSize,
+        76 => Method::ReorderStruct,
+        77 => Method::ReorderMinHash,
+        78 => Method::ReorderGreedy,
+        79 => Method::ReorderTemplate,
+        80 => Method::ReorderShuffle,
+        81 => Method::ReorderCategory,
+        82 => Method::ReorderTemplateKey,
+        83 => Method::ReorderCategorySet,
+        84 => Method::ReorderFull,
         _ => return None,
     };
     let mut len_bytes = [0u8; 8];
@@ -1469,7 +1663,9 @@ pub fn decode(archive: &[u8]) -> Option<Vec<u8>> {
     let unhoisted = maybe_unhoist(method, uncased);
     let unstemmed = maybe_unstem(method, unhoisted);
     let ungrammared = maybe_ungrammar(method, unstemmed);
-    Some(maybe_unlzbe(method, ungrammared))
+    let unlzbed = maybe_unlzbe(method, ungrammared);
+    // Phase 7: the article-layout compiler's inverse is the final step.
+    Some(maybe_unreorder(method, unlzbed))
 }
 
 /// Peek the coded length from an archive header without decoding it. Used by
@@ -1544,7 +1740,11 @@ mod tests {
 
     #[test]
     fn header_is_well_formed() {
-        let arch = encode(b"hello");
+        // A page corpus with ascending ids satisfies the Phase-7 precondition, so
+        // the accepted method is written verbatim (a non-page input is correctly
+        // downgraded to the reorder parent, which is checked separately below).
+        let data = b"  <page>\n    <title>A</title>\n    <id>1</id>\n  </page>\n  <page>\n    <title>B</title>\n    <id>2</id>\n  </page>\n".to_vec();
+        let arch = encode(&data);
         assert_eq!(&arch[0..4], MAGIC);
         // `encode` uses the accepted method/tune.
         assert_eq!(arch[4], ACCEPTED_METHOD as u8);
@@ -1558,7 +1758,7 @@ mod tests {
             coded_len >= 5,
             "coded length {coded_len} does not cover the input"
         );
-        assert_eq!(decode(&arch).unwrap(), b"hello");
+        assert_eq!(decode(&arch).unwrap(), data);
     }
 
     #[test]
@@ -1599,6 +1799,72 @@ mod tests {
             let arch = encode_with(&data, m);
             assert_eq!(decode(&arch).unwrap(), data, "method {}", m.name());
         }
+    }
+
+    /// Build a synthetic page corpus whose ids are strictly ascending and whose
+    /// articles fall into a few vocabulary clusters, then check that a reorder
+    /// method (a) restores exactly and (b) actually changed the order.
+    #[cfg(feature = "reorder")]
+    fn page_corpus() -> Vec<u8> {
+        let mut v = b"<mediawiki>\n".to_vec();
+        let topics = [
+            ("Alpha", "alpha alpha star galaxy star"),
+            ("Beta", "beta beta river water river"),
+            ("Gamma", "alpha galaxy star alpha star"),
+            ("Delta", "river beta water river water"),
+            ("Epsilon", "alpha alpha star galaxy"),
+            ("Zeta", "beta river water beta water"),
+        ];
+        for (id, (title, body)) in topics.iter().enumerate() {
+            v.extend_from_slice(
+                format!(
+                    "  <page>\n    <title>{title}</title>\n    <id>{id}</id>\n    <revision>\n      <text>{body}</text>\n    </revision>\n  </page>\n"
+                )
+                .as_bytes(),
+            );
+        }
+        v.extend_from_slice(b"</mediawiki>\n");
+        v
+    }
+
+    #[cfg(feature = "reorder")]
+    #[test]
+    fn non_page_input_downgrades_to_parent() {
+        // Without ascending page ids the encoder must fall back to the parent
+        // method, and the decoder must not sort.
+        let data = b"no pages here at all\n".to_vec();
+        let arch = encode(&data);
+        assert_eq!(arch[4], Method::Sse3 as u8);
+        assert_eq!(decode(&arch).unwrap(), data);
+    }
+
+    #[cfg(feature = "reorder")]
+    #[test]
+    fn reorder_methods_roundtrip_and_reorder() {
+        let data = page_corpus();
+        for m in [
+            Method::ReorderId,
+            Method::ReorderTitle,
+            Method::ReorderSize,
+            Method::ReorderStruct,
+            Method::ReorderMinHash,
+            Method::ReorderGreedy,
+            Method::ReorderTemplate,
+            Method::ReorderShuffle,
+            Method::ReorderCategory,
+            Method::ReorderTemplateKey,
+            Method::ReorderCategorySet,
+            Method::ReorderFull,
+        ] {
+            let arch = encode_with(&data, m);
+            assert_eq!(decode(&arch).unwrap(), data, "method {}", m.name());
+        }
+        // The title order must differ from the record order.
+        assert_ne!(
+            crate::reorder::encode(&data, crate::reorder::Order::Identity),
+            crate::reorder::encode(&data, crate::reorder::Order::Title),
+            "title order did nothing"
+        );
     }
 
     #[test]
