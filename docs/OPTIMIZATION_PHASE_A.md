@@ -366,9 +366,9 @@ antagonistic; recorded for A28.
 | A | A20 optimizer sweep | **DONE** — ADOPTED (lr 24) |
 | A | A17 previous-line structural expert | **DONE** — ADOPTED |
 | B | A1 / A26 / A27 case-factorized FOT tokenization | A1.2 **DONE — REJECTED**; A1.1/A26 **DONE — ADOPTED** (255-token vocabulary, reverse ids); A26 v2 extension **REJECTED** (coverage past 255 loses) |
-| C | A5–A11 parsing (entropy-repriced optimal parse, MRU carousel, matched-literal residuals, distance floors, ROLZ ranks) | NOT RUN |
-| D | A4 CTS, A16 DMC | NOT RUN |
-| E | A12–A15 grammar refinements | NOT RUN |
+| C | A5–A11 parsing (entropy-repriced optimal parse, MRU carousel, matched-literal residuals, distance floors, ROLZ ranks) | A8 matched-literal **ADOPTED** (Phase 4.4, enwik9 −3.87 MB composite); remainder NOT RUN |
+| D | A4 CTS, A16 DMC | NOT RUN — the Phase-6 spine (state maps / ICM / PPM) was tested directly and the state-map and PPM experts were REJECTED at enwik9; CTS/DMC remain unrun |
+| E | A12–A15 grammar refinements | NOT RUN (Phase 5 shows grammar loses at every scale) |
 | F | A18/A19 entropy throughput | NOT RUN |
 | G | A23 BWT tunneling, A24 archaeology | NOT RUN |
 
