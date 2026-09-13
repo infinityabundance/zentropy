@@ -18,12 +18,14 @@
   and `gzip -9` (36,445,248) on the same input.
 - **The full corpus reconstructs exactly.** The accepted configuration
   (`struct-hoist + word-token-reverse + column + Phase-4 match family + order-2
-  SSE stage + Phase-7 article layout + tune 7`) gives enwik9 `170,063,733` bytes
-  (`1.3605` bpc), decoded byte-identically. Progression: pre-column `182,949,204`
-  (1.4636 bpc); hoist+column `181,803,607` (1.4544); +A1.1 tokenizer `180,079,678`
-  (1.4406); +Phase 4 `176,204,762` (1.4096); +Phase 6 SSE `174,533,527` (1.3963);
-  **+Phase 7 article layout `170,063,733` (1.3605)**. This is milestone G0 (exact
-  10⁹-byte reconstruction) and G1.
+  SSE stage + Phase-7 article layout + Phase-8 learned residual corrector +
+  tune 7`) gives enwik9 `169,642,087` bytes (`1.3571` bpc), decoded
+  byte-identically. Progression: pre-column `182,949,204` (1.4636 bpc);
+  hoist+column `181,803,607` (1.4544); +A1.1 tokenizer `180,079,678` (1.4406);
+  +Phase 4 `176,204,762` (1.4096); +Phase 6 SSE `174,533,527` (1.3963);
+  +Phase 7 article layout `170,063,733` (1.3605); **+Phase 8 learned residual
+  `169,642,087` (1.3571)**. This is milestone G0 (exact 10⁹-byte reconstruction)
+  and G1.
 - **Mechanisms are adopted only by complete, measured cost:** word/bigram
   experts (−653,805 B on enwik8) and orders 0/5/12/16 (−118,676 B on enwik8).
   Structural hoisting is adopted for ≥ enwik7 (−15,130 B on enwik8) but
@@ -75,12 +77,23 @@
   MinHash, greedy nearest-neighbour) *lose*; shared markup, not semantic
   proximity, is what the predictor exploits. See [`PHASE7_PLAN.md`](PHASE7_PLAN.md).
 
+- **Phase 8 (learned residual corrector) is complete.** A 120-byte quantized
+  integer MLP consumes the classical mixer/APM outputs and emits a logit
+  correction, trained offline and embedded in the binary. Adopted at enwik9
+  **−421,646 B** (170,063,733 → 169,642,087, 1.3571 bpc) for a measured 7,848 B;
+  the permuted-weight control is +2,201,020. The phase's net-gain gate
+  (`residual_saved > model_bytes + binary_bytes`) passes: 421,646 > 7,848. A unit
+  test comparing the integer runtime against a dequantized float replication of
+  the trainer caught a real bias-scaling bug that had made the shipped network
+  5–17 MB *worse* than the parent. See [`PHASE8_PLAN.md`](PHASE8_PLAN.md).
+
 ## What is *not* true yet
 
 - The floor is roughly **5× larger than the record**. Phases 3–8 are the climb.
-- The context-mixing stack now has a real calibration stage and a PPM expert,
-  but still no ICM/ISSE bit histories, no structural/bidirectional contexts, and
-  no learned model.
+- The context-mixing stack now has a real calibration stage, a PPM expert and a
+  learned residual corrector, but still no ICM/ISSE bit histories and no
+  structural/bidirectional contexts. The corrector is tiny (120 B / 4 hidden
+  units); larger learned models remain a Pareto option, not a claim.
 - **Phase 3 (structural modeling on the IR) is closed by measurement.** The
   31-entry structural hoist is adopted and saturated: covering the largest
   remaining tag gap (34.5 KB raw) changes the archive by only −309 B, and all
@@ -149,8 +162,10 @@ only after the predictor is strong.
    compression technology.
 7. **Re-run article-layout optimisation against the now-strong predictor.**
    *(done — Phase 7; the layout is now part of the accepted configuration.)*
-8. **Residual-conditioned transformer last,** when it is genuinely learning the
-   difficult remainder rather than compensating for missing classical machinery.
+8. **Residual-conditioned transformer last,** when the learned corrector's
+   residual saturates. *(Phase 8 built and adopted a 120-byte MLP corrector at
+   enwik9 −421,646 B; the transformer remains a width/architecture point on the
+   same Pareto curve and is only worth revisiting if the MLP saturates.)*
 
 ## The milestone that matters
 
@@ -161,10 +176,10 @@ The first decisive question is not whether Zentropy reaches 100 MB. It is:
    saving after that floor**, rather than merely rediscovering what the predictor
    already captured?
 
-Today the floor is 170.1 MB (archive) / ~170.5 MB complete `S` and the
+Today the floor is 169.6 MB (archive) / ~170.0 MB complete `S` and the
 distinctly-Zentropy machinery has not yet been deployed. The gap to the pending
-frontier (`fx2-cmix-transformer`, 100.42 MB including compressor) is ~70.5 MB; to
-the accepted record (`fx2-cmix`, 110.79 MB) it is ~59.7 MB. It is not close, and
+frontier (`fx2-cmix-transformer`, 100.42 MB including compressor) is ~70.0 MB; to
+the accepted record (`fx2-cmix`, 110.79 MB) it is ~59.2 MB. It is not close, and
 the project does not pretend otherwise.
 
 ## Superseded earlier ordering
@@ -179,10 +194,10 @@ item 2/7: a cheap probe, not an optimisation campaign.
   mechanism is gated on that, not on our hardware.
 - **Memory.** The model already uses ~450 MB for enwik8; enwik9 needs a
   careful allocation budget under 10 GB.
-- **Binary size.** The stub is 391,720 B. Phase 6 and Phase 7 added ≈24 KB of
-  dispatch and encoder code; Phase 11 must gate the rejected methods out of the
-  submission build. The accepted mechanisms' own marginal cost is small (SSE
-  256 B, reorder 24,208 B).
+- **Binary size.** The stub is 399,824 B. Phases 6–8 added ≈33 KB of dispatch and
+  mechanism code; Phase 11 must gate the rejected methods out of the submission
+  build. The accepted mechanisms' own marginal costs are small (SSE 256 B,
+  reorder 24,208 B, learned 7,848 B).
 - **Determinism.** All arithmetic is integer-only today. This must be preserved
   if any floating-point learned component enters the submission.
 

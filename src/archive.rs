@@ -263,6 +263,10 @@ pub enum Method {
     ReorderFull = 84,
     /// Phase 7.8: combined order with a residual (local-model novelty) tiebreak.
     ReorderFullResidual = 85,
+    /// Phase 8: accepted config + the learned residual corrector (frozen weights).
+    Residual = 86,
+    /// Phase 8.7 control: the same corrector with permuted weights.
+    ResidualCtl = 87,
 }
 
 impl Method {
@@ -354,6 +358,8 @@ impl Method {
             Method::ReorderCategorySet => "reorder-category-set",
             Method::ReorderFull => "reorder-full",
             Method::ReorderFullResidual => "reorder-full-residual",
+            Method::Residual => "residual",
+            Method::ResidualCtl => "residual-ctl",
         }
     }
 
@@ -445,12 +451,14 @@ impl Method {
             "reorder-category-set" => Method::ReorderCategorySet,
             "reorder-full" => Method::ReorderFull,
             "reorder-full-residual" => Method::ReorderFullResidual,
+            "residual" => Method::Residual,
+            "residual-ctl" => Method::ResidualCtl,
             _ => return None,
         })
     }
 
     /// All methods, for exhaustive exactness testing.
-    pub const ALL: [Method; 86] = [
+    pub const ALL: [Method; 88] = [
         Method::RawCm,
         Method::RawCmNoWord,
         Method::StructHoist,
@@ -537,6 +545,8 @@ impl Method {
         Method::ReorderCategorySet,
         Method::ReorderFull,
         Method::ReorderFullResidual,
+        Method::Residual,
+        Method::ResidualCtl,
     ];
 
     /// Methods that extend the **accepted Phase-4 composite parent** unchanged:
@@ -583,6 +593,8 @@ impl Method {
                 | Method::ReorderCategorySet
                 | Method::ReorderFull
                 | Method::ReorderFullResidual
+                | Method::Residual
+                | Method::ResidualCtl
         )
     }
 
@@ -606,6 +618,8 @@ impl Method {
                 | Method::ReorderCategorySet
                 | Method::ReorderFull
                 | Method::ReorderFullResidual
+                | Method::Residual
+                | Method::ResidualCtl
                 | Method::Collision
                 | Method::CollisionCtl
                 | Method::Ppm
@@ -915,6 +929,7 @@ impl Method {
             Method::ReorderCategorySet => Some(Order::CategorySet),
             Method::ReorderFull => Some(Order::Full),
             Method::ReorderFullResidual => Some(Order::FullResidual),
+            Method::Residual | Method::ResidualCtl => Some(Order::Full),
             _ => None,
         }
     }
@@ -1089,6 +1104,13 @@ impl Method {
             Method::PpmCtl => base.with_ppm(1),
             // Phase 6.9: the direct orders that PPM subsumes are pruned.
             Method::Spine => base.with_ppm(4).without_orders(&[4, 8, 12, 16]),
+            _ => base,
+        };
+        // Phase 8: the learned residual corrector (frozen weights; the control
+        // permutes them).
+        let base = match self {
+            Method::Residual => base.with_residual(false),
+            Method::ResidualCtl => base.with_residual(true),
             _ => base,
         };
         base.with_info(self.info())
@@ -1402,7 +1424,13 @@ fn maybe_unreorder(_method: Method, data: Vec<u8>) -> Vec<u8> {
 /// archive 170,063,733 (1.3605 bpc vs 1.3963), DeltaS -4,469,794 at a measured
 /// 10,256 B executable cost; the identity control is exactly 0 and the shuffle
 /// control is +25,519 at enwik7.
-pub const ACCEPTED_METHOD: Method = Method::ReorderFull;
+///
+/// Phase 8 (8.3): the learned residual corrector is adopted on top of the
+/// article layout. A 120-byte quantized MLP corrects the classical chain's logit
+/// from a 12-dim classical feature vector. Adopted at enwik9: archive
+/// 169,642,087 (1.3571 bpc vs 1.3605), DeltaS -421,646 at a measured 7,848 B
+/// executable cost (weights embedded); the permuted-weight control is +2,201,020.
+pub const ACCEPTED_METHOD: Method = Method::Residual;
 /// A20: mixer learning rate 24 was adopted on enwik7 screening and confirmed on
 /// enwik8 (−76,483 B at zero executable cost).
 pub const ACCEPTED_TUNE: u8 = 7;
@@ -1531,6 +1559,23 @@ pub fn encode_specs(
     out
 }
 
+/// Phase 8 (research only): the byte stream the predictor actually codes for a
+/// method — the transforms applied, without coding. Used by the residual trainer
+/// so training sees exactly the distribution inference sees.
+#[cfg(not(feature = "submission"))]
+pub fn transformed_stream(input: &[u8], method: Method, tune: u8) -> Vec<u8> {
+    let _ = tune;
+    let (input2, method) = prepare_reorder(input, method);
+    let lzbed = maybe_lzbe(method, input2);
+    let grammared = maybe_grammar(method, lzbed);
+    let stemmed = maybe_stem(method, grammared);
+    let hoisted = maybe_hoist(method, &stemmed);
+    let cased = maybe_case(method, hoisted);
+    let tokened = maybe_token(method, cased);
+    let (data, _perm) = maybe_perm(method, tokened);
+    data
+}
+
 /// Decode an archive payload produced by [`encode_with`].
 pub fn decode(archive: &[u8]) -> Option<Vec<u8>> {
     if archive.len() < HEADER_LEN {
@@ -1626,6 +1671,8 @@ pub fn decode(archive: &[u8]) -> Option<Vec<u8>> {
         83 => Method::ReorderCategorySet,
         84 => Method::ReorderFull,
         85 => Method::ReorderFullResidual,
+        86 => Method::Residual,
+        87 => Method::ResidualCtl,
         _ => return None,
     };
     let mut len_bytes = [0u8; 8];
@@ -1865,6 +1912,8 @@ mod tests {
             Method::ReorderCategorySet,
             Method::ReorderFull,
             Method::ReorderFullResidual,
+            Method::Residual,
+            Method::ResidualCtl,
         ] {
             let arch = encode_with(&data, m);
             assert_eq!(decode(&arch).unwrap(), data, "method {}", m.name());

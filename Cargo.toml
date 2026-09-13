@@ -1,6 +1,6 @@
 [package]
 name = "zentropy"
-version = "0.0.5"
+version = "0.0.6"
 edition = "2021"
 rust-version = "1.74"
 description = "Zentropy: the smallest legitimate executable explanation of enwik9. A Hutter Prize contender."
@@ -43,7 +43,7 @@ path = "src/bin/zentropy_sfx.rs"
 # Only ADOPTED mechanisms are in the default (scored) build. Rejected or
 # experimental mechanisms are compiled in explicitly with --features so they
 # reproduce but do not cost submission bytes.
-default = ["struct-hoist", "column-model", "word-token", "long-match", "sparse-match", "match-byte", "sse-3", "reorder", "mem-guard"]
+default = ["struct-hoist", "column-model", "word-token", "long-match", "sparse-match", "match-byte", "sse-3", "reorder", "learned", "mem-guard"]
 # Gates the Phase-3 structural-hoisting transform into the binary. Disabling it
 # yields an otherwise-identical binary used ONLY to measure the mechanism's
 # real executable-byte cost. `S` is authority: an estimate is never allowed to
@@ -104,6 +104,8 @@ collision = []
 ppm = []
 # Phase 7: article-layout compiler (encoder-side reordering + decoder id-sort).
 reorder = []
+# Phase 8: learned residual corrector (integer inference + embedded weights).
+learned = []
 # Out-of-memory protection in the scored stub. On by default; disabling it
 # yields an otherwise-identical binary used to measure its executable cost.
 mem-guard = []

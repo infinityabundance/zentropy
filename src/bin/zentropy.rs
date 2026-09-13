@@ -60,6 +60,7 @@ fn main() -> ExitCode {
         "prune" => cmd_prune(&args[2..]),
         "reorder-info" => cmd_reorder_info(&args[2..]),
         "reorder-out" => cmd_reorder_out(&args[2..]),
+        "train-residual" => cmd_train_residual(&args[2..]),
         "selftest" => cmd_selftest(),
         "help" | "-h" | "--help" => {
             usage();
@@ -581,6 +582,64 @@ fn cmd_reorder_out(args: &[String]) -> Result<(), String> {
 #[cfg(not(feature = "reorder"))]
 fn cmd_reorder_out(_args: &[String]) -> Result<(), String> {
     Err("reorder-out: built without the `reorder` feature".into())
+}
+
+/// Phase 8 research: train the learned residual corrector on a corpus prefix and
+/// write the quantized weights. The trainer runs on the *transformed* stream the
+/// predictor actually codes, so training sees the inference distribution.
+#[cfg(feature = "learned")]
+fn cmd_train_residual(args: &[String]) -> Result<(), String> {
+    let path = args.first().ok_or("train-residual: need <in>")?;
+    let get = |k: &str| -> Option<String> {
+        args.iter()
+            .position(|a| a == k)
+            .and_then(|i| args.get(i + 1))
+            .cloned()
+    };
+    let hidden: usize = get("--hidden").and_then(|v| v.parse().ok()).unwrap_or(16);
+    let lr: f32 = get("--lr").and_then(|v| v.parse().ok()).unwrap_or(0.02);
+    let max_bytes: Option<usize> = get("--max-bytes").and_then(|v| v.parse().ok());
+    let out = get("--out").unwrap_or_else(|| "src/learned/weights.bin".into());
+
+    let raw = read(path)?;
+    let raw = match max_bytes {
+        Some(m) if m < raw.len() => &raw[..m],
+        _ => &raw[..],
+    };
+    // Train on the same transformed stream the accepted configuration codes.
+    let stream = archive::transformed_stream(raw, archive::ACCEPTED_METHOD, archive::ACCEPTED_TUNE);
+    let n = stream.len();
+    guard_encode(n as u64, max_ram_override(args))?;
+    let cfg = archive::ACCEPTED_METHOD
+        .config_for(n)
+        .with_residual_train(hidden)
+        .with_residual_lr(lr);
+    let mut cm = zentropy::context::Cm::new(&cfg, n);
+    let t0 = Instant::now();
+    for &byte in stream.iter() {
+        let mut mask = 0x80u32;
+        while mask != 0 {
+            let bit = if (byte as u32) & mask != 0 { 1 } else { 0 };
+            let _ = cm.predict();
+            cm.update(bit);
+            mask >>= 1;
+        }
+    }
+    let net = cm.take_residual_net().ok_or("train-residual: no trainer")?;
+    let bytes = net.to_bytes();
+    write(&out, &bytes)?;
+    let (steps, loss, ema) = cm.residual_stats();
+    println!(
+        "hidden={hidden} lr={lr} steps={steps} mean_loss_bits_per_bit={loss:.6} recent_loss_bits_per_bit={ema:.6} model_bytes={} wall={:.1}s out={out}",
+        bytes.len(),
+        t0.elapsed().as_secs_f64()
+    );
+    Ok(())
+}
+
+#[cfg(not(feature = "learned"))]
+fn cmd_train_residual(_args: &[String]) -> Result<(), String> {
+    Err("train-residual: built without the `learned` feature".into())
 }
 
 /// Build a self-extracting `archive9` = stub + marker + length + archive.

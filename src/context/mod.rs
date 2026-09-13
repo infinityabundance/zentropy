@@ -987,6 +987,14 @@ pub struct ModelConfig {
     pub collision: u8,
     /// Phase 6.8: maximum PPM-C order (0 = off).
     pub ppm_order: usize,
+    /// Phase 8: apply the embedded learned residual corrector.
+    pub residual: bool,
+    /// Phase 8.7 control: apply the corrector with permuted weights.
+    pub residual_ctl: bool,
+    /// Phase 8 training (research): hidden width; >0 builds the offline trainer.
+    pub residual_hidden: usize,
+    /// Phase 8 training (research): SGD learning rate.
+    pub residual_lr: f32,
     pub mixer_lr: i32,
     pub apm1_ctx: usize,
     pub apm2_ctx: usize,
@@ -1085,6 +1093,10 @@ impl ModelConfig {
             apm3_mode: Sse3Mode::Order2,
             collision: 0,
             ppm_order: 0,
+            residual: false,
+            residual_ctl: false,
+            residual_hidden: 0,
+            residual_lr: 0.02,
             mixer_lr: 12,
             apm1_ctx: 4096,
             apm2_ctx: 65536,
@@ -1123,6 +1135,26 @@ impl ModelConfig {
     /// Phase 6.8: enable the bounded PPM-C byte model at the given max order.
     pub fn with_ppm(mut self, order: usize) -> Self {
         self.ppm_order = order;
+        self
+    }
+
+    /// Phase 8: apply the embedded learned residual corrector. `ctl` selects the
+    /// permuted-weight control (identical size and code, no learned signal).
+    pub fn with_residual(mut self, ctl: bool) -> Self {
+        self.residual = true;
+        self.residual_ctl = ctl;
+        self
+    }
+
+    /// Phase 8 (research): train a residual corrector of the given hidden width.
+    pub fn with_residual_train(mut self, hidden: usize) -> Self {
+        self.residual_hidden = hidden;
+        self
+    }
+
+    /// Phase 8 (research): the trainer learning rate.
+    pub fn with_residual_lr(mut self, lr: f32) -> Self {
+        self.residual_lr = lr;
         self
     }
 
@@ -1426,6 +1458,16 @@ pub struct Predictor {
     sse_state: Option<IndirectState>,
     /// Phase 6.8: bounded PPM-C byte model (one mixer expert).
     ppm: Option<PpmModel>,
+    /// Phase 8: frozen learned residual corrector (T1/T2).
+    #[cfg(feature = "learned")]
+    residual: Option<crate::learned::Net>,
+    /// Phase 8 (research): the offline trainer shadow.
+    #[cfg(feature = "learned")]
+    residual_trainer: Option<crate::learned::Trainer>,
+    #[cfg(feature = "learned")]
+    last_feats: crate::learned::Feats,
+    #[cfg(feature = "learned")]
+    last_s_pr: i32,
     st: StretchTable,
     buf: Vec<u8>,
     c0: u32,
@@ -1573,6 +1615,27 @@ impl Predictor {
                     None
                 }
             },
+            #[cfg(feature = "learned")]
+            residual: {
+                if cfg.residual {
+                    crate::learned::load().map(|n| if cfg.residual_ctl { n.shuffled() } else { n })
+                } else {
+                    None
+                }
+            },
+            #[cfg(feature = "learned")]
+            residual_trainer: if cfg.residual_hidden > 0 {
+                Some(crate::learned::Trainer::new(
+                    cfg.residual_hidden,
+                    cfg.residual_lr,
+                ))
+            } else {
+                None
+            },
+            #[cfg(feature = "learned")]
+            last_feats: crate::learned::Feats([0; crate::learned::NF]),
+            #[cfg(feature = "learned")]
+            last_s_pr: 0,
             st: StretchTable::new(),
             buf: Vec::with_capacity(buf_capacity),
             c0: 1,
@@ -1945,24 +2008,77 @@ impl Predictor {
         // per-byte context combined with the partial byte `c0`, so each bit
         // position within the byte gets its own calibration buckets.
         #[cfg(feature = "sse-3")]
-        let pr = {
+        let (pr0, a3v) = {
             let cxt = self.sse_ctx ^ (self.c0.wrapping_mul(MIX_C)) as usize;
             match self.apm3.as_mut() {
                 Some(apm3) => {
                     let a3 = apm3.predict(blended, cxt);
-                    (3 * blended + a3 + 2) >> 2
+                    ((3 * blended + a3 + 2) >> 2, a3)
                 }
-                None => blended,
+                None => (blended, blended),
             }
         };
         #[cfg(not(feature = "sse-3"))]
-        let pr = blended;
+        let (pr0, a3v) = (blended, blended);
+        #[cfg(not(feature = "learned"))]
+        let _ = a3v;
+
+        // Phase 8: the learned residual corrector produces a logit correction on
+        // top of the classical probability. Its features are the classical
+        // outputs themselves (the T2 cascade).
+        #[cfg(feature = "learned")]
+        let pr = {
+            if self.residual.is_some() || self.residual_trainer.is_some() {
+                let match_dir = {
+                    let mut best = 0i32;
+                    for k in 0..self.match_models.len() {
+                        let v = self.inputs[mbase + k];
+                        if v.abs() > best.abs() {
+                            best = v;
+                        }
+                    }
+                    best.signum()
+                };
+                let feats = crate::learned::extract(&crate::learned::Raw14 {
+                    s_raw: self.st.stretch(raw),
+                    s_a1: self.st.stretch(a1),
+                    s_a2: self.st.stretch(a2),
+                    s_a3: self.st.stretch(a3v),
+                    s_pr: self.st.stretch(pr0),
+                    mstate: mstate as i32,
+                    match_dir,
+                    bitpos: self.bitpos as i32,
+                    word_open: word_open != 0,
+                    rep_active: rep_active != 0,
+                });
+                let corr = match (self.residual_trainer.as_ref(), self.residual.as_ref()) {
+                    (Some(tr), _) => tr.corr_for(&feats),
+                    (None, Some(net)) => net.forward(&feats),
+                    _ => 0,
+                };
+                self.last_feats = feats;
+                self.last_s_pr = self.st.stretch(pr0);
+                crate::learned::stretch_and_apply(&self.st, pr0, corr)
+            } else {
+                pr0
+            }
+        };
+        #[cfg(not(feature = "learned"))]
+        let pr = pr0;
+
         self.pr = pr.clamp(1, 4094);
         self.pr as u32
     }
 
     #[inline]
     pub fn update(&mut self, bit: u32) {
+        // Phase 8: one SGD step of the residual trainer, before the model state
+        // advances. Inference has no trainer, so this is a no-op on the scored
+        // path.
+        #[cfg(feature = "learned")]
+        if let Some(tr) = self.residual_trainer.as_mut() {
+            tr.step(&self.last_feats, self.last_s_pr, bit);
+        }
         self.mixer.update(bit);
         self.apm1.update(bit);
         self.apm2.update(bit);
@@ -1998,6 +2114,21 @@ impl Predictor {
 
     pub fn output(&self) -> &[u8] {
         &self.buf
+    }
+
+    /// Phase 8 (research): the quantized network after offline training.
+    #[cfg(feature = "learned")]
+    pub fn take_residual_net(&self) -> Option<crate::learned::Net> {
+        self.residual_trainer.as_ref().map(|t| t.quantize())
+    }
+
+    /// Phase 8 (research): training diagnostics.
+    #[cfg(feature = "learned")]
+    pub fn residual_stats(&self) -> (u64, f64, f64) {
+        self.residual_trainer
+            .as_ref()
+            .map(|t| (t.steps, t.mean_loss_bits(), t.ema_bits))
+            .unwrap_or((0, 0.0, 0.0))
     }
 
     pub fn memory_bytes(&self) -> u64 {
@@ -2058,6 +2189,18 @@ impl Cm {
 
     pub fn memory_bytes(&self) -> u64 {
         self.predictor.memory_bytes()
+    }
+
+    /// Phase 8 (research): the trained residual network.
+    #[cfg(feature = "learned")]
+    pub fn take_residual_net(&self) -> Option<crate::learned::Net> {
+        self.predictor.take_residual_net()
+    }
+
+    /// Phase 8 (research): training diagnostics.
+    #[cfg(feature = "learned")]
+    pub fn residual_stats(&self) -> (u64, f64, f64) {
+        self.predictor.residual_stats()
     }
 }
 

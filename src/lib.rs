@@ -38,6 +38,10 @@ pub mod grammar;
 pub mod ir;
 pub mod memory;
 pub mod mixer;
+// Phase 8: the learned residual corrector (integer inference; `include_bytes!`
+// model weights). Behind a feature so a rejected corrector costs no bytes.
+#[cfg(feature = "learned")]
+pub mod learned;
 pub mod score;
 // Phase 7: the article-layout compiler (encoder-side orderings + the decoder
 // page-id sort). Compiled behind a feature so the rejected orderings do not
