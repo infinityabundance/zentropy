@@ -141,7 +141,7 @@ Honest status as of the current revision. `MEASURED` means the number exists in
 | 3 | Structural factorization, typed streams, structural hoisting | **COMPLETE (closed by measurement)** — fixed 31-entry hoisting ADOPTED and at saturation; IR-driven field hoisting and typed streams REJECTED at archive level (see §7.1) |
 | 4 | Transformed lexical/phrase dictionary, long/sparse matches, repeat refs | **COMPLETE** — 255-word dictionary (A1.1) + long-distance and sparse match tiers + matched-literal expert adopted; repeat-offset state, distance floors, stemming, phrase/affix dictionaries and front-coding rejected with controls (see PHASE4_PLAN.md) |
 | 5 | Procedural grammar + rank/enumerative state | **COMPLETE (closed by measurement)** — RePair/MR/one-shot grammars, first-use and rank-coded skeletons, LZBE factors all REJECTED; the loss grows with corpus size (see PHASE5_PLAN.md) |
-| 6 | Serious context-mixing floor (ICM/ISSE, state maps, word/stem, SSE) | **PARTIAL** — direct contexts + word/bigram + previous-line/column + match + 2 APM; no ICM/ISSE/state maps |
+| 6 | Serious context-mixing floor (ICM/ISSE, state maps, word/stem, SSE) | **COMPLETE** — the extra order-2 SSE stage (`sse-3`, enwik9 −1,671,235) is ADOPTED; state maps, ICM/ISSE, sparse contexts, collision control, the PPM-C expert, the stem model and high-order pruning are REJECTED with controls at enwik9/enwik8 (see PHASE6_PLAN.md) |
 | 7 | Article-layout compiler (semantic/structural/residual/predictor orders) | PROPOSED |
 | 8 | Learned residual corrector (model-size Pareto campaign) | PROPOSED |
 | 9 | Global search (DSFB observer, frf-fuzz mutation, Gemel memory) | PROPOSED |
@@ -158,10 +158,17 @@ receipt in `evidence/runs/receipts.jsonl`.
 
 | Corpus | bytes | archive (accepted) | bits/byte | ratio | encode wall | peak RSS |
 |---|---|---|---|---|---|---|
-| enwik6 | 1,000,000 | 267,277 | 2.1382 | 3.74 | 0.6 s | — |
-| enwik7 | 10,000,000 | 2,412,977 | 1.9304 | 4.14 | 6.5 s | — |
-| enwik8 | 100,000,000 | 21,815,643 | 1.7453 | 4.58 | 160.7 s | — |
-| enwik9 | 1,000,000,000 | 176,204,762 | 1.4096 | 5.68 | 1,553.3 s | ~5.0 GiB |
+| enwik6 | 1,000,000 | 267,997 | 2.1440 | 3.73 | 0.8 s | — |
+| enwik7 | 10,000,000 | 2,398,080 | 1.9185 | 4.17 | 10.4 s | — |
+| enwik8 | 100,000,000 | 21,619,779 | 1.7296 | 4.63 | ~147 s | — |
+| enwik9 | 1,000,000,000 | 174,533,527 | 1.3963 | 5.73 | ~1,800 s | ~5.0 GiB |
+
+The accepted configuration is now `Method::Sse3` = the Phase-4 composite +
+the extra order-2 SSE stage (Phase 6.4), adopted at enwik9 `−1,671,235` for a
+measured 256 B of executable. The scored stub is **366,744 B**: the Phase-6 code
+adds ≈15 KB of dispatch for the rejected methods, which Phase 11 (submission
+closure) must reclaim — it is charged correctly here, but it should not survive
+into a final submission.
 
 Mechanisms admitted by measurement (each a sequential experiment; a mechanism
 only counts when the *complete* `ΔS` is negative):
@@ -178,6 +185,8 @@ only counts when the *complete* `ΔS` is negative):
 | Phase 4.2 sparse/gapped match tier (C9) | enwik7 −5,636; enwik8 −30,993 | **ADOPTED** (composite) |
 | Phase 4.4 matched-literal expert (X2/X3) | enwik7 −43,858; enwik8 −333,917 (control −1,280 / −12,219) | **ADOPTED** (composite) |
 | Phase 4 composite (`phase4`, 4.1+4.2+4.4) | **enwik9 −3,869,340** at the fully accounted 5,576 B marginal | **ADOPTED (accepted configuration)** |
+| Phase 6.4 order-2 SSE stage (`sse-3`) | enwik7 −14,897; enwik8 −195,864; **enwik9 −1,671,235** (256 B; control −305,341) | **ADOPTED** |
+| Phase 6.8 bounded PPM-C expert (`ppm`) | enwik7 −49,505 over `sse-3`; enwik8 −121,466 over `sse-3`; **enwik9 +61,133 (REJECTED)** — fixed table capacity | **REJECTED at scale** |
 
 > **Accounting note.** The executable cost of a mechanism is *measured*, never
 > estimated: build an otherwise-identical submission binary with and without the
@@ -188,8 +197,8 @@ only counts when the *complete* `ΔS` is negative):
 
 The enwik9 run is the full-corpus milestone: exact 10⁹-byte reconstruction,
 beating every generic compressor (`xz -9e` ≈ 197 MB, `bzip2 -9` ≈ 254 MB,
-`gzip -9` ≈ 322 MB). It is ~1.63× above the accepted Hutter record (`fx2-cmix`,
-110,793,128 B) — a gap of ~69.3 MB — and peak RSS 4.35 GiB is inside the 10 GB
+`gzip -9` ≈ 322 MB). It is ~1.58× above the accepted Hutter record (`fx2-cmix`,
+110,793,128 B) — a gap of ~64.5 MB — and peak RSS ~5 GiB is inside the 10 GB
 limit.
 
 Reference baselines measured on enwik8 by `tools/baseline.sh` (archive bytes):

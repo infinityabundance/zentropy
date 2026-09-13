@@ -1,6 +1,6 @@
 [package]
 name = "zentropy"
-version = "0.0.2"
+version = "0.0.3"
 edition = "2021"
 rust-version = "1.74"
 description = "Zentropy: the smallest legitimate executable explanation of enwik9. A Hutter Prize contender."
@@ -43,7 +43,7 @@ path = "src/bin/zentropy_sfx.rs"
 # Only ADOPTED mechanisms are in the default (scored) build. Rejected or
 # experimental mechanisms are compiled in explicitly with --features so they
 # reproduce but do not cost submission bytes.
-default = ["struct-hoist", "column-model", "word-token", "long-match", "sparse-match", "match-byte", "mem-guard"]
+default = ["struct-hoist", "column-model", "word-token", "long-match", "sparse-match", "match-byte", "sse-3", "mem-guard"]
 # Gates the Phase-3 structural-hoisting transform into the binary. Disabling it
 # yields an otherwise-identical binary used ONLY to measure the mechanism's
 # real executable-byte cost. `S` is authority: an estimate is never allowed to
@@ -87,6 +87,21 @@ dict-front = []
 affix-token = []
 # Phase 5: RePair grammar transform (procedural grammar + rank state).
 grammar = []
+# Phase 6.1: indirect bit-history state-map experts. REJECTED at enwik9
+# (+754,671 B; wins at enwik7/enwik8) — kept to reproduce the negative result.
+state-map = []
+# Phase 6.4: extra SSE/APM calibration stage keyed on an order-2 context.
+# ADOPTED at enwik9 (-1,671,235 B for a measured 256 B of executable); in the
+# default (scored) build.
+sse-3 = []
+# Phase 6.3: an indirect (state-keyed) SSE stage. REJECTED (+26,063 B on
+# enwik7). Implies the SSE machinery.
+isse = ["sse-3"]
+# Phase 6.7: checksum-verified context slots. REJECTED (+13,779 B on enwik7).
+collision = []
+# Phase 6.8: bounded PPM-C byte model expert. REJECTED at enwik9 (+61,133 B on
+# top of sse-3; wins at enwik7/enwik8) — fixed table capacity.
+ppm = []
 # Out-of-memory protection in the scored stub. On by default; disabling it
 # yields an otherwise-identical binary used to measure its executable cost.
 mem-guard = []

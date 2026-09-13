@@ -189,6 +189,53 @@ pub enum Method {
     GrammarOneShot = 49,
     /// Phase 5.8: LZ-Begin-End factorization (A15).
     Lzbe = 50,
+    /// Phase 6.1: accepted config + indirect (bit-history state) experts.
+    StateMap = 51,
+    /// Phase 6.1 control: the same mixer width with direct order experts.
+    StateMapCtl = 52,
+    /// Phase 6.1: replace direct orders 2/4/6 with state-map experts (same width).
+    StateMapRep = 53,
+    /// Phase 6.4: accepted config + an extra SSE/APM stage keyed on order-2.
+    Sse3 = 54,
+    /// Phase 6.4 negative control: the same stage keyed on an uncorrelated byte.
+    Sse3Ctl = 55,
+    /// Phase 6.5: accepted config + a sparse (gapped) context expert, order 4 gap 1.
+    Sparse4g1 = 56,
+    /// Phase 6.5 width control: accepted config + a direct order-4 expert.
+    Sparse4g1Ctl = 57,
+    /// Phase 6.5 representation control: replace the direct order-4 expert with
+    /// the sparse order-4 gap-1 expert (same mixer width).
+    Sparse4g1Rep = 58,
+    /// Phase 6.2: accepted config + an indirect context model (order 2, history 2).
+    Icm = 59,
+    /// Phase 6.2 negative control: indirect machine with a permuted slot key.
+    IcmCtl = 60,
+    /// Phase 6.6: the second-order (chained) indirect context model.
+    IndirectChain = 61,
+    /// Phase 6.6: indirect over a deeper source context (order 5, history 2).
+    IndirectDeep = 62,
+    /// Phase 6.7: checksum-verified context slots (collision control).
+    Collision = 63,
+    /// Phase 6.7 negative control: reset slots on a deliberately wrong checksum.
+    CollisionCtl = 64,
+    /// Phase 6.8: a bounded PPM-style byte model as one expert.
+    Ppm = 65,
+    /// Phase 6.8 control: the same expert with escape/backoff disabled.
+    PpmCtl = 66,
+    /// Phase 6.10: a stem-folded word context model (not a transform).
+    StemModel = 67,
+    /// Phase 6.10 control: the same expert without stem folding.
+    StemModelCtl = 68,
+    /// Phase 6.3: an indirect (state-keyed) SSE stage.
+    Isse = 69,
+    /// Phase 6.3 control: a state-invariant SSE stage of the same width.
+    IsseCtl = 70,
+    /// Phase 6 parent: accepted config + the two adopted spine mechanisms
+    /// (indirect bit-history state experts and the extra SSE stage).
+    Phase6 = 71,
+    /// Phase 6 final spine: Phase6 + the PPM-C expert, with the four direct
+    /// order experts that PPM subsumes (4/8/12/16) pruned by measurement.
+    Spine = 72,
 }
 
 impl Method {
@@ -245,6 +292,28 @@ impl Method {
             Method::GrammarFirstUse => "grammar-first-use",
             Method::GrammarOneShot => "grammar-oneshot",
             Method::Lzbe => "lzbe",
+            Method::StateMap => "state-map",
+            Method::StateMapCtl => "state-map-ctl",
+            Method::StateMapRep => "state-map-rep",
+            Method::Sse3 => "sse-3",
+            Method::Sse3Ctl => "sse-3-ctl",
+            Method::Sparse4g1 => "sparse4g1",
+            Method::Sparse4g1Ctl => "sparse4g1-ctl",
+            Method::Sparse4g1Rep => "sparse4g1-rep",
+            Method::Icm => "icm",
+            Method::IcmCtl => "icm-ctl",
+            Method::IndirectChain => "indirect-chain",
+            Method::IndirectDeep => "indirect-deep",
+            Method::Collision => "collision",
+            Method::CollisionCtl => "collision-ctl",
+            Method::Ppm => "ppm",
+            Method::PpmCtl => "ppm-ctl",
+            Method::StemModel => "stem-model",
+            Method::StemModelCtl => "stem-model-ctl",
+            Method::Isse => "isse",
+            Method::IsseCtl => "isse-ctl",
+            Method::Phase6 => "phase6",
+            Method::Spine => "spine",
         }
     }
 
@@ -301,12 +370,34 @@ impl Method {
             "grammar-first-use" => Method::GrammarFirstUse,
             "grammar-oneshot" => Method::GrammarOneShot,
             "lzbe" => Method::Lzbe,
+            "state-map" => Method::StateMap,
+            "state-map-ctl" => Method::StateMapCtl,
+            "state-map-rep" => Method::StateMapRep,
+            "sse-3" => Method::Sse3,
+            "sse-3-ctl" => Method::Sse3Ctl,
+            "sparse4g1" => Method::Sparse4g1,
+            "sparse4g1-ctl" => Method::Sparse4g1Ctl,
+            "sparse4g1-rep" => Method::Sparse4g1Rep,
+            "icm" => Method::Icm,
+            "icm-ctl" => Method::IcmCtl,
+            "indirect-chain" => Method::IndirectChain,
+            "indirect-deep" => Method::IndirectDeep,
+            "collision" => Method::Collision,
+            "collision-ctl" => Method::CollisionCtl,
+            "ppm" => Method::Ppm,
+            "ppm-ctl" => Method::PpmCtl,
+            "stem-model" => Method::StemModel,
+            "stem-model-ctl" => Method::StemModelCtl,
+            "isse" => Method::Isse,
+            "isse-ctl" => Method::IsseCtl,
+            "phase6" => Method::Phase6,
+            "spine" => Method::Spine,
             _ => return None,
         })
     }
 
     /// All methods, for exhaustive exactness testing.
-    pub const ALL: [Method; 51] = [
+    pub const ALL: [Method; 73] = [
         Method::RawCm,
         Method::RawCmNoWord,
         Method::StructHoist,
@@ -358,49 +449,124 @@ impl Method {
         Method::GrammarFirstUse,
         Method::GrammarOneShot,
         Method::Lzbe,
+        Method::StateMap,
+        Method::StateMapCtl,
+        Method::StateMapRep,
+        Method::Sse3,
+        Method::Sse3Ctl,
+        Method::Sparse4g1,
+        Method::Sparse4g1Ctl,
+        Method::Sparse4g1Rep,
+        Method::Icm,
+        Method::IcmCtl,
+        Method::IndirectChain,
+        Method::IndirectDeep,
+        Method::Collision,
+        Method::CollisionCtl,
+        Method::Ppm,
+        Method::PpmCtl,
+        Method::StemModel,
+        Method::StemModelCtl,
+        Method::Isse,
+        Method::IsseCtl,
+        Method::Phase6,
+        Method::Spine,
     ];
+
+    /// Methods that extend the **accepted Phase-4 composite parent** unchanged:
+    /// structural hoist, reversed word vocabulary, the previous-line/column
+    /// expert, the long-match8 and sparse-match4g1 tiers, and the matched-literal
+    /// expert. Every Phase 6 mechanism is measured on exactly this base so that
+    /// `ΔS` attributes the mechanism and not a missing component of the parent.
+    fn on_phase4_parent(self) -> bool {
+        matches!(
+            self,
+            Method::Phase4
+                | Method::StateMap
+                | Method::StateMapCtl
+                | Method::StateMapRep
+                | Method::Sse3
+                | Method::Sse3Ctl
+                | Method::Sparse4g1
+                | Method::Sparse4g1Ctl
+                | Method::Sparse4g1Rep
+                | Method::Icm
+                | Method::IcmCtl
+                | Method::IndirectChain
+                | Method::IndirectDeep
+                | Method::Collision
+                | Method::CollisionCtl
+                | Method::Ppm
+                | Method::PpmCtl
+                | Method::StemModel
+                | Method::StemModelCtl
+                | Method::Isse
+                | Method::IsseCtl
+                | Method::Phase6
+                | Method::Spine
+        )
+    }
+
+    /// Methods measured on the Phase 6 parent: the accepted config plus the two
+    /// adopted spine mechanisms (state-map experts and the extra SSE stage).
+    fn base6(self) -> bool {
+        matches!(
+            self,
+            Method::Phase6
+                | Method::Spine
+                | Method::Collision
+                | Method::CollisionCtl
+                | Method::Ppm
+                | Method::PpmCtl
+                | Method::StemModel
+                | Method::StemModelCtl
+                | Method::Isse
+                | Method::IsseCtl
+        )
+    }
 
     /// Whether this method runs the structural-hoisting transform.
     fn hoists(self) -> bool {
-        let wants = matches!(
-            self,
-            Method::StructHoist
-                | Method::AlphabetPerm
-                | Method::AlphabetRandom
-                | Method::InfoInherit
-                | Method::InfoUnrelated
-                | Method::AlphabetPermInfo
-                | Method::Column
-                | Method::ColumnShuffled
-                | Method::ColumnNoLine
-                | Method::ColumnCase
-                | Method::ColumnCaseMark
-                | Method::ColumnWordToken
-                | Method::ColumnWordTokenReverse
-                | Method::ColumnWordToken2
-                | Method::LongMatch6
-                | Method::LongMatch8
-                | Method::LongMatch12
-                | Method::LongMatch16
-                | Method::LongMatch24
-                | Method::SparseMatch4g1
-                | Method::SparseMatch6g1
-                | Method::SparseMatch6g2
-                | Method::RepState1
-                | Method::RepState2
-                | Method::RepState3
-                | Method::RepState4
-                | Method::MatchByte
-                | Method::MatchByteConst
-                | Method::Phase4
-                | Method::DistMatch
-                | Method::WordClass
-                | Method::WordClassConst
-                | Method::ColumnWordTokenPhrase
-                | Method::ColumnWordTokenPhraseFreq
-                | Method::ColumnWordTokenFront
-                | Method::ColumnWordTokenAffix
-        );
+        let wants = self.on_phase4_parent()
+            || matches!(
+                self,
+                Method::StructHoist
+                    | Method::AlphabetPerm
+                    | Method::AlphabetRandom
+                    | Method::InfoInherit
+                    | Method::InfoUnrelated
+                    | Method::AlphabetPermInfo
+                    | Method::Column
+                    | Method::ColumnShuffled
+                    | Method::ColumnNoLine
+                    | Method::ColumnCase
+                    | Method::ColumnCaseMark
+                    | Method::ColumnWordToken
+                    | Method::ColumnWordTokenReverse
+                    | Method::ColumnWordToken2
+                    | Method::LongMatch6
+                    | Method::LongMatch8
+                    | Method::LongMatch12
+                    | Method::LongMatch16
+                    | Method::LongMatch24
+                    | Method::SparseMatch4g1
+                    | Method::SparseMatch6g1
+                    | Method::SparseMatch6g2
+                    | Method::RepState1
+                    | Method::RepState2
+                    | Method::RepState3
+                    | Method::RepState4
+                    | Method::MatchByte
+                    | Method::MatchByteConst
+                    | Method::Phase4
+                    | Method::DistMatch
+                    | Method::WordClass
+                    | Method::WordClassConst
+                    | Method::ColumnWordTokenPhrase
+                    | Method::ColumnWordTokenPhraseFreq
+                    | Method::ColumnWordTokenFront
+                    | Method::ColumnWordTokenAffix
+            );
         cfg!(feature = "struct-hoist") && wants
     }
 
@@ -450,29 +616,34 @@ impl Method {
     )]
     fn token_kind(self) -> TokenKind {
         #[cfg(feature = "word-token")]
-        match self {
-            Method::WordToken | Method::ColumnWordToken => return TokenKind::Words,
-            Method::WordTokenReverse
-            | Method::ColumnWordTokenReverse
-            | Method::LongMatch6
-            | Method::LongMatch8
-            | Method::LongMatch12
-            | Method::LongMatch16
-            | Method::LongMatch24
-            | Method::SparseMatch4g1
-            | Method::SparseMatch6g1
-            | Method::SparseMatch6g2
-            | Method::RepState1
-            | Method::RepState2
-            | Method::RepState3
-            | Method::RepState4
-            | Method::MatchByte
-            | Method::MatchByteConst
-            | Method::Phase4
-            | Method::DistMatch
-            | Method::WordClass
-            | Method::WordClassConst => return TokenKind::Reverse,
-            _ => {}
+        {
+            if self.on_phase4_parent() {
+                return TokenKind::Reverse;
+            }
+            match self {
+                Method::WordToken | Method::ColumnWordToken => return TokenKind::Words,
+                Method::WordTokenReverse
+                | Method::ColumnWordTokenReverse
+                | Method::LongMatch6
+                | Method::LongMatch8
+                | Method::LongMatch12
+                | Method::LongMatch16
+                | Method::LongMatch24
+                | Method::SparseMatch4g1
+                | Method::SparseMatch6g1
+                | Method::SparseMatch6g2
+                | Method::RepState1
+                | Method::RepState2
+                | Method::RepState3
+                | Method::RepState4
+                | Method::MatchByte
+                | Method::MatchByteConst
+                | Method::Phase4
+                | Method::DistMatch
+                | Method::WordClass
+                | Method::WordClassConst => return TokenKind::Reverse,
+                _ => {}
+            }
         }
         #[cfg(feature = "word-token2")]
         match self {
@@ -505,6 +676,9 @@ impl Method {
         if !cfg!(feature = "long-match") {
             return None;
         }
+        if self.on_phase4_parent() {
+            return Some(8);
+        }
         match self {
             Method::LongMatch6 => Some(6),
             Method::LongMatch8 => Some(8),
@@ -521,6 +695,9 @@ impl Method {
     fn sparse_tier(self) -> Option<(usize, usize)> {
         if !cfg!(feature = "sparse-match") {
             return None;
+        }
+        if self.on_phase4_parent() {
+            return Some((4, 1));
         }
         match self {
             Method::SparseMatch4g1 => Some((4, 1)),
@@ -551,6 +728,9 @@ impl Method {
     fn match_byte_kind(self) -> Option<bool> {
         if !cfg!(feature = "match-byte") {
             return None;
+        }
+        if self.on_phase4_parent() {
+            return Some(false);
         }
         match self {
             Method::MatchByte => Some(false),
@@ -605,6 +785,38 @@ impl Method {
         cfg!(feature = "grammar") && matches!(self, Method::Lzbe)
     }
 
+    /// Phase 6.1: `Some(false)` = state experts, `Some(true)` = direct control.
+    #[cfg_attr(not(feature = "state-map"), allow(dead_code))]
+    fn state_map_kind(self) -> Option<bool> {
+        if !cfg!(feature = "state-map") {
+            return None;
+        }
+        match self {
+            Method::StateMap => Some(false),
+            Method::StateMapCtl => Some(true),
+            _ => None,
+        }
+    }
+
+    /// Phase 6.1: replace direct orders with state-map experts.
+    #[cfg_attr(not(feature = "state-map"), allow(dead_code))]
+    fn state_map_rep(self) -> bool {
+        cfg!(feature = "state-map") && matches!(self, Method::StateMapRep)
+    }
+
+    /// Phase 6.4: `Some(false)` = order-2 key, `Some(true)` = distant control.
+    #[cfg_attr(not(feature = "sse-3"), allow(dead_code))]
+    fn sse3_kind(self) -> Option<bool> {
+        if !cfg!(feature = "sse-3") {
+            return None;
+        }
+        match self {
+            Method::Sse3 => Some(false),
+            Method::Sse3Ctl => Some(true),
+            _ => None,
+        }
+    }
+
     fn config(self, n: usize) -> ModelConfig {
         let base = ModelConfig::for_size(n as u64);
         let base = match self {
@@ -615,6 +827,7 @@ impl Method {
             _ => base,
         };
         let base = match self {
+            m if m.on_phase4_parent() => base.with_column(false),
             Method::Column
             | Method::ColumnCase
             | Method::ColumnCaseMark
@@ -642,7 +855,12 @@ impl Method {
             | Method::ColumnWordTokenPhrase
             | Method::ColumnWordTokenPhraseFreq
             | Method::ColumnWordTokenFront
-            | Method::ColumnWordTokenAffix => base.with_column(false),
+            | Method::ColumnWordTokenAffix
+            | Method::StateMap
+            | Method::StateMapCtl
+            | Method::StateMapRep
+            | Method::Sse3
+            | Method::Sse3Ctl => base.with_column(false),
             Method::ColumnShuffled => base.with_column(true),
             Method::ColumnNoLine => base.with_column_kind(crate::context::CtxKind::ColumnNoLine),
             _ => base,
@@ -669,7 +887,78 @@ impl Method {
             Some(ctl) => base.with_word_class(ctl),
             None => base,
         };
+        let base = match self.state_map_kind() {
+            Some(false) => base.with_state_orders(&[2, 4, 6]),
+            Some(true) => base.with_orders(&[2, 4, 6]),
+            None => base,
+        };
+        let base = if self.state_map_rep() {
+            base.with_replaced_state_orders(&[2, 4, 6])
+        } else {
+            base
+        };
+        let base = match self.sse3_kind() {
+            Some(false) => base.with_sse3(),
+            Some(true) => base.with_sse3_ctl(),
+            None => base,
+        };
+        // Phase 6 parent: the accepted config plus the extra SSE stage (the
+        // state-map experts were rejected at enwik9 scale). The remaining
+        // Phase-6 mechanisms are measured on top of this.
+        let base = if self.base6() {
+            match self {
+                Method::Isse => base.with_isse(),
+                Method::IsseCtl => base.with_isse_ctl(),
+                _ => base.with_sse3(),
+            }
+        } else {
+            base
+        };
+        // Phase 6.5: sparse (gapped) context experts. `-ctl` adds a direct order-4
+        // expert instead (width control); `-rep` swaps the direct order-4 expert
+        // for a sparse one at identical mixer width (representation control).
+        let base = match self {
+            Method::Sparse4g1 => base.with_sparse(4, 1),
+            Method::Sparse4g1Ctl => base.with_orders(&[4]),
+            Method::Sparse4g1Rep => base.with_replaced_sparse(4, 1),
+            _ => base,
+        };
+        // Phase 6.2/6.6: indirect context models.
+        let base = match self {
+            Method::Icm => base.with_indirect(2, 2, false),
+            Method::IcmCtl => base.with_indirect_ctl(2, 2),
+            Method::IndirectChain => base.with_indirect(2, 2, true),
+            Method::IndirectDeep => base.with_indirect(5, 2, false),
+            _ => base,
+        };
+        // Phase 6.7: checksum-verified context slots.
+        let base = match self {
+            Method::Collision => base.with_collision(1),
+            Method::CollisionCtl => base.with_collision(2),
+            _ => base,
+        };
+        // Phase 6.10: stem-folded word model (and its raw-word width control).
+        let base = match self {
+            Method::StemModel => base.with_stem_model(false),
+            Method::StemModelCtl => base.with_stem_model(true),
+            _ => base,
+        };
+        // Phase 6.8: bounded PPM-C byte model; `-ctl` keeps only order 1 so the
+        // multi-order escape/backoff is isolated.
+        let base = match self {
+            Method::Ppm => base.with_ppm(4),
+            Method::PpmCtl => base.with_ppm(1),
+            // Phase 6.9: the direct orders that PPM subsumes are pruned.
+            Method::Spine => base.with_ppm(4).without_orders(&[4, 8, 12, 16]),
+            _ => base,
+        };
         base.with_info(self.info())
+    }
+
+    /// Phase 6.9 (research): the model configuration this method builds, for
+    /// expert-roster pruning measurements and memory projection.
+    pub fn config_for(self, n: usize) -> ModelConfig {
+        self.config(n)
     }
 }
 
@@ -944,7 +1233,12 @@ fn maybe_unlzbe(_method: Method, data: Vec<u8>) -> Vec<u8> {
 /// family: a long-distance tier (4.1), a sparse/gapped tier (4.2) and the
 /// matched-literal expert (4.4). Adopted at enwik9: archive 176,204,762 (1.4096
 /// bpc vs 1.4406), DeltaS -3,869,716 at a measured 5,200 B executable cost.
-pub const ACCEPTED_METHOD: Method = Method::Phase4;
+///
+/// Phase 6 (6.4): the extra order-2 SSE stage (`sse-3`) is adopted on top of the
+/// Phase-4 composite. Adopted at enwik9: archive 174,533,527 (1.3963 bpc vs
+/// 1.4096), DeltaS -1,670,979 at a measured 256 B executable cost; the control
+/// (an uncorrelated key) is only -305,341.
+pub const ACCEPTED_METHOD: Method = Method::Sse3;
 /// A20: mixer learning rate 24 was adopted on enwik7 screening and confirmed on
 /// enwik8 (−76,483 B at zero executable cost).
 pub const ACCEPTED_TUNE: u8 = 7;
@@ -986,6 +1280,53 @@ pub fn encode_tuned(input: &[u8], method: Method, tune: u8) -> Vec<u8> {
     let mut cm = Cm::new(&cfg, n);
     let mut enc = RangeEncoder::with_capacity(n / 2 + 64);
 
+    for &byte in data.iter() {
+        let mut mask = 0x80u32;
+        while mask != 0 {
+            let bit = if (byte as u32) & mask != 0 { 1 } else { 0 };
+            let p = cm.predict();
+            enc.encode(bit, p);
+            cm.update(bit);
+            mask >>= 1;
+        }
+    }
+    out.extend_from_slice(&enc.finish());
+    out
+}
+
+/// Phase 6.9 (research only): compress with an explicit expert roster while
+/// keeping the method's transforms. The header still records `method`, so the
+/// output is a *size* measurement for pruning — not a decodable archive. Any
+/// roster that survives pruning is re-verified through a real [`Method`].
+#[cfg(not(feature = "submission"))]
+pub fn encode_specs(
+    input: &[u8],
+    method: Method,
+    tune: u8,
+    specs: &[crate::context::ModelSpec],
+) -> Vec<u8> {
+    let lzbed = maybe_lzbe(method, input.to_vec());
+    let grammared = maybe_grammar(method, lzbed);
+    let stemmed = maybe_stem(method, grammared);
+    let hoisted = maybe_hoist(method, &stemmed);
+    let cased = maybe_case(method, hoisted);
+    let tokened = maybe_token(method, cased);
+    let (data, perm) = maybe_perm(method, tokened);
+    let n = data.len();
+
+    let mut out = Vec::with_capacity(HEADER_LEN + PERM_LEN + n / 2);
+    out.extend_from_slice(MAGIC);
+    out.push(method as u8);
+    out.push(tune);
+    out.extend_from_slice(&(n as u64).to_le_bytes());
+    if let Some(p) = &perm {
+        out.extend_from_slice(p);
+    }
+
+    let mut cfg = method.config(n).with_tune(tune);
+    cfg.specs = specs.to_vec();
+    let mut cm = Cm::new(&cfg, n);
+    let mut enc = RangeEncoder::with_capacity(n / 2 + 64);
     for &byte in data.iter() {
         let mut mask = 0x80u32;
         while mask != 0 {
@@ -1060,6 +1401,28 @@ pub fn decode(archive: &[u8]) -> Option<Vec<u8>> {
         48 => Method::GrammarFirstUse,
         49 => Method::GrammarOneShot,
         50 => Method::Lzbe,
+        51 => Method::StateMap,
+        52 => Method::StateMapCtl,
+        53 => Method::StateMapRep,
+        54 => Method::Sse3,
+        55 => Method::Sse3Ctl,
+        56 => Method::Sparse4g1,
+        57 => Method::Sparse4g1Ctl,
+        58 => Method::Sparse4g1Rep,
+        59 => Method::Icm,
+        60 => Method::IcmCtl,
+        61 => Method::IndirectChain,
+        62 => Method::IndirectDeep,
+        63 => Method::Collision,
+        64 => Method::CollisionCtl,
+        65 => Method::Ppm,
+        66 => Method::PpmCtl,
+        67 => Method::StemModel,
+        68 => Method::StemModelCtl,
+        69 => Method::Isse,
+        70 => Method::IsseCtl,
+        71 => Method::Phase6,
+        72 => Method::Spine,
         _ => return None,
     };
     let mut len_bytes = [0u8; 8];

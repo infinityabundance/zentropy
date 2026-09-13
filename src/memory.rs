@@ -20,8 +20,6 @@
 //! by mere inattention. The estimator is deliberately conservative: a false
 //! refusal is cheap, an OOM kill is not.
 
-use crate::context::ModelConfig;
-
 /// Hard ceiling on the default budget, in bytes (8 GiB). Chosen below the
 /// Hutter 10 GB envelope so a judged run is always within limits, and low
 /// enough that a shared workstation keeps headroom.
@@ -89,9 +87,11 @@ pub fn parse_size(s: &str) -> Option<u64> {
         .map(|v| v.saturating_mul(mult))
 }
 
-/// Bytes the context models will allocate for a coded length of `n`.
+/// Bytes the context models will allocate for a coded length of `n`. Uses the
+/// **accepted** configuration so the projection includes every adopted
+/// mechanism (state experts, the SSE stage, the PPM model).
 pub fn model_bytes(n: usize) -> u64 {
-    ModelConfig::for_size(n as u64).memory_bytes()
+    crate::archive::ACCEPTED_METHOD.config_for(n).memory_bytes()
 }
 
 /// Conservative projected peak for *encoding* `n` input bytes.

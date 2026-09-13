@@ -57,6 +57,7 @@ fn main() -> ExitCode {
         "negative-court" => cmd_negative_court(),
         "gate" => cmd_gate(),
         "meminfo" => cmd_meminfo(&args[2..]),
+        "prune" => cmd_prune(&args[2..]),
         "selftest" => cmd_selftest(),
         "help" | "-h" | "--help" => {
             usage();
@@ -271,7 +272,10 @@ fn cmd_bench(args: &[String]) -> Result<(), String> {
     println!("=== Zentropy run report ===");
     println!("revision: {}", revision());
     println!("input: {}", input_receipt.render());
-    println!("method: RawCm (Phase-2 floor)");
+    println!(
+        "method: {} (accepted configuration)",
+        archive::ACCEPTED_METHOD.name()
+    );
     println!("archive_bytes: {}", arch.len());
     println!("compressor_bytes: 0 (driver not yet packaged as submission)");
     println!("S(archive-only): {}", s.total());
@@ -413,6 +417,98 @@ fn cmd_ablate(args: &[String]) -> Result<(), String> {
     );
     if !(full_ok && no_ok) {
         return Err("ablate: a variant failed exactness".into());
+    }
+    Ok(())
+}
+
+/// Phase 6.9: expert-roster pruning. For every expert in a method's model,
+/// measure the archive size with that expert removed. A positive marginal value
+/// means the expert earns its place; a negative value means removing it shrinks
+/// the archive (law 7: delete negative-value experts). The measurement is
+/// encode-only and research-scoped; any pruned roster is re-verified through a
+/// real `Method` before adoption.
+fn cmd_prune(args: &[String]) -> Result<(), String> {
+    let path = args.first().ok_or("prune: need <in>")?;
+    let get = |k: &str| -> Option<String> {
+        args.iter()
+            .position(|a| a == k)
+            .and_then(|i| args.get(i + 1))
+            .cloned()
+    };
+    let method = get("--method")
+        .and_then(|s| Method::from_name(&s))
+        .unwrap_or(archive::ACCEPTED_METHOD);
+    let tune: u8 = get("--tune")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(archive::ACCEPTED_TUNE);
+
+    let data = read(path)?;
+    guard_encode(data.len() as u64, max_ram_override(args))?;
+    let cfg = method.config_for(data.len());
+    let specs = cfg.specs.clone();
+
+    // Optional direct combo test: `--remove 8,12,16` encodes only that roster.
+    if let Some(list) = get("--remove") {
+        let drop: Vec<usize> = list
+            .split(',')
+            .filter_map(|s| s.trim().parse().ok())
+            .collect();
+        let mut subset = specs.clone();
+        for &i in drop.iter().rev() {
+            if i < subset.len() {
+                subset.remove(i);
+            }
+        }
+        let t = Instant::now();
+        let arch = archive::encode_specs(&data, method, tune, &subset);
+        let full = archive::encode_specs(&data, method, tune, &specs);
+        println!(
+            "remove {drop:?}: full={} subset={} delta(S)={:+} ({:.2}s)",
+            full.len(),
+            arch.len(),
+            arch.len() as i64 - full.len() as i64,
+            t.elapsed().as_secs_f64()
+        );
+        return Ok(());
+    }
+
+    let t0 = Instant::now();
+    let full = archive::encode_specs(&data, method, tune, &specs);
+    println!(
+        "full  {} experts  archive={} bytes  {:.3}s",
+        specs.len(),
+        full.len(),
+        t0.elapsed().as_secs_f64()
+    );
+    println!(
+        "idx  kind                          with={}  without  marginal(S)  verdict",
+        full.len()
+    );
+
+    let mut rows: Vec<(i64, usize, String)> = Vec::new();
+    for i in 0..specs.len() {
+        let mut subset = specs.clone();
+        let removed = subset.remove(i);
+        let t = Instant::now();
+        let arch = archive::encode_specs(&data, method, tune, &subset);
+        // Positive marginal = the expert makes the archive smaller.
+        let marginal = arch.len() as i64 - full.len() as i64;
+        let label = format!("{:?}", removed.kind);
+        rows.push((marginal, i, label));
+        println!(
+            "{:>3}  {:<28}        {:>10}  {:+9}  {:.2}s  {}",
+            i,
+            format!("{:?}", removed.kind),
+            arch.len(),
+            marginal,
+            t.elapsed().as_secs_f64(),
+            if marginal > 0 { "KEEP" } else { "PRUNE" }
+        );
+    }
+    rows.sort();
+    println!("\nmost negative (prune candidates):");
+    for (m, i, label) in rows.iter().take(5) {
+        println!("  idx {i:>3}  {label:<28}  marginal(S)={m:+}");
     }
     Ok(())
 }

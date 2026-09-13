@@ -17,11 +17,12 @@
   `xz -9e` (24,831,656), `brotli -q 11` (25,742,001), `bzip2 -9` (29,008,758)
   and `gzip -9` (36,445,248) on the same input.
 - **The full corpus reconstructs exactly.** The accepted configuration
-  (`struct-hoist + word-token-reverse + column + Phase-4 match family + tune 7`)
-  gives enwik9 `176,204,762` bytes (`1.4096` bpc), decoded byte-identically.
-  Progression: pre-column `182,949,204` (1.4636 bpc); hoist+column `181,803,607`
-  (1.4544); +A1.1 tokenizer `180,079,678` (1.4406); +Phase 4 `176,204,762`
-  (1.4096). This is milestone G0 (exact 10⁹-byte reconstruction) and G1.
+  (`struct-hoist + word-token-reverse + column + Phase-4 match family + order-2
+  SSE stage + tune 7`) gives enwik9 `174,533,527` bytes (`1.3963` bpc), decoded
+  byte-identically. Progression: pre-column `182,949,204` (1.4636 bpc);
+  hoist+column `181,803,607` (1.4544); +A1.1 tokenizer `180,079,678` (1.4406);
+  +Phase 4 `176,204,762` (1.4096); **+Phase 6 SSE `174,533,527` (1.3963)**. This is
+  milestone G0 (exact 10⁹-byte reconstruction) and G1.
 - **Mechanisms are adopted only by complete, measured cost:** word/bigram
   experts (−653,805 B on enwik8) and orders 0/5/12/16 (−118,676 B on enwik8).
   Structural hoisting is adopted for ≥ enwik7 (−15,130 B on enwik8) but
@@ -30,7 +31,7 @@
 - **Hutter score accounting is sealed:** the three legal submission forms are
   unit-tested constructors, and no mechanism's adoption decision uses an
   estimated byte cost.
-- **The submission path works.** The scored stub (351,784 B) is both `comp9a`
+- **The submission path works.** The scored stub (366,744 B) is both `comp9a`
   and `decomp9`; a packed self-extracting `archive9` reconstructs byte-identically
   with no external inputs.
 - **Optimization Phase A is running.** A17 (previous-line/column expert) and the
@@ -49,12 +50,24 @@
   [`OPTIMIZATION_PHASE_A.md`](OPTIMIZATION_PHASE_A.md) and
   [`PHASE4_PLAN.md`](PHASE4_PLAN.md).
 
+- **Phase 6 (context-mixing spine) is complete.** The extra order-2 SSE stage
+  (`sse-3`) is **ADOPTED**: enwik9 **−1,671,235 B** (176,204,762 → 174,533,527,
+  1.3963 bpc) for a measured 256 B of executable. Its control, the same stage
+  keyed on an uncorrelated distant byte (`sse-3-ctl`), is only −305,341: the
+  information in the order-2 key is worth ≈1.37 MB. Bit-history state maps,
+  ICM/ISSE, sparse contexts, collision control, the stem model, the bounded
+  PPM-C expert and high-order pruning are **REJECTED** with controls. The phase's
+  central lesson is that enwik9 and the mid-scale rungs can disagree in *both*
+  directions: state maps win at enwik7/8 and reverse to **+754,671** at enwik9,
+  and PPM-C wins at enwik7/8 (−49,505 / −121,466) and reverses to **+61,133**.
+  See [`PHASE6_PLAN.md`](PHASE6_PLAN.md).
+
 ## What is *not* true yet
 
 - The floor is roughly **5× larger than the record**. Phases 3–8 are the climb.
-- The context-mixing stack uses only *direct* probability models; it has no
-  ICM/ISSE bit histories, no state maps, no SSE beyond two APM stages, and no
-  bidirectional/structural contexts.
+- The context-mixing stack now has a real calibration stage and a PPM expert,
+  but still no ICM/ISSE bit histories, no structural/bidirectional contexts, and
+  no learned model.
 - **Phase 3 (structural modeling on the IR) is closed by measurement.** The
   31-entry structural hoist is adopted and saturated: covering the largest
   remaining tag gap (34.5 KB raw) changes the archive by only −309 B, and all
@@ -137,11 +150,11 @@ The first decisive question is not whether Zentropy reaches 100 MB. It is:
    saving after that floor**, rather than merely rediscovering what the predictor
    already captured?
 
-Today the floor is 176.2 MB and the distinctly-Zentropy machinery has not yet
-been deployed. The gap to the pending frontier (`fx2-cmix-transformer`,
-100.42 MB including compressor) is ~75.8 MB; to the accepted record (`fx2-cmix`,
-110.79 MB) it is ~65.4 MB. It is not close, and the project does not pretend
-otherwise.
+Today the floor is 174.5 MB (archive) / ~175.3 MB complete `S` and the
+distinctly-Zentropy machinery has not yet been deployed. The gap to the pending
+frontier (`fx2-cmix-transformer`, 100.42 MB including compressor) is ~74.9 MB; to
+the accepted record (`fx2-cmix`, 110.79 MB) it is ~64.5 MB. It is not close, and
+the project does not pretend otherwise.
 
 ## Superseded earlier ordering
 
@@ -155,10 +168,11 @@ item 2/7: a cheap probe, not an optimisation campaign.
   mechanism is gated on that, not on our hardware.
 - **Memory.** The model already uses ~450 MB for enwik8; enwik9 needs a
   careful allocation budget under 10 GB.
-- **Binary size.** The stub is 351,784 B, of which 21,848 B is the word tokenizer
-  and 5,576 B is the Phase-4 match family (mostly `std::HashMap` and the extra
-  match tiers). If the model grows, the scored
-  `compressor_bytes` grows with it; Phase 11 must reclaim this.
+- **Binary size.** The stub is 366,744 B, of which 21,848 B is the word tokenizer
+  and ~5.6 KB is the Phase-4 match family. Phase 6 added ≈15 KB of dispatch for
+  the rejected context-mixing methods; Phase 11 must gate the rejected methods
+  out of the submission build. If the model grows, the scored
+  `compressor_bytes` grows with it.
 - **Determinism.** All arithmetic is integer-only today. This must be preserved
   if any floating-point learned component enters the submission.
 

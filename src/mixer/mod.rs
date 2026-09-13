@@ -173,6 +173,12 @@ impl Apm {
         v.clamp(0, 4095) as i32
     }
 
+    /// Number of contexts (for memory accounting).
+    #[inline]
+    pub fn ctx_count(&self) -> usize {
+        self.n
+    }
+
     #[inline]
     pub fn update(&mut self, y: u32) {
         let g: i32 = if y != 0 {
