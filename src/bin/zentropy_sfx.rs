@@ -10,7 +10,7 @@
 //!
 //! Modes:
 //! ```text
-//! archive9                 # self-extracting: reconstruct to $ZENTROPY_OUT
+//! archive9                    # self-extracting: reconstructs to ./data9
 //! zentropy-sfx c <in> <out>   # compress
 //! zentropy-sfx d <in> <out>   # decompress
 //! zentropy-sfx <archive> <out>
@@ -74,9 +74,12 @@ fn run(args: &[String]) -> Result<(), String> {
         #[cfg(feature = "mem-guard")]
         guard_decode(archive)?;
         let out = zentropy::archive::decode(archive).ok_or("malformed appended archive")?;
-        // Default output name per the Hutter convention; overridable by env.
-        let name = env::var("ZENTROPY_OUT").unwrap_or_else(|_| "data9".to_string());
-        fs::write(&name, &out).map_err(|e| format!("write {name}: {e}"))?;
+        // Fixed output name per the Hutter convention. Deliberately *not*
+        // configurable by environment: the rules forbid results that depend on
+        // unrecorded environment state, and an override here would be exactly
+        // that, for no benefit — the judge renames the file if it wants to.
+        let name = "data9";
+        fs::write(name, &out).map_err(|e| format!("write {name}: {e}"))?;
         return Ok(());
     }
 

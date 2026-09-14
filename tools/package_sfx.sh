@@ -39,12 +39,38 @@ echo "building submission stub (nightly + build-std, panic=immediate-abort)..." 
 # experimenting with `-C target-cpu=native` (see tools/build_research.sh) cannot
 # leak a host-specific build into a scored artifact - a native build emits
 # AVX2/BMI2 unconditionally, and the judged machines "may change without notice".
+# --- target: static musl, and the reason is eligibility, not size -------------
+#
+# The dynamic glibc build is 105,536 B; this static-pie musl build is 125,056 B,
+# i.e. +19,520 B per copy (+39,040 B of S, since both legal forms charge the
+# program twice). That is 3.6% of the 1% gate, and it buys the difference between
+# a submission that runs and one that might not: the dynamic build's symbol
+# versions require **glibc >= 2.34** (Ubuntu 22.04+, Debian 12+), while the
+# rules' Linux test machine dates from 2021 and the rules warn the machines "may
+# change without notice". A binary that will not start scores nothing, so the
+# static build is the primary artefact and the glibc one is the fallback:
+#
+#     ZENTROPY_TARGET=x86_64-unknown-linux-gnu sh tools/package_sfx.sh <in>
+#
+# Both are proven to produce BYTE-IDENTICAL archives (enwik6 246,808; enwik7
+# 2,226,353), which is the condition for the swap to be legitimate at all — a
+# different libc is exactly the kind of change that can move a result.
+#
+# The static build also removes the last external dependency: `ldd` reports
+# "statically linked", so the judged program needs no shared library, no
+# loader beyond what the kernel provides, and no glibc version at all.
+TARGET_TRIPLE="${ZENTROPY_TARGET:-x86_64-unknown-linux-musl}"
+
+# `VAR=value cmd` on one line, not on its own line: a bare assignment is a shell
+# variable and is *not* exported to the child, which would silently build the
+# stub without the panic-immediate-abort flags and give back the 288,928 bytes
+# Phase 11 removed.
 RUSTFLAGS="-Zunstable-options -Cpanic=immediate-abort" cargo +nightly-2026-07-24 \
     -Z build-std=std,panic_abort \
     build --quiet --profile submission --no-default-features \
     --features accepted,submission \
-    --bin zentropy-sfx --target x86_64-unknown-linux-gnu
-STUB="$ROOT/target/x86_64-unknown-linux-gnu/submission/zentropy-sfx"
+    --bin zentropy-sfx --target "$TARGET_TRIPLE"
+STUB="$ROOT/target/$TARGET_TRIPLE/submission/zentropy-sfx"
 BHM="$OUTDIR/$NAME.bhm"
 SFX="$OUTDIR/${NAME}.archive9"
 

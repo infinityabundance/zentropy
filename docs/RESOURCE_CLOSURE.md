@@ -526,9 +526,44 @@ only the symbol table can confirm it.** `#[cfg(feature = "learned")]` reads as
 "the learned corrector", but the field it gated was the *trainer* — one letter of
 intent away from shipping the wrong thing.
 
-### 10.2 Still open in Phase 12
+### 10.2 The 95-arm research constructor, compiled out
 
-`Method::ALL` is 95 variants and every one of their `config()` arms is reachable
-from the stub's `method_from_id` dispatch, so a large share of the remaining
-109,432 B is dispatch for methods that are rejected. Gating that roster is the
-next measured step; see [`PHASE12_PLAN.md`](PHASE12_PLAN.md) §12.1.
+The scored stub can be handed exactly two configurations: the accepted one, and
+the `reorder_parent()` downgrade it records when the corpus fails the
+free-restoration precondition. `Method::config` builds all 95 regardless, and
+because `encode_tuned`/`decode` call it with a runtime `Method`, LLVM cannot drop
+a single arm.
+
+`config` is now research-only (`#[cfg(not(feature = "submission"))]`) and the
+scored build reaches `Method::config_for`, which writes the accepted chain out
+directly — `for_size → with_column → with_match2 → with_match_tier →
+with_rep_offsets → with_match_byte → with_sse3 → with_residual → with_rates`.
+
+| build | stub bytes |
+|---|---|
+| `accepted` (trainer gated, roster present) | 109,432 |
+| `accepted,submission` (roster gated) | **105,536** |
+| | **−3,896 B per copy = −7,792 B of `S`** |
+
+**The first draft of `config_for` omitted the Phase-4 match tiers and produced a
+different archive.** The byte-identity check caught it, and it is now a court
+(`tools/courts.sh` court 9): the scored build's archive must equal the research
+build's on enwik6. A substitution of this kind cannot be left to review, because
+it fails *silently and plausibly* — the archive still decodes, it is just coded
+by a slightly different model.
+
+### 10.3 Phase 12.1 total, and what is left
+
+| step | stub bytes | Δ per copy | Δ of `S` |
+|---|---|---|---|
+| start of Phase 12 | 112,392 | — | — |
+| trainer gated out of `accepted` | 109,432 | −2,960 | −5,920 |
+| research constructor gated out | **105,536** | −3,896 | −7,792 |
+| | | **−6,856** | **−13,712** |
+
+Every step is verified by a byte-identical archive on enwik6 and enwik7, and
+every step is recorded with the two-build protocol of §10. The remaining `Method`
+dispatch is the ~20 small predicates the transform pipeline calls with a runtime
+`method` (each a `matches!` over 95 variants). Removing those needs the pipeline
+to stop being method-generic; the measurement above says the prize is small
+relative to that risk, so it stays open rather than being attempted blind.
