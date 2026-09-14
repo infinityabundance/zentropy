@@ -277,3 +277,72 @@ sides** — the ladder is closed, not merely stopped.
   from the archive header. That makes the mechanism decoder-derivable, which it
   already is, and puts a new constant in the scored path whose **measured** binary
   cost must be charged (the `for_size` cap was free; the scaling code is not).
+
+## 9. Adaptation rates — another unjustified constant, worth several MB
+
+### 9.1 The finding
+
+Each direct expert's adaptation shift (`p += (target - p) >> rate`) is its memory.
+The shipped ladder uses 4 for the low orders and 5–6 for the high ones. That
+*sounds* right — sparse contexts should move less — but there is no recorded
+measurement behind it, and it is arguably backwards: a high-order context is seen
+rarely, so it needs to become confident from few observations.
+
+`zentropy rate-sweep` screens it. Unlike the vocabulary screen in
+[`PHASE10_PLAN.md`](PHASE10_PLAN.md) 10.1b, this one is **trustworthy**, because
+every point is a real encode of the real archive by the real coder — there is no
+counterfactual to get wrong. It is still encode-only, so a winner is baked in as a
+constant and re-gated on enwik9.
+
+A uniform shift already showed the direction: `scope=all`, delta −2, is **−68,594 B**
+on enwik7, while +1 and +2 are +45,146 and +90,426. A per-expert coordinate pass then
+put **every** expert on a faster rate except `MatchByte` (already fine), with `Word`
+alone worth −42,747:
+
+```text
+rates  4,4,4,5,5,5,5,6,6,6,5,5,5,5      (shipped)
+   ->  2,2,1,2,2,2,3,3,3,3,2,3,3,5      (best per expert)
+```
+
+Sum of individual gains −136,512, combined −69,115: the optima overlap strongly, so
+the gains are not additive.
+
+### 9.2 The trend matters more than the number
+
+The vector was found on enwik7. Carrying it up the ladder:
+
+| corpus | baseline | with the enwik7 vector | Δ | Δ as a fraction |
+|---|---|---|---|---|
+| enwik6 | 267,333 | 255,990 | −11,343 | −4.2% |
+| enwik7 | 2,370,164 | 2,301,049 | **−69,115** | −2.9% |
+| enwik8 | 21,245,220 | 20,833,501 | **−411,719** | −1.9% |
+
+The fraction *shrinks* as the corpus grows, the same way the mixer learning rate's
+optimum moved (Phase 9). So the enwik7 vector is a **lower bound on the direction,
+not the answer**: the enwik9 optimum is probably slower than enwik7's, and only an
+enwik9 gate can settle it. A naive linear extrapolation of −1.9% would claim ~−3 MB;
+this project has been burned by exactly that reasoning, so no number is claimed here.
+
+### 9.3 Status, and the coupling to be careful about
+
+**NOT YET ADOPTED.** The rates were screened at scale 0 (the 2^24 tables) and every
+running gate so far used the old rates, so the honest sequence is one mechanism at a
+time:
+
+1. adopt the T2 scale (already gated: −3,938,320 exact at scale 3), then
+2. re-screen the rates **at scale 3**, bake them, and gate the pair on enwik9, then
+3. re-check the mixer LR at the final geometry (Phase 9's rule: the LR optimum is a
+   function of the predictor).
+
+Coupling is real in both directions, which is why each step is its own gate rather
+than a joint search: a combined point would make `ΔS` unattributable.
+
+### 9.4 Scale 4 is **INCONCLUSIVE**, and the reason is mine
+
+The scale-4 gate (`tune 69`, 2^28 order tables) died with
+`memory allocation of 428851336 bytes failed` under the 9 GiB `RLIMIT_AS` I set. That
+is a limit I imposed, not a property of the mechanism, so scale 4 is **untested at
+enwik9** rather than rejected — its address space exceeds 9 GiB even though its
+*resident* peak would plausibly be ~7.5 GB against the 10 GB rule. It is recorded as
+inconclusive, with re-testing (at a larger cap, and only if the rate work leaves
+headroom worth spending) as the follow-up.

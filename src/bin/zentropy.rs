@@ -87,6 +87,8 @@ fn main() -> ExitCode {
         "pblocks" => cmd_pblocks(&args[2..]),
         #[cfg(not(feature = "submission"))]
         "layout" => cmd_layout(&args[2..]),
+        #[cfg(not(feature = "submission"))]
+        "rate-sweep" => cmd_rate_sweep(&args[2..]),
         #[cfg(feature = "vocab-price")]
         "vocab-price" => cmd_vocab_price(&args[2..]),
         "selftest" => cmd_selftest(),
@@ -127,6 +129,7 @@ fn usage() {
          zentropy observe     <receipt.jsonl> [--method <m>]\n  \
          zentropy pblocks     <in> [--blocks <n>] [--jobs <n>] [--tune <t>] [--no-full]\n  \
          zentropy layout      <in> [--nibble <orders>] [--bits <n>] [--reps <n>] [--method <m>] [--tune <t>]\n  \
+         zentropy rate-sweep  <in> [--scope order|all] [--deltas -2,-1,1,2] [--method <m>] [--tune <t>]\n  \
          zentropy vocab-price <in> [--top <n>] [--method <m>] [--tune <t>]   (feature vocab-price)\n",
         version = zentropy::VERSION
     );
@@ -701,6 +704,200 @@ fn cmd_vocab_price(args: &[String]) -> Result<(), String> {
             p.gain_bits(),
             p.count,
             String::from_utf8_lossy(&p.word)
+        );
+    }
+    Ok(())
+}
+
+/// Phase 11: sweep the direct experts' **adaptation rates**.
+///
+/// `p += (target - p) >> rate` is each expert's memory: a large rate means one
+/// observation barely moves the estimate, a small rate means it follows the data
+/// closely. The shipped ladder uses 4 for the low orders and 5-6 for the high ones,
+/// which is *sensible-sounding* (sparse contexts should move less) but has no
+/// recorded measurement behind it — and it is arguably backwards, since a high-order
+/// context is seen rarely and needs to become confident from few observations.
+///
+/// Unlike the vocabulary screening in `vocab-price`, this is a **trustworthy**
+/// screen: every point is a real encode of the real archive by the real coder, so
+/// there is no counterfactual to get wrong. A winning rate is still baked in as a
+/// constant and re-gated on enwik9, because the screen is encode-only.
+///
+/// Usage:
+///   zentropy rate-sweep <in> [--method M] [--tune T] [--scope order|all]
+///                           [--deltas -2,-1,1,2] [--receipt f]
+fn cmd_rate_sweep(args: &[String]) -> Result<(), String> {
+    let path = args.first().ok_or("rate-sweep: need <in>")?;
+    let get = |k: &str| -> Option<String> {
+        args.iter()
+            .position(|a| a == k)
+            .and_then(|i| args.get(i + 1))
+            .cloned()
+    };
+    let method = get("--method")
+        .and_then(|s| Method::from_name(&s))
+        .unwrap_or(archive::ACCEPTED_METHOD);
+    let tune: u8 = get("--tune")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(archive::ACCEPTED_TUNE);
+    let scope = get("--scope").unwrap_or_else(|| "order".to_string());
+    let deltas: Vec<i32> = get("--deltas")
+        .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
+        .unwrap_or_else(|| vec![-2, -1, 1, 2]);
+
+    let data = read(path)?;
+    guard_encode(data.len() as u64, max_ram_override(args))?;
+    let cfg = method.config_for(data.len());
+    let specs = cfg.specs.clone();
+
+    // Which experts are in scope. "order" means the direct byte-order experts,
+    // which are the ones whose contexts are sparse enough for the rate to matter.
+    let in_scope = |s: &zentropy::context::ModelSpec| match scope.as_str() {
+        "all" => true,
+        _ => matches!(s.kind, zentropy::context::CtxKind::Order(_)),
+    };
+
+    let base = archive::encode_specs(&data, method, tune, &specs).len();
+    println!(
+        "corpus={path} input_bytes={} method={} tune={tune} scope={scope}",
+        data.len(),
+        method.name()
+    );
+    println!(
+        "expert rates (in scope): {:?}",
+        specs
+            .iter()
+            .filter(|s| in_scope(s))
+            .map(|s| s.rate)
+            .collect::<Vec<_>>()
+    );
+    println!("baseline archive = {base}");
+
+    // `--explicit a,b,c`: set the in-scope experts' rates to an exact vector. Used
+    // to carry a vector found on one rung to the next, which is how a rate screen
+    // becomes a rate *trend*: if the same vector still wins at a larger corpus, the
+    // mechanism scales, and if the gain shrinks towards zero the optimum is moving
+    // with corpus size and only enwik9 can settle it.
+    if let Some(list) = get("--explicit") {
+        let want: Vec<u32> = list
+            .split(',')
+            .filter_map(|x| x.trim().parse().ok())
+            .collect();
+        let mut mspecs = specs.clone();
+        let mut k = 0usize;
+        for s in mspecs.iter_mut() {
+            if !in_scope(s) {
+                continue;
+            }
+            if let Some(&r) = want.get(k) {
+                s.rate = r.clamp(1, 12);
+            }
+            k += 1;
+        }
+        if k != want.len() {
+            return Err(format!(
+                "rate-sweep: --explicit has {} values but {} experts are in scope",
+                want.len(),
+                k
+            ));
+        }
+        let got = archive::encode_specs(&data, method, tune, &mspecs).len();
+        println!(
+            "explicit rates {want:?} -> archive {got}  ({:+} vs baseline)",
+            got as i64 - base as i64
+        );
+        return Ok(());
+    }
+
+    // `--per-expert`: a coordinate pass. Uniform shifts are a blunt instrument —
+    // they move a low order and a high order together — so each in-scope expert is
+    // given the same delta set independently, then the winners are combined and
+    // measured. Interactions remain (this is one pass, not a converged descent),
+    // which is exactly why the result is a screen and not an adoption.
+    if args.iter().any(|a| a == "--per-expert") {
+        let mut chosen = specs.clone();
+        let mut picks: Vec<(usize, u32, u32, i64)> = Vec::new();
+        println!("\nper-expert coordinate pass (delta set {deltas:?}):");
+        for i in 0..specs.len() {
+            if !in_scope(&specs[i]) {
+                continue;
+            }
+            let mut best = (0i32, base as i64);
+            for &d in &deltas {
+                let nr = (specs[i].rate as i32 + d).clamp(1, 12);
+                if nr == specs[i].rate as i32 {
+                    continue;
+                }
+                let mut mspecs = specs.clone();
+                mspecs[i].rate = nr as u32;
+                let got = archive::encode_specs(&data, method, tune, &mspecs).len() as i64;
+                if got < best.1 {
+                    best = (d, got);
+                }
+            }
+            if best.0 != 0 {
+                let nr = (specs[i].rate as i32 + best.0).clamp(1, 12) as u32;
+                chosen[i].rate = nr;
+                picks.push((i, specs[i].rate, nr, best.1 - base as i64));
+                println!(
+                    "  expert {i:>2} ({:>14?}) rate {} -> {}  ({:+})",
+                    format!("{:?}", specs[i].kind),
+                    specs[i].rate,
+                    nr,
+                    best.1 - base as i64
+                );
+            } else {
+                println!(
+                    "  expert {i:>2} ({:>14?}) rate {} unchanged",
+                    format!("{:?}", specs[i].kind),
+                    specs[i].rate
+                );
+            }
+        }
+        let combined = archive::encode_specs(&data, method, tune, &chosen).len();
+        println!(
+            "\ncombined archive = {combined}  ({:+} vs baseline)",
+            combined as i64 - base as i64
+        );
+        println!(
+            "sum of individual gains = {:+}  (combined - sum = {} = interactions)",
+            picks.iter().map(|p| p.3).sum::<i64>(),
+            (combined as i64 - base as i64) - picks.iter().map(|p| p.3).sum::<i64>()
+        );
+        println!(
+            "rates for the combined point (in scope): {:?}",
+            chosen
+                .iter()
+                .filter(|s| in_scope(s))
+                .map(|s| s.rate)
+                .collect::<Vec<_>>()
+        );
+        return Ok(());
+    }
+
+    println!("delta  archive       change      verdict");
+    for d in deltas {
+        let mut mspecs = specs.clone();
+        let mut clamped = 0usize;
+        for s in mspecs.iter_mut() {
+            if !in_scope(s) {
+                continue;
+            }
+            let nr = (s.rate as i32 + d).clamp(1, 12);
+            if nr == s.rate as i32 {
+                clamped += 1;
+            }
+            s.rate = nr as u32;
+        }
+        if clamped == mspecs.iter().filter(|s| in_scope(s)).count() {
+            println!("  {d:+}  (no expert actually moved; skipping)");
+            continue;
+        }
+        let got = archive::encode_specs(&data, method, tune, &mspecs).len();
+        let change = got as i64 - base as i64;
+        println!(
+            "  {d:+}  {got}  {change:+}  {}",
+            if change < 0 { "BETTER" } else { "worse" }
         );
     }
     Ok(())
