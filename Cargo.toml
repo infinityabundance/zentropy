@@ -216,7 +216,11 @@ learned-train = ["learned"]
 # otherwise-identical binary used to measure its executable cost. This is the
 # scored half of the OOM guard — the runtime floor is `mem-floor`, above.
 mem-guard = []
-# `submission` gates out research-only machinery from the decoder stub.
+# `submission` gates out research-only machinery from the decoder stub. The
+# scored build enables it (`--features accepted,submission`): it compiles out the
+# 95-arm research model constructor (see `Method::config_for`), whose only
+# reachable configurations in the stub are the accepted chain and its
+# `reorder_parent()` downgrade. Measured: 3,896 B per copy at the pinning below.
 submission = []
 
 # ---------------------------------------------------------------------------

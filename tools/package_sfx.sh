@@ -41,7 +41,8 @@ echo "building submission stub (nightly + build-std, panic=immediate-abort)..." 
 # AVX2/BMI2 unconditionally, and the judged machines "may change without notice".
 RUSTFLAGS="-Zunstable-options -Cpanic=immediate-abort" cargo +nightly-2026-07-24 \
     -Z build-std=std,panic_abort \
-    build --quiet --profile submission --no-default-features --features accepted \
+    build --quiet --profile submission --no-default-features \
+    --features accepted,submission \
     --bin zentropy-sfx --target x86_64-unknown-linux-gnu
 STUB="$ROOT/target/x86_64-unknown-linux-gnu/submission/zentropy-sfx"
 BHM="$OUTDIR/$NAME.bhm"

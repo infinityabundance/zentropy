@@ -674,6 +674,8 @@ impl Method {
 
     /// Methods measured on the Phase 6 parent: the accepted config plus the two
     /// adopted spine mechanisms (state-map experts and the extra SSE stage).
+    /// Only `config` consults it, so the scored build does not carry it.
+    #[cfg(not(feature = "submission"))]
     fn base6(self) -> bool {
         matches!(
             self,
@@ -762,7 +764,9 @@ impl Method {
         }
     }
 
-    /// A3 information-inheritance mode.
+    /// A3 information-inheritance mode. Only `config` consults it, so the scored
+    /// build does not carry it.
+    #[cfg(not(feature = "submission"))]
     fn info(self) -> InfoMode {
         if !cfg!(feature = "info-inherit") {
             return InfoMode::None;
@@ -1104,6 +1108,8 @@ impl Method {
     }
 
     /// Phase 6.4: `Some(false)` = order-2 key, `Some(true)` = distant control.
+    /// Only `config` consults it.
+    #[cfg(not(feature = "submission"))]
     #[cfg_attr(not(feature = "sse-3"), allow(dead_code))]
     fn sse3_kind(self) -> Option<bool> {
         if !cfg!(feature = "sse-3") {
@@ -1116,6 +1122,9 @@ impl Method {
         }
     }
 
+    /// The research constructor: every `Method`'s model configuration. Compiled
+    /// out of the scored build, which reaches [`Self::config_for`] instead.
+    #[cfg(not(feature = "submission"))]
     fn config(self, n: usize) -> ModelConfig {
         let base = ModelConfig::for_size(n as u64);
         let base = match self {
@@ -1275,8 +1284,54 @@ impl Method {
 
     /// Phase 6.9 (research): the model configuration this method builds, for
     /// expert-roster pruning measurements and memory projection.
+    #[cfg(not(feature = "submission"))]
     pub fn config_for(self, n: usize) -> ModelConfig {
         self.config(n)
+    }
+
+    /// Submission build: the accepted chain, and *only* it.
+    ///
+    /// The scored binary can be handed exactly two configurations — the accepted
+    /// one, and the `reorder_parent()` fallback it records when the corpus does
+    /// not satisfy the free-restoration precondition — so the 95-arm research
+    /// constructor has no reason to be linked at all. `config` is compiled out
+    /// below and this takes its place, which keeps every rejected method's
+    /// roster out of `S`.
+    ///
+    /// The chain below mirrors `config`'s accepted path **in order**, including
+    /// the Phase-4 match family, because the match tiers are appended and their
+    /// positions are part of the model. The first draft of this function omitted
+    /// them and produced a *different archive*; that is precisely what the
+    /// byte-identity check is for, and it is not optional.
+    ///
+    /// This is a claim about what is in the binary, so it is verified rather than
+    /// argued: the stub's archive must be byte-identical to the research driver's,
+    /// which still uses the full constructor. `tools/courts.sh` convenes that
+    /// comparison so a future change to either path cannot diverge silently.
+    #[cfg(feature = "submission")]
+    pub fn config_for(self, n: usize) -> ModelConfig {
+        let base = ModelConfig::for_size(n as u64).with_column(false);
+        let base = match self.match2_min() {
+            Some(m) => base.with_match2(m),
+            None => base,
+        };
+        let base = match self.sparse_tier() {
+            Some((min, gap)) => base.with_match_tier(min, gap),
+            None => base,
+        };
+        let base = base.with_rep_offsets(self.rep_offsets());
+        let base = match self.match_byte_kind() {
+            Some(ctl) => base.with_match_byte(ctl),
+            None => base,
+        };
+        let base = base.with_sse3();
+        let base = match self {
+            // The downgrade target: the accepted configuration without the layout.
+            Method::Sse3 => base,
+            _ => base.with_residual(false),
+        };
+        base.with_rates(&crate::context::ACCEPTED_RATES)
+            .with_info(InfoMode::None)
     }
 }
 
@@ -1745,7 +1800,7 @@ pub fn encode_tuned(input: &[u8], method: Method, tune: u8) -> Vec<u8> {
         out.extend_from_slice(p);
     }
 
-    let cfg = method.config(n).with_tune(tune);
+    let cfg = method.config_for(n).with_tune(tune);
     let mut cm = Cm::new(&cfg, n);
     let mut enc = RangeEncoder::with_capacity(n / 2 + 64);
     #[cfg(feature = "progress")]
@@ -2204,7 +2259,7 @@ pub fn decode(archive: &[u8]) -> Option<Vec<u8>> {
     };
     let payload = &archive[off..];
 
-    let cfg = method.config(n).with_tune(tune);
+    let cfg = method.config_for(n).with_tune(tune);
     let mut cm = Cm::new(&cfg, n);
     let mut dec = RangeDecoder::new(payload);
     let mut decoded = Vec::with_capacity(n);

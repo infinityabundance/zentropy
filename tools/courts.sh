@@ -115,6 +115,31 @@ if [ -f "$CORPUS_DIR/enwik6" ]; then
     court "search campaign court (memory + determinism)" search_court
 fi
 
+# 9. Submission/research equivalence court (Phase 12.1). The scored build
+#    replaces the 95-arm research model constructor with a hand-written accepted
+#    chain (`Method::config_for`), purely to keep rejected methods' rosters out
+#    of `S`. That substitution is only safe if both paths produce the *same
+#    archive*, so this compares them on a real corpus slice. The first draft of
+#    that function omitted the Phase-4 match tiers and produced a different
+#    archive; this court is what turns that from a discovery into a failure.
+#
+#    Court 7 must have run first: it builds the submission stub this reuses.
+STUB="$ROOT/target/x86_64-unknown-linux-gnu/submission/zentropy-sfx"
+if [ -f "$CORPUS_DIR/enwik6" ] && [ -x "$STUB" ]; then
+    equiv_court() {
+        cargo build --quiet --release --bin zentropy || return 1
+        "$Z" compress "$CORPUS_DIR/enwik6" "$TMP/eq_research" 2>/dev/null || return 1
+        "$STUB" c "$CORPUS_DIR/enwik6" "$TMP/eq_stub" || return 1
+        if ! cmp -s "$TMP/eq_research" "$TMP/eq_stub"; then
+            echo "the scored build produced a DIFFERENT archive than the research build:"
+            wc -c "$TMP/eq_research" "$TMP/eq_stub"
+            echo "-> Method::config_for is not equivalent to Method::config"
+            return 1
+        fi
+    }
+    court "submission/research archive equivalence (enwik6)" equiv_court
+fi
+
 echo ""
 echo "courts: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

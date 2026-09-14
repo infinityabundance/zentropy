@@ -40,17 +40,17 @@ build() {
 }
 
 echo "measuring marginal executable cost of: tune-table" >&2
-echo "  A (accepted)                  = accepted" >&2
-echo "  B (same set, nibble inert)    = accepted-core,pre-t2-geometry" >&2
+echo "  A (accepted)                  = accepted,submission" >&2
+echo "  B (same set, nibble inert)    = accepted-core,pre-t2-geometry,submission" >&2
 
 echo "  building A ..." >&2
-build "accepted" "$TMP/a"
+build "accepted,submission" "$TMP/a"
 echo "  building B ..." >&2
-build "accepted-core,pre-t2-geometry" "$TMP/b"
+build "accepted-core,pre-t2-geometry,submission" "$TMP/b"
 # A31 asks for stability, not a single sample: a +/- 16 B layout wobble must not
 # be reported as a mechanism price.
 echo "  rebuilding B to check stability ..." >&2
-build "accepted-core,pre-t2-geometry" "$TMP/b2"
+build "accepted-core,pre-t2-geometry,submission" "$TMP/b2"
 
 A=$(wc -c < "$TMP/a")
 B=$(wc -c < "$TMP/b")
