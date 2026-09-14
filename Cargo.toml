@@ -134,6 +134,17 @@ ppm = []
 # reproduce the negative result; the default build fixes all three shifts at 7,
 # which is the pre-Phase-9 behaviour exactly.
 apm-tune = []
+# T2: the high nibble of `tune` selects a table-size scale (in bits) for the
+# direct context experts. The scored ladder caps tables at 2^24 (575 MB for
+# enwik9) although the Hutter envelope allows 10 GB, and that cap has no measured
+# justification — it is a corpus-size heuristic. This knob makes the trade
+# searchable and, crucially, *decoder-derivable*: the scale comes from the
+# archive's own `tune` byte, so encode and decode cannot disagree.
+#
+# Research-plane until a full `eval` gate on enwik9 adopts it. Mutually exclusive
+# with `apm-tune` (both claim the high nibble); the compiler enforces that.
+# See docs/RESOURCE_CLOSURE.md.
+tune-table = []
 # Phase 7: article-layout compiler (encoder-side reordering + decoder id-sort).
 reorder = []
 # Phase 8: learned residual corrector (integer inference + embedded weights).

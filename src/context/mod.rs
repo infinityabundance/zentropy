@@ -287,6 +287,37 @@ pub enum InfoMode {
     Unrelated,
 }
 
+/// Storage layout of a direct byte expert's probability table (T1).
+///
+/// This is a **throughput** dimension, not a modelling one: both layouts are
+/// exact, code the same stream through the same range coder, and are decided
+/// identically by encoder and decoder. What changes is how many cache lines one
+/// coded byte touches, and — as the price — how much of the hash survives.
+///
+/// Measured motivation (see `docs/THROUGHPUT_ANALYSIS.md` §2): the PAQ/ZPAQ
+/// lineage treats *cache misses per byte* as the performance metric and lays a
+/// model out to hit 2–3 lines per byte. The [`Layout::Hashed`] index
+/// (`ctx ^ c0 * MIX_C`) scrambles the partial-byte node across all 32 bits, so a
+/// byte's eight nodes land in up to eight unrelated lines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Layout {
+    /// One hashed slot per (context, partial byte). Full hash resolution.
+    #[default]
+    Hashed,
+    /// The low four index bits are reserved for the intra-nibble bit-tree node,
+    /// so a byte touches two 16-slot buckets — one cache line, typically —
+    /// instead of eight unrelated ones. The bucket is derived from the bytewise
+    /// context plus the nibble's prefix, so the number of distinct buckets is
+    /// 16x smaller than the number of slots.
+    ///
+    /// The 16x is the honest price, and it is *not* uniform across orders: order
+    /// 0/1 have far fewer contexts than buckets (so nothing is lost), while a
+    /// high order is already saturated with hash collisions (so little more is
+    /// lost). The orders in the middle are the ones that pay, which is why this
+    /// layout is selected per expert rather than globally.
+    Nibble,
+}
+
 /// A direct context model: one adaptive probability per (context, partial byte)
 /// index.
 ///
@@ -308,11 +339,18 @@ pub struct ContextModel {
     chk_shift: u32,
     /// The 16-bit probability most recently used for the current bit.
     pub last_p: u16,
+    /// T1: bucket-local storage. `nibble` is the layout flag; `hi_base`/`lo_base`
+    /// are the two bucket bases for the current byte, and `lo_ready` records that
+    /// the low-nibble bucket has been derived for it.
+    nibble: bool,
+    hi_base: usize,
+    lo_base: usize,
+    lo_ready: bool,
 }
 
 impl ContextModel {
     pub fn new(bits: u32, rate: u32) -> Self {
-        Self::new_verify(bits, rate, 0)
+        Self::new_full(bits, rate, 0, Layout::Hashed)
     }
 
     /// Phase 6.7: build with optional collision control. When `verify == 1` each
@@ -320,6 +358,18 @@ impl ContextModel {
     /// mismatch is treated as an unoccupied (cold) slot. `verify == 2` allocates
     /// the checksums but never rejects, isolating the logic from its memory cost.
     pub fn new_verify(bits: u32, rate: u32, verify: u8) -> Self {
+        Self::new_full(bits, rate, verify, Layout::Hashed)
+    }
+
+    /// T1: build with an explicit storage layout. The nibble layout needs at
+    /// least five index bits (four for the intra-nibble node, one bucket bit), so
+    /// a smaller table is not expressible and is rejected here rather than
+    /// silently aliasing every context onto one bucket.
+    pub fn new_full(bits: u32, rate: u32, verify: u8, layout: Layout) -> Self {
+        assert!(
+            layout != Layout::Nibble || bits >= 5,
+            "the nibble layout needs at least 5 index bits, got {bits}"
+        );
         let n = 1usize << bits;
         let chk = if verify == 0 {
             Vec::new()
@@ -336,23 +386,101 @@ impl ContextModel {
             verify,
             chk_shift: bits,
             last_p: 32768,
+            nibble: layout == Layout::Nibble,
+            hi_base: 0,
+            lo_base: 0,
+            lo_ready: false,
         }
+    }
+
+    /// T1: the 16-slot-aligned bucket base for nibble prefix `k`, where `k = 0`
+    /// selects the high-nibble tree and `k = 1 + high_nibble` the low-nibble tree
+    /// that follows it. Multiplying by the odd `MIX_C` propagates the small `k`
+    /// into the high index bits, so the buckets for one context are scattered
+    /// across the table rather than adjacent — otherwise every context would
+    /// contend for one region.
+    #[inline]
+    fn nibble_base(&self, k: u32) -> usize {
+        ((self.ctx ^ k.wrapping_mul(MIX_C)) as usize) & self.mask & !0xF
+    }
+
+    /// T1: `(checksum source, slot index)` for node `c0`.
+    ///
+    /// The checksum source is the unmasked `ctx ^ c0 * MIX_C` under the hashed
+    /// layout and the bucket base under the nibble layout, which is what the
+    /// Phase-6.7 collision check keys on.
+    ///
+    /// This is the whole of the layout decision, kept in one place so the two
+    /// layouts cannot silently diverge between the prediction path and any
+    /// measurement that inspects a model's locality.
+    #[inline]
+    fn locate(&mut self, c0: u32) -> (usize, usize) {
+        if self.nibble {
+            if c0 >= 16 {
+                if !self.lo_ready {
+                    // `predict` is called with every node on the byte's tree path
+                    // in order, so the first call at or past node 16 is exactly
+                    // the high -> low transition, where `c0 = 16 + high_nibble`.
+                    // That is the one moment the high nibble is `c0 & 15`.
+                    self.lo_base = self.nibble_base((c0 & 15) + 1);
+                    self.lo_ready = true;
+                }
+                // Within the low nibble `c0 >> 4` is the relative tree node
+                // (1..15), which is exactly the slot offset we want.
+                (self.lo_base, self.lo_base | ((c0 >> 4) as usize & 0xF))
+            } else {
+                // Within the high nibble `c0` itself is the relative node (1..15).
+                (self.hi_base, self.hi_base | (c0 as usize & 0xF))
+            }
+        } else {
+            let h = (self.ctx ^ c0.wrapping_mul(MIX_C)) as usize;
+            (h, h & self.mask)
+        }
+    }
+
+    /// T1: the layout this model was built with.
+    #[inline]
+    pub fn layout(&self) -> Layout {
+        if self.nibble {
+            Layout::Nibble
+        } else {
+            Layout::Hashed
+        }
+    }
+
+    /// T1: the slot index the last `predict` selected (measurement only).
+    #[inline]
+    pub fn last_idx(&self) -> usize {
+        self.idx
     }
 
     #[inline]
     pub fn set_context(&mut self, ctx: u32) {
         self.ctx = ctx;
+        if self.nibble {
+            // The high-nibble bucket is known as soon as the bytewise context is;
+            // the low-nibble bucket needs the high nibble, which is not known
+            // until the byte is half decoded (see `locate`).
+            self.hi_base = self.nibble_base(0);
+            self.lo_ready = false;
+        }
     }
 
     /// Predict `P(bit = 1)`, stretched. `seed` is the probability used when this
     /// slot has never been occupied (information inheritance).
     #[inline]
     pub fn predict(&mut self, c0: u32, st: &StretchTable, seed: u16) -> i32 {
-        let h = (self.ctx ^ c0.wrapping_mul(MIX_C)) as usize;
-        self.idx = h & self.mask;
+        let (h, idx) = self.locate(c0);
+        self.idx = idx;
         if self.verify != 0 {
             let want = if self.verify == 1 {
-                (h >> self.chk_shift) as u8
+                if self.nibble {
+                    // The slot is only four bits wide, so it carries too little
+                    // discrimination to checksum; key on the bucket instead.
+                    (self.idx >> 4) as u8
+                } else {
+                    (h >> self.chk_shift) as u8
+                }
             } else {
                 0
             };
@@ -973,6 +1101,12 @@ pub enum Sse3Mode {
 #[derive(Debug, Clone)]
 pub struct ModelConfig {
     pub specs: Vec<ModelSpec>,
+    /// T1: per-expert storage layout. Kept parallel to `specs` rather than inside
+    /// [`ModelSpec`] because layout is a storage detail, not part of what an
+    /// expert models, and because deriving it from the roster keeps the two from
+    /// drifting. A short (or empty) vector means the missing entries are
+    /// [`Layout::Hashed`], so every existing construction site is unaffected.
+    pub layouts: Vec<Layout>,
     /// Ordered match tiers (Phase 4.1/4.2). The first is the dense short tier.
     pub matches: Vec<MatchSpec>,
     /// Phase 4.3: number of repeat-offset predictors (0 = off).
@@ -1008,6 +1142,62 @@ pub struct ModelConfig {
 }
 
 impl ModelConfig {
+    /// T1: the storage layout of expert `i`.
+    #[inline]
+    pub fn layout_for(&self, i: usize) -> Layout {
+        self.layouts.get(i).copied().unwrap_or(Layout::Hashed)
+    }
+
+    /// T1: give the direct byte experts whose context order is listed the
+    /// bucket-local layout, and every other expert the hashed layout.
+    ///
+    /// Call this *after* every `with_*` builder that pushes a spec, so the layout
+    /// vector stays parallel to the final roster; the short-vector fallback below
+    /// keeps it safe either way.
+    pub fn with_nibble_orders(mut self, orders: &[usize]) -> Self {
+        self.layouts = self
+            .specs
+            .iter()
+            .map(|s| match s.kind {
+                CtxKind::Order(o) if orders.contains(&o) => Layout::Nibble,
+                _ => Layout::Hashed,
+            })
+            .collect();
+        self
+    }
+
+    /// T1 (research): force every direct byte expert's table to `bits` (log2
+    /// slots).
+    ///
+    /// This is not a modelling knob — shrinking the tables changes the archive,
+    /// sometimes a lot. Its purpose is to separate *arithmetic* cost from
+    /// *working-set* cost: the number of table probes per bit is unchanged, so if
+    /// throughput rises sharply as `bits` falls, the run is limited by cache
+    /// misses rather than by the predict/update arithmetic. The command that uses
+    /// it reports archive bytes as well as time, so the confound is visible.
+    #[cfg(not(feature = "submission"))]
+    pub fn with_forced_bits(mut self, bits: u32) -> Self {
+        for s in &mut self.specs {
+            if matches!(s.kind, CtxKind::Order(_)) {
+                s.bits = bits;
+            }
+        }
+        self
+    }
+
+    /// T1: the orders whose experts are laid out bucket-locally (for receipts).
+    pub fn nibble_orders(&self) -> Vec<usize> {
+        self.specs
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| self.layout_for(*i) == Layout::Nibble)
+            .filter_map(|(_, s)| match s.kind {
+                CtxKind::Order(o) => Some(o),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// The full default floor for a corpus of `n` bytes.
     pub fn for_size(n: u64) -> Self {
         let bits = if n <= 2_000_000 {
@@ -1087,6 +1277,7 @@ impl ModelConfig {
         ];
         ModelConfig {
             specs,
+            layouts: Vec::new(),
             matches: vec![MatchSpec {
                 bits: match_bits,
                 min_len: MATCH_MIN,
@@ -1397,6 +1588,20 @@ impl ModelConfig {
             self.apm2_rate = r2;
             self.apm3_rate = r3;
         }
+        // T2: with the APM axis rejected and compiled out, the high nibble is
+        // free, so it carries the table-size scale for the direct experts. This
+        // is a *model geometry* knob, not a coding one: `with_tune` is applied
+        // identically by the encoder and by `decode` (both derive it from the
+        // archive's own `tune` byte), so the scaling cannot desynchronise them.
+        #[cfg(feature = "tune-table")]
+        {
+            let scale = (tune >> 4) as u32;
+            for s in &mut self.specs {
+                if matches!(s.kind, CtxKind::Order(_)) {
+                    s.bits = s.bits.saturating_add(scale);
+                }
+            }
+        }
         self
     }
 
@@ -1404,6 +1609,9 @@ impl ModelConfig {
     pub fn ablated(&self, keep: &[usize]) -> ModelConfig {
         let mut c = self.clone();
         c.specs = keep.iter().map(|&i| self.specs[i]).collect();
+        // T1: keep the layout vector parallel to the roster, or the ablated
+        // configuration would silently re-layout the surviving experts.
+        c.layouts = keep.iter().map(|&i| self.layout_for(i)).collect();
         c
     }
 
@@ -1450,6 +1658,16 @@ impl ModelConfig {
 pub const MIXER_LRS: [i32; 16] = [
     12, 4, 6, 8, 10, 16, 20, 24, 32, 40, 48, 64, 96, 128, 192, 256,
 ];
+
+// T2 and Phase 9 both claim the high nibble of `tune`, so they are mutually
+// exclusive. Failing at compile time is the only honest option: silently letting
+// one win would make a *scored* configuration depend on which feature happened
+// to be enabled.
+#[cfg(all(feature = "tune-table", feature = "apm-tune"))]
+compile_error!(
+    "features `tune-table` (T2 table-size scale) and `apm-tune` (Phase 9 APM \
+     shifts) both select the high nibble of the `tune` byte; enable only one"
+);
 
 /// The APM adaptation shift the scored build uses.
 ///
@@ -1572,7 +1790,7 @@ impl Predictor {
         let mut specs: Vec<ModelSpec> = Vec::new();
         let mut smodels: Vec<StateModel> = Vec::new();
         let mut sspecs: Vec<ModelSpec> = Vec::new();
-        for s in &cfg.specs {
+        for (i, s) in cfg.specs.iter().enumerate() {
             if matches!(s.kind, CtxKind::StateOrder(_)) {
                 smodels.push(StateModel::new(s.bits));
                 sspecs.push(*s);
@@ -1583,7 +1801,12 @@ impl Predictor {
                 } else {
                     0
                 };
-                models.push(ContextModel::new_verify(s.bits, s.rate, verify));
+                models.push(ContextModel::new_full(
+                    s.bits,
+                    s.rate,
+                    verify,
+                    cfg.layout_for(i),
+                ));
                 specs.push(*s);
             }
         }
@@ -2302,6 +2525,127 @@ mod tests {
         }
         let p = m.predict(1, &st, 32768);
         assert!(p > 1500, "p={p}");
+    }
+
+    /// T1: the property the nibble layout exists to buy — one byte's eight
+    /// bit-level lookups must land in at most two 16-slot buckets (one or two
+    /// cache lines), where the hashed layout scatters them.
+    #[test]
+    fn nibble_layout_keeps_a_byte_in_two_buckets() {
+        let st = StretchTable::new();
+
+        for ctx in [0u32, 1, 0xDEAD_BEEF, 0x1234_5678] {
+            let mut m = ContextModel::new_full(20, 4, 0, Layout::Nibble);
+            assert_eq!(m.layout(), Layout::Nibble);
+            // Walk every path through the byte's eight-level tree: 256 bytes.
+            for byte in 0u16..256 {
+                let mut buckets = std::collections::BTreeSet::new();
+                m.set_context(ctx);
+                let mut c0 = 1u32;
+                for i in 0..8u32 {
+                    let bit = (byte as u32 >> (7 - i)) & 1;
+                    m.predict(c0, &st, 32768);
+                    buckets.insert(m.last_idx() >> 4);
+                    m.update(bit);
+                    c0 = (c0 << 1) | bit;
+                }
+                assert!(
+                    buckets.len() <= 2,
+                    "ctx {ctx:#x} byte {byte}: {} buckets for one byte, expected <= 2",
+                    buckets.len()
+                );
+            }
+        }
+
+        // Control: the hashed layout is *not* bucket-local, so the property above
+        // is a property of the layout and not of the context values.
+        let mut m = ContextModel::new_full(20, 4, 0, Layout::Hashed);
+        assert_eq!(m.layout(), Layout::Hashed);
+        let mut buckets = std::collections::BTreeSet::new();
+        m.set_context(0x1234_5678);
+        let mut c0 = 1u32;
+        for i in 0..8u32 {
+            m.predict(c0, &st, 32768);
+            buckets.insert(m.last_idx() >> 4);
+            m.update(i & 1);
+            c0 = (c0 << 1) | (i & 1);
+        }
+        assert!(
+            buckets.len() > 2,
+            "the hashed control should scatter, got {} buckets",
+            buckets.len()
+        );
+    }
+
+    /// T1: a nibble-laid-out model still learns, and `update` writes back to the
+    /// slot `predict` read (the whole predictor depends on that pairing).
+    #[test]
+    fn nibble_layout_learns_and_write_back_pairs() {
+        let st = StretchTable::new();
+        let mut m = ContextModel::new_full(18, 4, 0, Layout::Nibble);
+        m.set_context(99);
+        for _ in 0..200 {
+            let mut c0 = 1u32;
+            for _ in 0..8 {
+                m.predict(c0, &st, 32768);
+                let written = m.last_idx();
+                m.update(1);
+                // `update` must have written the slot `predict` selected.
+                assert_eq!(m.last_idx(), written, "update moved the slot");
+                c0 = (c0 << 1) | 1;
+            }
+        }
+        // Every node on the all-ones path must now be saturated high.
+        let mut c0 = 1u32;
+        for _ in 0..8 {
+            let p = m.predict(c0, &st, 32768);
+            assert!(p > 1000, "node {c0} did not learn: p={p}");
+            c0 = (c0 << 1) | 1;
+        }
+    }
+
+    /// T1: the layout roster is derived from the expert list, survives ablation,
+    /// and defaults to hashed everywhere.
+    #[test]
+    fn nibble_orders_select_experts_and_survive_ablation() {
+        let c = ModelConfig::for_size(1_000_000);
+        assert!(c.layouts.is_empty(), "default must be all-hashed");
+        assert!(c.nibble_orders().is_empty());
+        assert!(c
+            .specs
+            .iter()
+            .enumerate()
+            .all(|(i, _)| c.layout_for(i) == Layout::Hashed));
+
+        let n = c.clone().with_nibble_orders(&[0, 1]);
+        assert_eq!(n.nibble_orders(), vec![0, 1]);
+        assert_eq!(n.layouts.len(), n.specs.len());
+        // Only the order-0/1 experts moved; every other expert stayed hashed.
+        for (i, s) in n.specs.iter().enumerate() {
+            match s.kind {
+                CtxKind::Order(o) => {
+                    let want = if o <= 1 {
+                        Layout::Nibble
+                    } else {
+                        Layout::Hashed
+                    };
+                    assert_eq!(n.layout_for(i), want, "order {o} layout");
+                }
+                _ => assert_eq!(n.layout_for(i), Layout::Hashed),
+            }
+        }
+
+        // Ablation must carry the layouts of the experts it keeps, rather than
+        // re-laying-out whatever ends up at the new indices.
+        let a = n.ablated(&[1, 2]);
+        assert_eq!(a.layouts.len(), 2);
+        assert_eq!(a.layout_for(0), Layout::Nibble, "kept order-1 expert");
+        assert_eq!(a.layout_for(1), Layout::Hashed, "kept order-2 expert");
+
+        // The constructor refuses a table too small to express a bucket, rather
+        // than aliasing every context onto one.
+        let small = std::panic::catch_unwind(|| ContextModel::new_full(4, 4, 0, Layout::Nibble));
+        assert!(small.is_err(), "4-bit table accepted the nibble layout");
     }
 
     #[test]

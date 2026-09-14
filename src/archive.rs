@@ -1547,6 +1547,22 @@ pub fn encode_specs(
     tune: u8,
     specs: &[crate::context::ModelSpec],
 ) -> Vec<u8> {
+    encode_specs_layout(input, method, tune, specs, &[])
+}
+
+/// T1 (research only): as [`encode_specs`], but also overriding each expert's
+/// storage layout. Same contract — a size *and* time measurement against the
+/// real transform pipeline and the real predictor, not a decodable archive.
+/// `layouts` may be empty (every expert [`crate::context::Layout::Hashed`]) or
+/// parallel to `specs`.
+#[cfg(not(feature = "submission"))]
+pub fn encode_specs_layout(
+    input: &[u8],
+    method: Method,
+    tune: u8,
+    specs: &[crate::context::ModelSpec],
+    layouts: &[crate::context::Layout],
+) -> Vec<u8> {
     // Phase 7: same outermost reorder as `encode_tuned`, so pruning measurements
     // apply to the reordered representation.
     let (input2, method) = prepare_reorder(input, method);
@@ -1570,6 +1586,7 @@ pub fn encode_specs(
 
     let mut cfg = method.config(n).with_tune(tune);
     cfg.specs = specs.to_vec();
+    cfg.layouts = layouts.to_vec();
     let mut cm = Cm::new(&cfg, n);
     let mut enc = RangeEncoder::with_capacity(n / 2 + 64);
     for (i, &byte) in data.iter().enumerate() {
@@ -1930,6 +1947,39 @@ mod tests {
         }
         v.extend_from_slice(b"</mediawiki>\n");
         v
+    }
+
+    /// T2: the table-size scale carried in the high nibble of `tune` must scale
+    /// the model, must be derived identically by encoder and decoder (it is: both
+    /// read the archive's own `tune` byte), and must round-trip exactly at every
+    /// scale. A knob that changed the tables without the decoder knowing would
+    /// corrupt reconstruction silently — that is the failure this test exists to
+    /// make impossible.
+    #[cfg(feature = "tune-table")]
+    #[test]
+    fn tune_table_scale_roundtrips() {
+        let data = b"<page>\n  <title>Alpha</title>\n  <id>1</id>\n  <revision>\n    <text>alpha star galaxy alpha star</text>\n  </revision>\n</page>\n".to_vec();
+        let base = Method::StructHoist.config_for(data.len()).with_tune(5);
+        for scale in 0u8..=3 {
+            let tune = 5u8 | (scale << 4);
+            let cfg = Method::StructHoist.config_for(data.len()).with_tune(tune);
+            // Scale 0 must be identical to no scaling at all...
+            if scale == 0 {
+                assert_eq!(cfg.memory_bytes(), base.memory_bytes());
+            } else {
+                // ...and each step must actually grow the direct-expert tables.
+                assert!(
+                    cfg.memory_bytes() > base.memory_bytes(),
+                    "scale {scale} did not grow the model"
+                );
+            }
+            let arch = encode_tuned(&data, Method::StructHoist, tune);
+            assert_eq!(
+                decode(&arch).unwrap(),
+                data,
+                "tune={tune} did not round-trip"
+            );
+        }
     }
 
     #[cfg(feature = "reorder")]

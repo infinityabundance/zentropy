@@ -85,6 +85,8 @@ fn main() -> ExitCode {
         "observe" => cmd_observe(&args[2..]),
         #[cfg(not(feature = "submission"))]
         "pblocks" => cmd_pblocks(&args[2..]),
+        #[cfg(not(feature = "submission"))]
+        "layout" => cmd_layout(&args[2..]),
         "selftest" => cmd_selftest(),
         "help" | "-h" | "--help" => {
             usage();
@@ -121,7 +123,8 @@ fn usage() {
          zentropy sweep-tune  <in> [--method <m>] [--schedule coord|full|fuzz|guided] [--trials <n>] [--tunes <list>] [--jobs <n>] [--receipt <f>] [--memory <log>]\n  \
          zentropy frontier    <receipt.jsonl> [--method <m>]\n  \
          zentropy observe     <receipt.jsonl> [--method <m>]\n  \
-         zentropy pblocks     <in> [--blocks <n>] [--jobs <n>] [--tune <t>] [--no-full]\n",
+         zentropy pblocks     <in> [--blocks <n>] [--jobs <n>] [--tune <t>] [--no-full]\n  \
+         zentropy layout      <in> [--nibble <orders>] [--bits <n>] [--reps <n>] [--method <m>] [--tune <t>]\n",
         version = zentropy::VERSION
     );
 }
@@ -552,6 +555,165 @@ fn cmd_prune(args: &[String]) -> Result<(), String> {
     println!("\nmost negative (prune candidates):");
     for (m, i, label) in rows.iter().take(5) {
         println!("  idx {i:>3}  {label:<28}  marginal(S)={m:+}");
+    }
+    Ok(())
+}
+
+/// T1 (research): the bucket-local table layout, measured for **speed and ratio
+/// in the same process**.
+///
+/// This is a throughput experiment, and the two properties are in tension: the
+/// layout that makes a byte's eight bit-level lookups land in one cache line is
+/// also the layout that discards the low four bits of the hash. A speed win that
+/// costs archive bytes is **not** an adoption, so both numbers are printed beside
+/// each other and neither is derived from the other.
+///
+/// The arms are alternated within one process (A B A B …) so drift, thermal
+/// state and cache warmth apply equally to both, and each arm is reported as a
+/// median over `--reps` runs.
+fn cmd_layout(args: &[String]) -> Result<(), String> {
+    let path = args.first().ok_or("layout: need <in>")?;
+    let get = |k: &str| -> Option<String> {
+        args.iter()
+            .position(|a| a == k)
+            .and_then(|i| args.get(i + 1))
+            .cloned()
+    };
+    let method = get("--method")
+        .and_then(|s| Method::from_name(&s))
+        .unwrap_or(archive::ACCEPTED_METHOD);
+    let tune: u8 = get("--tune")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(archive::ACCEPTED_TUNE);
+    let reps: usize = get("--reps")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3)
+        .max(1);
+    let orders: Vec<usize> = get("--nibble")
+        .map(|list| {
+            list.split(',')
+                .filter_map(|s| s.trim().parse().ok())
+                .collect()
+        })
+        .unwrap_or_default();
+    // `--bits` forces every direct expert's table size (research only); it exists
+    // to separate arithmetic cost from working-set cost.
+    let forced_bits: Option<u32> = get("--bits").and_then(|v| v.parse().ok());
+
+    let data = read(path)?;
+    guard_encode(data.len() as u64, max_ram_override(args))?;
+
+    // The control is the current scored layout: every expert hashed.
+    let mut control = method.config_for(data.len());
+    if let Some(b) = forced_bits {
+        control = control.with_forced_bits(b);
+    }
+    // The candidate differs only in the storage layout of the listed orders.
+    let candidate = control.clone().with_nibble_orders(&orders);
+    let specs = control.specs.clone();
+    let ctl_layouts = control.layouts.clone();
+    let cand_layouts = candidate.layouts.clone();
+
+    // The coded stream length, so a per-byte rate can be quoted honestly. Both
+    // arms code exactly this many bytes; only the table layout differs, so the
+    // archive sizes are directly comparable.
+    let coded = archive::transformed_stream(&data, method, tune).len();
+    let model_bytes = control.memory_bytes();
+
+    println!(
+        "corpus={path} input_bytes={} method={} tune={tune} reps={reps}",
+        data.len(),
+        method.name()
+    );
+    if let Some(b) = forced_bits {
+        println!("--bits {b} forced on every direct expert's table (research override)");
+    }
+    println!(
+        "bucket-local experts = {:?}  ({} order experts of {} total)",
+        candidate.nibble_orders(),
+        specs
+            .iter()
+            .filter(|s| matches!(s.kind, zentropy::context::CtxKind::Order(_)))
+            .count(),
+        specs.len()
+    );
+    println!("coded_stream_bytes={coded} model_bytes={model_bytes}");
+
+    if orders.is_empty() {
+        // No layout change requested: this is a working-set measurement, so skip
+        // the (identical) B arm rather than doubling the wall time.
+        let mut times: Vec<f64> = Vec::with_capacity(reps);
+        let mut bytes = 0usize;
+        for r in 0..reps {
+            let t = Instant::now();
+            bytes = archive::encode_specs_layout(&data, method, tune, &specs, &ctl_layouts).len();
+            times.push(t.elapsed().as_secs_f64());
+            print!("\r  rep {}/{reps}", r + 1);
+            use std::io::Write as _;
+            let _ = std::io::stdout().flush();
+        }
+        println!();
+        times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let m = times[times.len() / 2];
+        println!(
+            "all hashed: archive={bytes} median={m:.3}s {:.3} MB/s {:.1} ns/byte",
+            coded as f64 / 1e6 / m.max(f64::MIN_POSITIVE),
+            m * 1e9 / coded.max(1) as f64
+        );
+        return Ok(());
+    }
+
+    let mut ctl_times: Vec<f64> = Vec::with_capacity(reps);
+    let mut cand_times: Vec<f64> = Vec::with_capacity(reps);
+    let mut ctl_bytes = 0usize;
+    let mut cand_bytes = 0usize;
+    for r in 0..reps {
+        let t = Instant::now();
+        ctl_bytes = archive::encode_specs_layout(&data, method, tune, &specs, &ctl_layouts).len();
+        ctl_times.push(t.elapsed().as_secs_f64());
+
+        let t = Instant::now();
+        cand_bytes = archive::encode_specs_layout(&data, method, tune, &specs, &cand_layouts).len();
+        cand_times.push(t.elapsed().as_secs_f64());
+
+        print!("\r  rep {}/{reps}", r + 1);
+        use std::io::Write as _;
+        let _ = std::io::stdout().flush();
+    }
+    println!();
+
+    fn median(v: &mut Vec<f64>) -> f64 {
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        v[v.len() / 2]
+    }
+    let ct = median(&mut ctl_times);
+    let bt = median(&mut cand_times);
+
+    println!(
+        "A control (all hashed): archive={ctl_bytes} median={ct:.3}s {:.3} MB/s {:.1} ns/byte",
+        coded as f64 / 1e6 / ct.max(f64::MIN_POSITIVE),
+        ct * 1e9 / coded.max(1) as f64
+    );
+    println!(
+        "B bucket-local:        archive={cand_bytes} median={bt:.3}s {:.3} MB/s {:.1} ns/byte",
+        coded as f64 / 1e6 / bt.max(f64::MIN_POSITIVE),
+        bt * 1e9 / coded.max(1) as f64
+    );
+    println!(
+        "archive delta (S) = {:+} B   speedup = {:.2}x",
+        cand_bytes as i64 - ctl_bytes as i64,
+        ct / bt.max(f64::MIN_POSITIVE)
+    );
+    // The adoption rule, stated so a reader cannot mistake the two axes.
+    if cand_bytes <= ctl_bytes && bt < ct {
+        println!("verdict: free win on this corpus -- eligible for a full `eval` gate");
+    } else if cand_bytes > ctl_bytes {
+        println!(
+            "verdict: costs {} B of archive; a speed win here is NOT an adoption (S is authority)",
+            cand_bytes - ctl_bytes
+        );
+    } else {
+        println!("verdict: no speed win; the layout change earns nothing");
     }
     Ok(())
 }

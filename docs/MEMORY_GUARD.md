@@ -24,25 +24,67 @@ There is also a hard kernel ceiling outside the process: `tools/run_guarded.sh`
 applies `RLIMIT_AS` and takes a single-heavy-run lock (`ZENTROPY_ALLOW_CONCURRENT=1`
 to opt out).
 
-## 2. The floor is debounced (and why)
+## 2. The floor pauses; it does not abort
 
-`FLOOR_BREACH_PATIENCE = 3` consecutive below-floor samples are required before
-aborting. One sample is **not** evidence of exhaustion: a compiler link, a browser
-tab, or a page-cache eviction can drop `MemAvailable` for a moment.
+`enforce_runtime_floor` **suspends** the run when `MemAvailable` falls below the
+floor, sleeping `FLOOR_POLL` (5 s) between re-checks and resuming the instant
+memory recovers. It gives up only after `FLOOR_PATIENCE` (600 s) of *sustained*
+pressure, which is a last resort that releases the run's memory for the rest of
+the machine.
 
-This is not hypothetical. On 2026-09-14 five concurrent enwik9 gates were killed at
-87% by the *single-sample* rule when a `cargo build` ran alongside them; the dip had
-cleared within seconds. Five runs, ~3.6 core-hours, discarded by a transient.
+Pausing is legitimate, not a trick, because coding is a pure function of the input
+and the model state: no clock, no randomness, no shared mutable state. The same
+bytes are coded the same way before and after the sleep, and the decoder re-running
+the same bytes makes the same decisions. It is the property that makes a pause
+*correct* where an abort was merely *safe*.
 
-The delayed abort is safe because a run's own footprint is fixed after startup
-(bounded by layer 1), so the waiting process cannot be the one consuming the last of
-the floor. Three samples is ~1 s on a small rung and ~3 s on enwik9. The first
-breach of a streak is reported to stderr, so a tolerated dip leaves a trace instead
-of passing silently.
+### 2.1 Why: two incidents, and what was actually established
 
-`note_sample` (pure, in `src/memory.rs`) holds the streak logic and is unit-tested
-for: one dip tolerated, abort exactly at the patience bound, and a return above the
-floor clearing the streak (the window must be *consecutive*).
+**Incident 1** (single-sample rule, ~08:45). Five concurrent enwik9 gates were
+killed at 87% while a `cargo build` ran alongside them. Whether that dip was
+sustained was not recorded, so it did not by itself justify a design change.
+
+**Incident 2** (the debounce, ~09:10). The gates were relaunched and 3-consecutive-
+sample debouncing was in place. All five died again, and this time the diagnostic
+was conclusive:
+
+```text
+memory floor breached: 1.12 GiB available, floor 2.00 GiB,
+for 3 consecutive samples (3.00 MiB coded)
+```
+
+So the dip **was sustained** — a longer patience window alone would not have saved
+them. That is what ruled out "debounce harder" and selected "pause instead of
+deciding".
+
+### 2.2 The workstation, not the guard, is the pressure
+
+Both incidents trace to the machine, not to Zentropy. Measured while five gates ran:
+
+| process | RSS |
+|---|---|
+| `xmllint` | **46.7 GB** |
+| `zed-editor` | 8.1 GB |
+| `xmllint` (second) | 3.4 GB |
+| five `zentropy eval` gates | ~7.6 GB total |
+
+`SwapFree` was **1.95 GB of 131.5 GB** and `Committed_AS` 239 GB, so the machine has
+essentially no slack: an unrelated process spiking can drop `MemAvailable` from
+62 GB to ~1 GB. Under those conditions the floor's job is to keep a long run alive
+across someone else's spike, which is exactly what pausing does. Note also that
+`free -g` reported "available 1" at a moment when `MemAvailable` read 8.98 GB —
+quote `/proc/meminfo`, not the rounded summary.
+
+### 2.3 Operational rule that still stands
+
+**Do not run a heavy experiment while gates are in flight.** Pausing makes our runs
+resilient, but it does not create memory. A 5.5 GB `layout --bits 28` run alongside
+five gates is a self-inflicted version of the same problem.
+
+`floor_action` (pure, in `src/memory.rs`) holds the decision and is unit-tested for:
+immediate pause on a dip, immediate resume on recovery however long it took,
+inclusive comparison at exactly the floor, no abort before the patience window, and
+abort at it.
 
 ## 3. What is *not* guarded
 

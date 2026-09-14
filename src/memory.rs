@@ -54,9 +54,9 @@
 //! A hard kernel-enforced ceiling (`ulimit -v`) is applied by the long-run
 //! wrappers in `tools/`; see `tools/p9_gate.sh`.
 
-#[cfg(feature = "mem-floor")]
-use std::sync::atomic::AtomicU32;
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "mem-floor")]
+use std::time::{Duration, Instant};
 
 /// Hard ceiling on the default budget, in bytes (8 GiB). Chosen below the
 /// Hutter 10 GB envelope so a judged run is always within limits, and low
@@ -70,7 +70,7 @@ pub const DEFAULT_MAX_BUDGET: u64 = 8 * 1024 * 1024 * 1024;
 /// is enough for a heavy editor session; below this the run refuses to start.
 pub const RESERVE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
-/// Available memory below which a *running* research job aborts.
+/// Available memory below which a *running* research job pauses.
 ///
 /// The distinction from [`RESERVE_BYTES`] matters: the reserve stops a run from
 /// *starting* when the machine is already tight, while this floor stops a run
@@ -82,36 +82,54 @@ pub const RUN_FLOOR_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// relaxed atomic load per megabyte) and frequent enough to react in seconds.
 pub const RUNTIME_CHECK_INTERVAL: usize = 1 << 20;
 
-/// Consecutive below-floor samples tolerated before a run aborts.
+/// How long a run may sit below the floor before giving up and aborting.
 ///
-/// A single sample is **not** evidence of a machine that is out of memory. Any
-/// unrelated transient — a compiler link, a browser tab, a page-cache eviction —
-/// can drop `MemAvailable` below the floor for a moment. Reacting to one sample
-/// discards the whole run, and an enwik9 pass is ~45 minutes: that is exactly what
-/// happened when a `cargo build` was started alongside five live gates, which
-/// killed all five at 87% for a dip that cleared within seconds.
-///
-/// Three consecutive samples is several seconds of *sustained* pressure (one
-/// sample is one mebibyte of coded stream, ~1 s on a small rung and ~3 s on
-/// enwik9). A genuine exhaustion event always lasts that long; a blip does not.
-/// The delay is safe because this process's own footprint is fixed after startup
-/// (bounded by the [`budget`] check), so it cannot be the process consuming the
-/// last of the floor while it waits.
+/// The floor *pauses* rather than aborting (see [`floor_action`]), because a run
+/// late in a 90-minute pass must not be discarded because an unrelated process
+/// spiked. Ten minutes is long enough to ride out anything that clears, and short
+/// enough that a genuinely exhausted machine still gets its memory back.
 #[cfg(feature = "mem-floor")]
-pub const FLOOR_BREACH_PATIENCE: u32 = 3;
+pub const FLOOR_PATIENCE: Duration = Duration::from_secs(600);
+
+/// How long to sleep between re-checks while paused.
+#[cfg(feature = "mem-floor")]
+pub const FLOOR_POLL: Duration = Duration::from_secs(5);
+
+/// What the runtime floor does about one memory sample.
+#[cfg(feature = "mem-floor")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum FloorAction {
+    /// Enough memory: keep coding.
+    Continue,
+    /// Below the floor, but not for long enough to give up: sleep and re-check.
+    Sleep,
+    /// Below the floor for [`FLOOR_PATIENCE`]: abort and release the memory.
+    Abort,
+}
+
+/// The floor's decision, as a pure function so it is testable without any
+/// control over the machine's actual memory.
+#[cfg(feature = "mem-floor")]
+#[inline]
+pub fn floor_action(available: u64, floor: u64, paused_for: Duration) -> FloorAction {
+    if available >= floor {
+        FloorAction::Continue
+    } else if paused_for >= FLOOR_PATIENCE {
+        FloorAction::Abort
+    } else {
+        FloorAction::Sleep
+    }
+}
 
 /// Whether the runtime floor is armed.
 ///
 /// Always present (it is one byte of `.bss` and no code), because the *call*
 /// site is kept in every build for the layout reason in the module docs. It
 /// defaults to false and the submission stub never sets it, so the guard is inert
-/// on the judged path — a legitimate reconstruction can never be aborted.
+/// on the judged path — a legitimate reconstruction can never be paused or
+/// aborted.
 static RUNTIME_GUARD: AtomicBool = AtomicBool::new(false);
-
-/// Length of the current run of consecutive below-floor samples. Reset to zero
-/// by any sample at or above the floor, so only a *sustained* breach aborts.
-#[cfg(feature = "mem-floor")]
-static FLOOR_BREACHES: AtomicU32 = AtomicU32::new(0);
 
 /// Arm the runtime memory floor. The research driver calls this once at startup;
 /// the submission stub never does. An unarmed guard is a no-op in every build.
@@ -279,33 +297,20 @@ pub fn runtime_ok() -> bool {
     }
 }
 
-/// The pure part of the floor logic: fold one sample into the breach streak and
-/// say whether the run must stop. Split out so the behaviour is testable without
-/// touching the machine's actual memory (which no test may control).
-///
-/// Returns `(new_streak, abort)`.
-#[cfg(feature = "mem-floor")]
-fn note_sample(streak: u32, available: u64, floor: u64) -> (u32, bool) {
-    if available >= floor {
-        (0, false)
-    } else {
-        let n = streak.saturating_add(1);
-        (n, n >= FLOOR_BREACH_PATIENCE)
-    }
-}
-
 /// Called from the coding loops every [`RUNTIME_CHECK_INTERVAL`] bytes.
 ///
 /// The guard is a no-op unless [`enable_runtime_guard`] was called, so it costs
 /// one relaxed atomic load and a predictable branch per megabyte on the research
-/// path and nothing on the judged path. When it does fire it **aborts**: the
-/// point is to stop a long run before the kernel's OOM killer starts choosing
-/// victims, and the victim is otherwise likely to be the user's editor rather
-/// than the compressor.
+/// path and nothing on the judged path.
 ///
-/// A breach must persist for [`FLOOR_BREACH_PATIENCE`] consecutive samples
-/// before it aborts; the first sample of a streak is *reported* instead, so a
-/// tolerated dip leaves a trace in the run log rather than passing silently.
+/// When the floor is breached the run **pauses** rather than aborting: it sleeps
+/// [`FLOOR_POLL`] and re-checks, and gives up only after [`FLOOR_PATIENCE`] of
+/// sustained pressure. Two incidents on 2026-09-14 discarded five concurrent
+/// enwik9 gates at 87% each time, because the old rule aborted on a single
+/// sample; the second incident proved the dips were sustained, so a longer
+/// patience on its own would *not* have saved them. Pausing does, and it is
+/// legitimate precisely because coding is deterministic and time-independent:
+/// the same bytes are coded the same way before and after the sleep.
 ///
 /// The function itself is present in every build, so the call sites need no
 /// `cfg`; only the implementation is gated, and a stub that never arms the guard
@@ -322,29 +327,45 @@ pub fn enforce_runtime_floor() {
         let Some(a) = available_bytes() else {
             return;
         };
-        let streak = FLOOR_BREACHES.load(Ordering::Relaxed);
-        let (next, abort) = note_sample(streak, a, floor);
-        FLOOR_BREACHES.store(next, Ordering::Relaxed);
-        if next == 1 {
-            eprintln!(
-                "zentropy: memory floor: {:.2} GiB available, floor {:.2} GiB — \
-                 monitoring {} more samples before aborting",
-                a as f64 / (1024.0 * 1024.0 * 1024.0),
-                floor as f64 / (1024.0 * 1024.0 * 1024.0),
-                FLOOR_BREACH_PATIENCE - 1
-            );
+        // Fast path: the overwhelmingly common case, one load and one compare.
+        if floor_action(a, floor, Duration::ZERO) == FloorAction::Continue {
+            return;
         }
-        if abort {
-            panic!(
-                "memory floor breached: {:.2} GiB available, floor {:.2} GiB, for {} \
-                 consecutive samples ({:.2} MiB coded). Aborting this run to protect \
-                 the machine. Free memory, or lower the model with --max-ram / \
-                 ZENTROPY_MAX_RAM_BYTES, then retry.",
-                a as f64 / (1024.0 * 1024.0 * 1024.0),
-                floor as f64 / (1024.0 * 1024.0 * 1024.0),
-                next,
-                (RUNTIME_CHECK_INTERVAL * next as usize) as f64 / (1024.0 * 1024.0),
-            );
+        // Below the floor. **Pause rather than discard.** Coding is a pure
+        // function of the input and the model state — no clock, no randomness, no
+        // shared mutable state — so suspending here cannot change the output, and
+        // the decoder that re-runs the same bytes makes the same decision. That is
+        // what makes a pause legitimate where an abort was merely safe.
+        let start = Instant::now();
+        eprintln!(
+            "zentropy: memory floor: {:.2} GiB available, floor {:.2} GiB — pausing \
+             (up to {}s) rather than discarding this run",
+            a as f64 / (1024.0 * 1024.0 * 1024.0),
+            floor as f64 / (1024.0 * 1024.0 * 1024.0),
+            FLOOR_PATIENCE.as_secs()
+        );
+        loop {
+            std::thread::sleep(FLOOR_POLL);
+            let now = available_bytes().unwrap_or(u64::MAX);
+            match floor_action(now, floor, start.elapsed()) {
+                FloorAction::Continue => {
+                    eprintln!(
+                        "zentropy: memory floor: {:.2} GiB available — resuming after {:.1}s",
+                        now as f64 / (1024.0 * 1024.0 * 1024.0),
+                        start.elapsed().as_secs_f64()
+                    );
+                    return;
+                }
+                FloorAction::Sleep => {}
+                FloorAction::Abort => panic!(
+                    "memory floor breached for {}s: {:.2} GiB available, floor {:.2} GiB. \
+                     Aborting to release this run's memory. Free memory, or lower the \
+                     model with --max-ram / ZENTROPY_MAX_RAM_BYTES, then retry.",
+                    start.elapsed().as_secs(),
+                    now as f64 / (1024.0 * 1024.0 * 1024.0),
+                    floor as f64 / (1024.0 * 1024.0 * 1024.0),
+                ),
+            }
         }
     }
 }
@@ -432,34 +453,36 @@ mod tests {
 
     #[cfg(feature = "mem-floor")]
     #[test]
-    fn a_transient_dip_does_not_abort_but_a_sustained_one_does() {
-        // The whole point of the patience window: a single below-floor sample is
-        // not evidence of exhaustion, so a run must survive it. An enwik9 pass is
-        // ~45 min and was previously thrown away by one sample.
+    fn a_transient_dip_pauses_and_recovers_instead_of_aborting() {
+        // The whole point of pausing: a machine that tightens for a moment must
+        // not cost a 90-minute pass. Five concurrent enwik9 gates were discarded
+        // twice on 2026-09-14 by an abort rule the machine did not deserve.
         let floor = RUN_FLOOR_BYTES;
         let low = floor - 1;
         let ok = floor + 1;
 
-        // One dip: tolerated, streak recorded, no abort.
-        let (streak, abort) = note_sample(0, low, floor);
-        assert_eq!((streak, abort), (1, false));
-        // Sustained dip: aborts exactly at the patience bound, not before.
-        let mut streak = 0;
-        let mut aborted_at = None;
-        for i in 1..=(FLOOR_BREACH_PATIENCE + 2) {
-            let (s, a) = note_sample(streak, low, floor);
-            streak = s;
-            if a && aborted_at.is_none() {
-                aborted_at = Some(i);
-            }
-        }
-        assert_eq!(aborted_at, Some(FLOOR_BREACH_PATIENCE));
-        // A sample back above the floor clears the streak entirely, so the window
-        // must be *consecutive* — otherwise a slow leak would still be tolerated.
-        let (streak, abort) = note_sample(FLOOR_BREACH_PATIENCE - 1, ok, floor);
-        assert_eq!((streak, abort), (0, false));
-        let (streak, abort) = note_sample(streak, low, floor);
-        assert_eq!((streak, abort), (1, false));
+        // A dip pauses immediately...
+        assert_eq!(floor_action(low, floor, Duration::ZERO), FloorAction::Sleep);
+        // ...and resumes the moment memory recovers, however long it took.
+        assert_eq!(
+            floor_action(ok, floor, FLOOR_PATIENCE * 2),
+            FloorAction::Continue
+        );
+        // Exactly at the floor is fine: the comparison is inclusive.
+        assert_eq!(
+            floor_action(floor, floor, Duration::ZERO),
+            FloorAction::Continue
+        );
+        // Sustained pressure is only given up on after the patience window, so the
+        // abort is a last resort rather than the first response.
+        assert_eq!(
+            floor_action(low, floor, FLOOR_PATIENCE - Duration::from_secs(1)),
+            FloorAction::Sleep
+        );
+        assert_eq!(floor_action(low, floor, FLOOR_PATIENCE), FloorAction::Abort);
+        // The window is bounded, so a genuinely exhausted machine recovers.
+        assert!(FLOOR_PATIENCE >= FLOOR_POLL * 2);
+        assert!(FLOOR_POLL > Duration::ZERO);
     }
 
     #[test]
