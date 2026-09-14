@@ -449,25 +449,42 @@ to refuse.
 The enwik9 verdict is a full `eval` gate in flight; nothing is claimed about it
 until it lands.
 
-### 9.3 Status, and the coupling to be careful about
+### 9.3 Status: **ADOPTED** at enwik9, and the number grew with scale
 
-**NOT YET ADOPTED.** The rates were screened and the vector is **baked** into
-`context::ACCEPTED_RATES`, but adoption is decided by a full `eval` gate on enwik9
-against the T2 parent (165,344,019). Everything about the sequence is deliberate:
+The enwik9 authority gate has run, with exact reconstruction:
 
-1. adopt the T2 scale (already gated: −3,938,320 exact at scale 3), then
-2. re-screen the rates **at scale 3**, bake them, and gate the pair on enwik9, then
-3. re-check the mixer LR at the final geometry (Phase 9's rule: the LR optimum is a
-   function of the predictor).
+| corpus | before the ladder | with the ladder | Δ |
+|---|---|---|---|
+| enwik6 | 262,750 | 246,808 | −15,942 |
+| enwik7 | 2,333,062 | 2,226,353 | −106,709 |
+| enwik8 | 20,865,077 | 20,190,312 | −674,765 |
+| **enwik9** | **165,344,019** | **161,418,616** | **−3,925,403** |
 
-Step 3 is not optional. Steps 1 and 2 both changed the predictor, and the LR ladder
-was last closed against the predictor that existed *before* either of them. The
-`52`/`54` bracket in §8.2 closes the LR ladder at scale 3 with the **old** rates; if
-the rate change is adopted it must be re-bracketed once more, and that gate is the
-next thing after the rate verdict.
+Receipt: `evidence/runs/rates_enwik9/accepted_rates.jsonl`, `exact=true`,
+`tune 53`, 1.2913 bpc. The dose–response is monotone and *superlinear* between
+enwik8 and enwik9 (−0.67 MB → −3.93 MB), the same shape T2 showed: both mechanisms
+reduce the cost of context sparsity, and sparsity is what a 10⁹-byte corpus with
+2^27-slot tables creates.
 
-Coupling is real in both directions, which is why each step is its own gate rather
-than a joint search: a combined point would make `ΔS` unattributable.
+**This is the largest single mechanism the project has added since the Phase-7
+article layout** (−4,469,794 B), and unlike every earlier mechanism it is a
+*hyperparameter*: no new code path, no new model, no new side information.
+
+Its executable cost, measured rather than assumed, is **0 B on the shipped
+configuration** — removing the `with_rates` call entirely leaves the stub at
+125,056 B (musl, `accepted,submission`), and varying the values does not move it
+either. On the glibc build the same source delta measured **+128 B, stable across
+rebuilds**. Both are reported because both are real: a sub-kilobyte artifact delta
+is a *layout* property at `opt-level="z"`, and this project has already paid for
+learning that (543 B → 1,728 B for structural hoisting; a 256 B scare from
+deleting an inert call). The charged cost for the submission is therefore **0 B**.
+
+Step 3 of the sequence — re-bracketing the mixer learning rate at the final
+geometry — is in flight (`evidence/runs/lr_at_rates/`), because the ladder
+changed the predictor and Phase 9's rule is that the LR optimum follows it. Those
+gates are deliberately run at the pre-retrain weights, and the weights experiment
+(`evidence/runs/weights_retrain.jsonl`) is gated separately; the coupling is real
+and is recorded rather than resolved by assumption.
 
 ### 9.4 Scale 4: from INCONCLUSIVE to **excluded**
 

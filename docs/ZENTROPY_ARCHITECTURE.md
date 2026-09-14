@@ -205,6 +205,7 @@ only counts when the *complete* `ΔS` is negative):
 | Phase 9 search layer (DSFB observer, frf-fuzz mutation, Pareto, corpus-scoped Gemel memory) | courted (whole 0..=255 space round-trips; memory prevents re-payment; campaigns deterministic) | **ADOPTED** (net **−224 B** of executable) |
 | Phase 9 mixer-LR re-tune (**LR 16**, `tune 5`, zero executable cost) | enwik9 **−359,748** (169,642,087 → 169,282,339, 1.3543 bpc); LR 20 was −158,058 and LR 24 the old accepted value | **ADOPTED** |
 | Phase 9 APM adaptation-shift axis | enwik7 ≈−12 KB on the mean, enwik8 +653 at the best LR, **enwik9 +90,996 at the best LR** | **REJECTED at scale**, compiled out (`--features apm-tune` reproduces it) |
+| Phase 11 adaptation ladder (`ACCEPTED_RATES`) | enwik6 −15,942; enwik7 −106,709; enwik8 −674,765; **enwik9 −3,925,403** (165,344,019 → 161,418,616, 1.2913 bpc), exact, measured 0 B of executable on the shipped target | **ADOPTED** |
 
 > **Accounting note.** The executable cost of a mechanism is *measured*, never
 > estimated: build an otherwise-identical submission binary with and without the
