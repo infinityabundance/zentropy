@@ -237,8 +237,26 @@ pub fn parse_size(s: &str) -> Option<u64> {
 /// Bytes the context models will allocate for a coded length of `n`. Uses the
 /// **accepted** configuration so the projection includes every adopted
 /// mechanism (state experts, the SSE stage, the PPM model).
+///
+/// The accepted `tune` must be applied here, not just at coding time. Since T2
+/// was adopted, `tune` no longer only selects a mixer learning rate: its high
+/// nibble scales every direct expert's table by `2^(tune >> 4)`. A projection
+/// that ignored that would under-count the model by gigabytes at enwik9 and the
+/// startup guard would approve a run it cannot actually fit — precisely the
+/// failure the guard exists to prevent. Routing through `with_tune` keeps one
+/// definition of the geometry: the same call the coder and the decoder make.
 pub fn model_bytes(n: usize) -> u64 {
-    crate::archive::ACCEPTED_METHOD.config_for(n).memory_bytes()
+    crate::archive::ACCEPTED_METHOD
+        .config_for(n)
+        .with_tune(crate::archive::ACCEPTED_TUNE)
+        .memory_bytes()
+}
+
+/// As [`model_bytes`], but for an explicitly named configuration. Needed because
+/// a *decoder* must project the geometry the archive declares, not the one we
+/// would have chosen — see [`crate::archive::peek_header`].
+pub fn model_bytes_for(n: usize, method: crate::archive::Method, tune: u8) -> u64 {
+    method.config_for(n).with_tune(tune).memory_bytes()
 }
 
 /// Conservative projected peak for *encoding* `n` input bytes.
@@ -265,6 +283,21 @@ pub fn projected_decode(archive_len: u64, n: u64) -> u64 {
     out_buf + decoded + intermediates + archive_len + model_bytes(n as usize)
 }
 
+/// As [`projected_decode`], but projecting the configuration the archive itself
+/// declares. A decoder handed a forged header must be judged on the tables that
+/// header actually asks for.
+pub fn projected_decode_for(
+    archive_len: u64,
+    n: u64,
+    method: crate::archive::Method,
+    tune: u8,
+) -> u64 {
+    let out_buf = n;
+    let decoded = n;
+    let intermediates = n;
+    out_buf + decoded + intermediates + archive_len + model_bytes_for(n as usize, method, tune)
+}
+
 /// Fail closed if a projection exceeds the budget.
 pub fn check(projected: u64, budget: u64) -> Result<(), String> {
     if fits(projected, budget) {
@@ -286,6 +319,49 @@ pub fn check(projected: u64, budget: u64) -> Result<(), String> {
 #[inline]
 pub fn fits(projected: u64, budget: u64) -> bool {
     projected <= budget
+}
+
+// --- test-plane OOM protection ----------------------------------------------
+//
+// The three layers documented above (`budget`, `research_budget`, the runtime
+// floor) all guard a *coding run*. `cargo test` is a fourth kind of heavy
+// process and had no guard at all: libtest runs one thread per core, so a test
+// that quietly grew a large fixture would multiply its allocation by the core
+// count and could push a shared workstation into swap — taking an unrelated
+// process (very likely the user's editor) as the OOM victim. That failure mode
+// was observed once. These two items close it *inside* the harness, so every
+// test is covered without a wrapper and without a per-test opt-in.
+
+/// Model-plus-history ceiling a single test may allocate, in bytes (1 GiB).
+///
+/// Deliberately far above anything the suite legitimately needs — the largest
+/// fixture in the suite builds order tables of 2^18 slots — and far below the
+/// Hutter envelope, so it can never hide a real regression in the scored path
+/// (which does not compile this code at all).
+#[cfg(test)]
+pub const TEST_ALLOCATION_CEILING: u64 = 1 << 30;
+
+/// Fail closed if a test is about to allocate more than
+/// [`TEST_ALLOCATION_CEILING`].
+///
+/// Called from the single place a model is actually built
+/// ([`crate::context::Predictor::new`]), so it covers *every* test that codes —
+/// including ones added later — rather than the tests someone remembered to
+/// annotate. The failure is loud, immediate and local: a panic naming the
+/// budget, instead of the machine picking a victim somewhere else.
+#[cfg(test)]
+pub fn assert_test_budget(bytes: u64) {
+    if bytes > TEST_ALLOCATION_CEILING {
+        panic!(
+            "test OOM guard: this test is about to allocate {:.2} GiB of model plus \
+             history, above the {} MiB test ceiling. Tests are capped so that a \
+             large fixture cannot OOM a shared workstation (the guard that covers \
+             coding runs, `mem-guard`, is not compiled into the test harness). \
+             Shrink the fixture, or raise `TEST_ALLOCATION_CEILING` deliberately.",
+            bytes as f64 / (1024.0 * 1024.0 * 1024.0),
+            TEST_ALLOCATION_CEILING / (1024 * 1024)
+        );
+    }
 }
 
 /// True while the machine still has the running floor available.
@@ -491,6 +567,54 @@ mod tests {
         let big = projected_encode(100_000_000, 1);
         assert!(big > small);
         assert!(projected_decode(1_000_000, 100_000_000) > 100_000_000);
+    }
+
+    #[test]
+    fn the_test_allocation_ceiling_is_enforced_and_generous() {
+        // The ceiling must actually fail closed, or it is decoration.
+        assert_test_budget(TEST_ALLOCATION_CEILING);
+        assert_test_budget(TEST_ALLOCATION_CEILING - 1);
+        // And it must sit far above what the suite legitimately builds (the
+        // largest fixture uses 2^18-slot order tables) and far below the Hutter
+        // envelope, so it can neither fire spuriously nor hide a real
+        // regression in the scored path.
+        assert!(TEST_ALLOCATION_CEILING > 256 * 1024 * 1024);
+        assert!(TEST_ALLOCATION_CEILING < DEFAULT_MAX_BUDGET);
+    }
+
+    #[test]
+    #[should_panic(expected = "test OOM guard")]
+    fn the_test_allocation_ceiling_rejects_an_over_budget_allocation() {
+        assert_test_budget(TEST_ALLOCATION_CEILING + 1);
+    }
+
+    #[test]
+    fn a_forged_tune_byte_cannot_request_an_unbounded_model() {
+        // T2 makes the high nibble of `tune` a table-size scale, and `tune`
+        // arrives in the archive header. Without the clamp, one forged byte
+        // could order up 2^(base+15)-slot tables; with it, every byte must land
+        // on a geometry no larger than the accepted configuration's. That last
+        // property is what lets the startup guard project a *bound* rather than
+        // a guess, so it is asserted for all 256 values rather than sampled.
+        use crate::archive::{ACCEPTED_METHOD, ACCEPTED_TUNE};
+        let n = 100_000_000usize; // enwik8-scale base tables (2^22 before scaling)
+        let accepted = model_bytes_for(n, ACCEPTED_METHOD, ACCEPTED_TUNE);
+        for t in 0u16..256 {
+            let m = model_bytes_for(n, ACCEPTED_METHOD, t as u8);
+            assert!(
+                m <= accepted,
+                "tune {t} requests {m} B, above the accepted {accepted} B"
+            );
+        }
+        // And the accepted point must itself be the maximum, or the bound above
+        // would be vacuous (e.g. if the accepted tune ever stopped being the top
+        // of the scale range, the guard would be projecting a smaller model than
+        // a forged header could ask for). Only meaningful when the `tune` byte
+        // actually selects a geometry: in the rejected-axis reproduction build
+        // the high nibble means APM shifts instead and every `tune` has the same
+        // model size, which the loop above already covers.
+        #[cfg(feature = "tune-table")]
+        assert!(accepted > model_bytes_for(n, ACCEPTED_METHOD, 0));
     }
 
     #[test]

@@ -106,9 +106,13 @@ fn guard_encode(n: u64) -> Result<(), String> {
 #[cfg(feature = "mem-guard")]
 #[inline]
 fn guard_decode(archive: &[u8]) -> Result<(), String> {
-    if let Some(n) = zentropy::archive::peek_len(archive) {
+    // Project the configuration the archive *declares*. Using the accepted
+    // method/tune here would clear a forged header that asks for a different
+    // geometry — the exact hole T2 would otherwise have opened, since the tune
+    // byte now selects the table size.
+    if let Some((method, tune, n)) = zentropy::archive::peek_header(archive) {
         if !zentropy::memory::fits(
-            zentropy::memory::projected_decode(archive.len() as u64, n),
+            zentropy::memory::projected_decode_for(archive.len() as u64, n, method, tune),
             zentropy::memory::budget(None),
         ) {
             return Err(

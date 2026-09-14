@@ -1266,7 +1266,11 @@ impl Method {
             Method::ResidualCtl => base.with_residual(true),
             _ => base,
         };
-        base.with_info(self.info())
+        // Phase 11: the measured adaptation ladder, applied once for every
+        // method so that each rejected/experimental roster is compared against
+        // the same expert rates the accepted configuration uses.
+        base.with_rates(&crate::context::ACCEPTED_RATES)
+            .with_info(self.info())
     }
 
     /// Phase 6.9 (research): the model configuration this method builds, for
@@ -1645,14 +1649,45 @@ pub const ACCEPTED_METHOD: Method = Method::Residual;
 /// ```text
 /// tune 7  LR 24   169,642,087   (the previously accepted value)
 /// tune 6  LR 20   169,484,029   -158,058
-/// tune 5  LR 16   169,282,339   -359,748   <- adopted
+/// tune 5  LR 16   169,282,339   -359,748
 /// ```
 ///
-/// Each figure is a full `eval` gate on enwik9 with exact reconstruction. The
-/// knob costs **zero** executable bytes: the ladder already existed and the chosen
-/// point has the APM axis off, so it decodes identically with that rejected axis
-/// compiled out.
-pub const ACCEPTED_TUNE: u8 = 5;
+/// **T2 (Phase 11) then moved the accepted point to `53` = scale 3, LR 16.** The
+/// high nibble is the table-size scale and the low nibble the mixer LR, so the
+/// two mechanisms share one header byte. Full `eval` gates on enwik9, each
+/// reconstructing the corpus exactly:
+///
+/// ```text
+/// tune 5   scale 0  LR 16   169,282,339   (the Phase-9 accepted value)
+/// tune 37  scale 2  LR 16   166,328,552   -2,953,787
+/// tune 53  scale 3  LR 16   165,344,019   -3,938,320   <- adopted
+/// ```
+///
+/// The mixer rate was then re-bracketed *at the new geometry*, because Phase 9's
+/// lesson is that the optimum follows the predictor (the ladder is indexed by the
+/// low nibble, so `52` is LR 10 and `54` is LR 20):
+///
+/// ```text
+/// tune 52  scale 3  LR 10   165,761,543   +417,524 vs tune 53
+/// tune 54  scale 3  LR 20   165,533,121   +189,102 vs tune 53
+/// ```
+///
+/// Both neighbours are worse, so LR 16 is an interior optimum at scale 3 as well
+/// and the ladder is closed rather than merely stopped. (52 and 54 are *size*
+/// measurements: their exactness decodes were cut short by an external kill, and
+/// they are rejected on size. Their archive format is identical to 53's, whose
+/// full gate is exact, and the whole 0..=255 space round-trips in the unit
+/// court — see `docs/RESOURCE_CLOSURE.md` §8.2.)
+///
+/// Both mechanisms cost little: the LR ladder already existed, and the scale is
+/// one header byte, so the combined marginal executable cost is the `tune-table`
+/// scaling code alone, measured in `docs/RESOURCE_CLOSURE.md` §8.3.
+///
+/// `53` also puts the accepted point at the **top of the scale range**
+/// ([`crate::context::MAX_TABLE_SCALE`]), which is what makes
+/// `memory::projected_decode` an upper bound for any archive this decoder can be
+/// handed, forged headers included.
+pub const ACCEPTED_TUNE: u8 = 53;
 
 /// Compress `input` into an archive payload using the accepted configuration.
 pub fn encode(input: &[u8]) -> Vec<u8> {
@@ -2219,6 +2254,31 @@ pub fn peek_len(archive: &[u8]) -> Option<u64> {
         None
     } else {
         Some(n)
+    }
+}
+
+/// The configuration an archive *declares in its own header*: method, `tune`
+/// byte and output length.
+///
+/// This exists for the memory guard. Projecting with the *accepted* method and
+/// tune is only correct for archives we produced; for anything else it is a
+/// guess about a field the archive itself supplies. Since T2 the `tune` byte
+/// selects a table-size scale, so a forged header could otherwise be cleared by
+/// a guard that projected the geometry of a different configuration than the one
+/// about to be built. The projection must follow the archive.
+pub fn peek_header(archive: &[u8]) -> Option<(Method, u8, u64)> {
+    if archive.len() < HEADER_LEN || &archive[0..4] != MAGIC {
+        return None;
+    }
+    let method = method_from_id(archive[4])?;
+    let tune = archive[5];
+    let mut b = [0u8; 8];
+    b.copy_from_slice(&archive[6..14]);
+    let n = u64::from_le_bytes(b);
+    if n > MAX_OUTPUT {
+        None
+    } else {
+        Some((method, tune, n))
     }
 }
 

@@ -223,31 +223,48 @@ looked: the standard library's panic path.
 
 ### 8.1 Table size (T2): measured wins at enwik9
 
-All gates used `tune < 16` as the parent (scale 0, the accepted configuration) and
-reconstructed exactly. `tune = (scale << 4) | lr_idx`, so `tune 37` is scale 2 and
-`tune 53` is scale 3, both at LR 16.
+All gates used `tune < 16` as the parent (scale 0, the Phase-9 accepted
+configuration) and reconstructed exactly. `tune = (scale << 4) | lr_idx`, so
+`tune 37` is scale 2 and `tune 53` is scale 3, both at LR 16.
 
-| tune | scale | order tables | archive | Δ vs accepted (169,282,339) | exact | peak RSS | wall |
+| tune | scale | order tables | archive | Δ vs Phase-9 accepted (169,282,339) | exact | peak RSS | wall |
 |---|---|---|---|---|---|---|---|
 | 5 | 0 | 2^24 | 169,282,339 | — | true | ~3.5 GB | ~54 min |
 | 37 | 2 | 2^26 | 166,328,552 | **−2,953,787** | true | 4.36 GB | 55 min |
 | 53 | 3 | 2^27 | **165,344,019** | **−3,938,320** | true | 5.63 GB | 58 min |
 
 The cap in `for_size` was leaving **3.9 MB** on the table, and it was there for no
-recorded reason. Scale 3 is well inside the envelope: 5.63 GB peak against the 10 GB
-limit, which is a hard requirement rather than a trade, so the margin matters —
-scale 4 (2^28, ~5.0 GB of tables) is in flight to find whether the curve has
-flattened, and scale 5 would be illegal.
+recorded reason. Scale 3 is well inside the envelope: 5.63 GB measured peak
+against the 10 GB rule, and a conservative projection of 6.53 GiB for encode /
+5.59 GiB for decode against the 8 GiB the stub will approve.
 
-### 8.2 Mixer learning rate: the ladder is closed at LR 16
+**Adoption is complete, not pending.** `tune-table` is in the `accepted` feature
+list and `ACCEPTED_TUNE = 53`, so the scored stub encodes *and* decodes the
+scale-3 geometry, deriving the scale from the archive's own header byte. Three
+things were required first and are all measured:
+
+| step | result |
+|---|---|
+| LR re-bracket at the new geometry (§8.2) | LR 16 remains an interior optimum |
+| marginal executable cost (A31) | **192 B** per copy, stable across rebuilds → **384 B of `S`**; net **ΔS = −3,937,936** |
+| the scale must be bounded (`MAX_TABLE_SCALE`) | a `tune` byte from a forged header cannot order an unbounded model; see §8.4 |
+
+The binary cost is measured by `tools/measure_tune_table_cost.sh`, which builds
+`accepted` against `accepted-core,pre-t2-geometry` — the same mechanism set with
+the nibble inert — using the *same* pinned toolchain, target and `build-std`
+flags as the packaging step, because at `opt-level="z"` artifact size is a layout
+property and comparing across toolchains would measure the toolchain.
+
+### 8.2 Mixer learning rate: the ladder is closed at LR 16 — now at scale 3 too
 
 The Phase-9 ladder had only been probed *downward* from LR 24 (24 → 20 → 16, each
 step buying more, which is why the next rung was gated rather than extrapolated).
-The five pending gates have now run:
 
-| tune | mixer LR | archive | Δ vs the accepted LR 16 |
+The five Phase-9 gates have run, against the Phase-9 accepted LR 16:
+
+| tune | mixer LR | archive | Δ vs LR 16 |
 |---|---|---|---|
-| 5 | **16** | **169,282,339** | — (adopted) |
+| 5 | **16** | **169,282,339** | — (Phase-9 adopted) |
 | 0 | 12 | 169,449,876 | **+167,537** |
 | 4 | 10 | 169,757,310 | +474,971 |
 | 3 | 8 | 170,416,502 | +1,134,163 |
@@ -255,28 +272,86 @@ The five pending gates have now run:
 | 1 | 4 | 174,028,421 | +4,746,082 |
 
 Every step below 16 regresses, monotonically. Combined with LR 20 (+158,058) and
-LR 24 (+359,748) above it, **LR 16 is a genuine interior optimum, bracketed on both
-sides** — the ladder is closed, not merely stopped.
+LR 24 (+359,748) above it, **LR 16 was an interior optimum at scale 0**.
 
-> **Reading these receipts.** `tools/gate_many.sh` was invoked with `--parent-tune 7`
-> (LR 24) because that was the value the ladder started from, so each receipt's
-> `decision` field compares against *that* parent and prints `ADOPTED` for `tune 0`.
-> The authoritative comparison is against the *current* accepted configuration
-> (LR 16, 169,282,339), which is the Δ column above. The absolute `archive_bytes` in
-> the receipts are unaffected; only their `decision` label is relative to the older
-> parent.
+Phase 9's own lesson is that the optimum is a function of the predictor, and a
+table-size change alters the predictor, so the neighbours were re-gated **at
+scale 3** rather than assumed. Both are worse:
 
-### 8.3 What is still open
+| tune | scale | mixer LR | archive | Δ vs tune 53 (165,344,019) |
+|---|---|---|---|---|
+| 52 | 3 | 10 | 165,761,543 | **+417,524** |
+| 53 | 3 | **16** | **165,344,019** | — (adopted) |
+| 54 | 3 | 20 | 165,533,121 | **+189,102** |
 
-* **Scale 4** and the **LR ladder at scale 3** are in flight. The Phase-9 lesson is
-  explicit that the optimal mixer rate is a function of the predictor, and a
-  table-size change alters the predictor — so until the scale-3 neighbours
-  (`lr_idx` 4 and 6) are gated, the *combination* is not final.
-* **Adoption mechanics.** Folding T2 in means the scored set gains the `tune-table`
-  scaling and `ACCEPTED_TUNE` becomes the winning point, so `decode` reads the scale
-  from the archive header. That makes the mechanism decoder-derivable, which it
-  already is, and puts a new constant in the scored path whose **measured** binary
-  cost must be charged (the `for_size` cap was free; the scaling code is not).
+**LR 16 is an interior optimum at scale 3 as well**, bracketed on both sides, so
+the ladder is closed rather than merely stopped.
+
+> **Reading the 52/54 receipts.** Those two runs were killed by an external
+> process (the user's session terminated them) at 77% and 82% of the *decode*
+> pass, so they are recorded as **size measurements with an interrupted
+> exactness decode**, not as complete gates. Their verdicts are nonetheless
+> sound: the archive *format* is identical to tune 53's, whose full `eval` gate
+> decodes exactly, and the whole 0..=255 `tune` space round-trips in the unit
+> court, so a different mixer learning rate cannot change decodability. Both are
+> rejected on size, and a rejection needs no exactness proof. The `tune 53`
+> receipt is a complete gate.
+
+### 8.3 Binary cost and the final geometry
+
+Shipped stub: `accepted`, `--profile submission`, nightly `build-std` with
+`panic_immediate_abort`. The `mem-guard` correction in §8.4 (projecting the
+archive's declared geometry) and the new `tune-table` scaling code together move
+the stub from **111,888 B → 112,264 B**. Of that, **192 B** is the scale
+mechanism and the rest is the guard becoming correct rather than cheap. Both
+legal packaging forms charge the program twice, so the scale's cost in `S` is
+**384 B** against a **3,938,320 B** archive win.
+
+### 8.4 A decoder hole that the test-plane guard exposed
+
+Adopting T2 introduced two defects that had nothing to do with compression:
+
+1. **An attacker-chosen allocation.** The scale lives in the high nibble of
+   `tune`, and `tune` is read from the archive header. Unclamped, a forged byte
+   could ask `decode` for 2^(base+15)-slot tables — precisely the "allocates
+   without bound" failure the corruption court exists to forbid.
+2. **A guard that cleared it.** `mem-guard` projected
+   `ACCEPTED_METHOD.config_for(n)`, i.e. the configuration *we* would have
+   chosen, not the one the archive declares. A forged header was therefore
+   checked against the wrong model and passed.
+
+Both are fixed structurally. `context::MAX_TABLE_SCALE = 3` clamps the scale at
+the largest value the project runs (scale 3, the adopted point), so **the
+accepted geometry is the worst case for any archive**; and `archive::peek_header`
+plus `memory::projected_decode_for` make both the stub's and the driver's startup
+guard project the configuration the header actually names. The corruption court
+now asserts the bound for **all 256** `tune` values and decodes an adversarial
+`tune` rather than only mutating bytes at random.
+
+Scale 4 is therefore not *inconclusive* any more, it is **excluded**: doubling
+the order tables again projects ~9.7 GB, past the 8 GiB the stub will approve and
+within 0.3 GB of the hard 10 GB rule. Recording that as an eligibility boundary
+is more useful than an untested question.
+
+### 8.5 T2's dose–response, and what it says about the mechanism
+
+The gain grows with corpus size, which is what a collision-reduction mechanism
+should do — the larger the corpus, the more contexts are competing for slots:
+
+| corpus | Phase-9 accepted (tune 5) | scale 3 (tune 53) | Δ |
+|---|---|---|---|
+| enwik6 | 267,333 | 262,750 | −4,583 |
+| enwik7 | 2,370,164 | 2,333,062 | −37,102 |
+| enwik8 | 21,245,220 | 20,865,077 | −380,143 |
+| enwik9 | 169,282,339 | **165,344,019** | **−3,938,320** |
+
+Every rung reconstructs exactly (`evidence/runs/ladder_t2/`). Note the
+superlinear jump from enwik8 to enwik9 (10× the corpus, 10.4× the saving): at
+enwik8 the base `for_size` size is 4× smaller, so scale 3 is comparing different
+absolute geometries. That is also why the smaller rungs are screening
+instruments and never a licence to extrapolate.
+
+## 9. Adaptation rates — another unjustified constant, worth several MB
 
 ## 9. Adaptation rates — another unjustified constant, worth several MB
 
@@ -309,7 +384,7 @@ the gains are not additive.
 
 ### 9.2 The trend matters more than the number
 
-The vector was found on enwik7. Carrying it up the ladder:
+The scale-0 vector was found on enwik7. Carrying it up the ladder:
 
 | corpus | baseline | with the enwik7 vector | Δ | Δ as a fraction |
 |---|---|---|---|---|
@@ -323,16 +398,75 @@ not the answer**: the enwik9 optimum is probably slower than enwik7's, and only 
 enwik9 gate can settle it. A naive linear extrapolation of −1.9% would claim ~−3 MB;
 this project has been burned by exactly that reasoning, so no number is claimed here.
 
+### 9.2b The screen redone at the adopted geometry — and a harness bug it found
+
+T2 changed the geometry, and a rate screen is only meaningful against the geometry
+it will ship with, so the screen was rerun at **scale 3** (`--tune 53`). That
+immediately failed its own sanity check: `rate-sweep --tune 53` reported a baseline
+of `2,370,164`, which is the *scale-0* number. The cause was real and worth
+recording — `encode_specs_layout` installs the caller's expert roster verbatim, and
+`cmd_rate_sweep` was building that roster from `method.config_for(n)` **without**
+`with_tune`, so the screen silently measured the unscaled model no matter what
+`--tune` said.
+
+Fixed two ways: the roster is now built through `with_tune`, and the command
+**self-checks** — it encodes the baseline through both the roster path and the real
+coder and refuses to report deltas if they disagree. That check is one extra
+encode and it is the reason this class of bug cannot come back silently.
+
+With the harness honest, the picture at scale 3 (enwik7):
+
+| screen | Δ vs the shipped ladder |
+|---|---|
+| uniform, `scope=all`, −2 | −96,033 |
+| uniform, `scope=all`, −3 | −93,747 (−1: −60,233; +1: +75,260; +2: +152,446) |
+| per-expert coordinate, `scope=all` | **−106,709** (sum of individual gains −199,033) |
+
+The direction is unchanged (faster is better) and the magnitude is **larger than at
+scale 0** (−106,709 vs −69,115) — the expected shape, since larger tables mean
+sparser contexts, which is exactly the regime where adapting fast pays. Uniform
+`scope=all` is a blunt instrument (it moves a low order and a high order together),
+so the coordinate pass gives the vector that was baked:
+
+```text
+shipped  4,4,4,5,5,5,5,6,6,6,5,5,5,5
+baked    2,2,1,2,2,2,2,3,3,3,2,3,4,5      (context::ACCEPTED_RATES)
+```
+
+Every expert wants a faster rate except `MatchByte`, which is already at its
+optimum. The vector is one named constant applied once, in `Method::config`, rather
+than 14 scattered literals — so the ladder cannot drift from what was screened.
+
+Baking it reproduces the screen exactly on enwik7 (2,226,353, −106,709) and gives
+enwik6 `246,808` (−15,942 vs the T2 point).
+
+Its binary cost was measured rather than assumed, and the measurement was worth
+running: the shipped stub moves **112,264 B → 112,392 B (+128 B, stable across two
+identical builds)**, because the `with_rates` ladder reaches the binary even though
+only the *values* changed. Both packaging forms charge the program twice, so the
+ladder's price in `S` is **256 B**. That is noise beside a multi-megabyte archive
+win, but "it is only a constant" is exactly the reasoning the constitution exists
+to refuse.
+
+The enwik9 verdict is a full `eval` gate in flight; nothing is claimed about it
+until it lands.
+
 ### 9.3 Status, and the coupling to be careful about
 
-**NOT YET ADOPTED.** The rates were screened at scale 0 (the 2^24 tables) and every
-running gate so far used the old rates, so the honest sequence is one mechanism at a
-time:
+**NOT YET ADOPTED.** The rates were screened and the vector is **baked** into
+`context::ACCEPTED_RATES`, but adoption is decided by a full `eval` gate on enwik9
+against the T2 parent (165,344,019). Everything about the sequence is deliberate:
 
 1. adopt the T2 scale (already gated: −3,938,320 exact at scale 3), then
 2. re-screen the rates **at scale 3**, bake them, and gate the pair on enwik9, then
 3. re-check the mixer LR at the final geometry (Phase 9's rule: the LR optimum is a
    function of the predictor).
+
+Step 3 is not optional. Steps 1 and 2 both changed the predictor, and the LR ladder
+was last closed against the predictor that existed *before* either of them. The
+`52`/`54` bracket in §8.2 closes the LR ladder at scale 3 with the **old** rates; if
+the rate change is adopted it must be re-bracketed once more, and that gate is the
+next thing after the rate verdict.
 
 Coupling is real in both directions, which is why each step is its own gate rather
 than a joint search: a combined point would make `ΔS` unattributable.

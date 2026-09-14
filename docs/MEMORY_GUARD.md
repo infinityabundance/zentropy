@@ -142,3 +142,61 @@ Therefore:
    refusal is the scored safety property; make it cheaper.
 2. **Re-measure the whole table above** after the rejected-method dispatch is
    stripped, since every number here is layout-dependent.
+
+## 6. The test plane — the fourth heavy process, and the one that was unguarded
+
+Layers 1–3 above all guard a *coding run*. `cargo test` is a heavy process of a
+completely different shape and had no guard at all. On 2026-09-14 that gap took
+the user's editor down: an edit to `Cargo.toml` made rust-analyzer start a
+`cargo check` behind the editor while two enwik9 gates held ~6.8 GB, and the
+kernel picked the editor as the OOM victim.
+
+The lesson is that "the codec is guarded" is not the same as "the project is
+guarded". Four bounds now cover the test plane, and none of them touches the
+scored artifact:
+
+| # | bound | where | what it actually stops |
+|---|---|---|---|
+| 1 | `[build] jobs = 2` | `.cargo/config.toml` | rustc fan-out — **including rust-analyzer's `cargo check`**, which is what spiked the machine |
+| 2 | `RUST_TEST_THREADS = "2"` | `.cargo/config.toml` | libtest's default one-thread-per-core, which multiplies every test's allocation by the core count |
+| 3 | `RLIMIT_AS` + single-heavy-run lock | `tools/test_guarded.sh` → `tools/run_guarded.sh` | a runaway test binary, and a court running beside a gate |
+| 4 | `TEST_ALLOCATION_CEILING` (1 GiB) | `memory::assert_test_budget`, called from `Predictor::new` | a test that grew a large fixture — loud panic naming the budget, instead of a machine-wide OOM kill |
+
+Bound 4 is deliberately placed at the **single point where a model is
+allocated** rather than on a list of tests, so it covers tests added later and
+tests nobody remembered to annotate. It is `#[cfg(test)]`: absent from every
+shipped binary, so it cannot affect `S`.
+
+Bounds 1 and 2 are `[env]`/`[build]` entries rather than wrapper flags on
+purpose: cargo does not overwrite an already-exported `RUST_TEST_THREADS` unless
+`force = true`, and `cargo --jobs N` beats `[build] jobs`, so a deliberate wide
+build is still one flag away. `tools/courts.sh` runs the courts through
+`tools/test_guarded.sh` for the same reason: the guard should be the default,
+not something a caller has to remember.
+
+### 6.1 It immediately found two real defects
+
+Bound 4 was not decoration. On its first run it failed `tuning_variants_roundtrip`
+with an allocation of **1.26 GiB** — a test that walks the whole 0..=255 `tune`
+space on an 8.8 KB fixture. Tracing that turned up a genuine hole in the *scored*
+decoder, not a test problem:
+
+* T2's table scale lives in the high nibble of the `tune` byte, and `tune` comes
+  out of the archive header. Unclamped, a single forged byte could ask the
+  decoder for 2^(18+15)-slot tables — an attacker-chosen allocation, exactly the
+  "allocates without bound" failure the corruption court forbids.
+* `mem-guard` projected the *accepted* configuration regardless of what the
+  archive declared, so a forged header was cleared by a guard that had measured a
+  different model.
+
+Both are fixed in the T2 adoption: the scale is clamped at the largest value the
+project runs (`context::MAX_TABLE_SCALE`), which makes the accepted geometry the
+worst case for *any* archive; and the projection now follows the archive's own
+header (`archive::peek_header` → `memory::projected_decode_for`). The corruption
+court asserts the bound for **all 256** values of the `tune` byte rather than
+sampling a few.
+
+The general lesson is the same one as the 543 B → 1,728 B estimate: a guard is
+only a guard if it is run, and a bound is only a bound if it is asserted about
+the *actual* input. The test-plane guard found a decoder hole because it was
+applied to the decoder's own code path.

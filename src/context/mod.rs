@@ -1572,6 +1572,19 @@ impl ModelConfig {
         self
     }
 
+    /// Phase 11: apply the measured per-expert adaptation ladder.
+    ///
+    /// One definition, applied once, at the end of [`crate::archive::Method::config`],
+    /// because the 14 numbers are a single *measured vector* and scattering them
+    /// across the builders is how a ladder drifts from what was screened. Experts
+    /// beyond the ladder (research rosters add their own) keep their own rates.
+    pub fn with_rates(mut self, rates: &[u32]) -> Self {
+        for (s, &r) in self.specs.iter_mut().zip(rates) {
+            s.rate = r;
+        }
+        self
+    }
+
     /// A20/Phase 9: map a tuning byte to a runtime hyperparameter set. The low
     /// nibble selects the mixer learning rate (A20's ladder) and the high nibble
     /// selects the three APM adaptation shifts, so `tune < 16` reproduces the
@@ -1595,7 +1608,15 @@ impl ModelConfig {
         // archive's own `tune` byte), so the scaling cannot desynchronise them.
         #[cfg(feature = "tune-table")]
         {
-            let scale = (tune >> 4) as u32;
+            // The clamp is load-bearing, not a convenience. `tune` arrives in the
+            // archive header, so without a bound a single crafted byte could ask
+            // the decoder for 2^(18+15)-slot tables — an attacker-chosen
+            // allocation, which is exactly the "allocates without bound" failure
+            // the corruption court exists to forbid. With the clamp the geometry
+            // of *any* archive is bounded by the largest scale the project has
+            // measured and can still run, so the accepted configuration is also
+            // the worst case the memory guard has to cover.
+            let scale = ((tune >> 4) as u32).min(MAX_TABLE_SCALE);
             for s in &mut self.specs {
                 if matches!(s.kind, CtxKind::Order(_)) {
                     s.bits = s.bits.saturating_add(scale);
@@ -1659,6 +1680,63 @@ pub const MIXER_LRS: [i32; 16] = [
     12, 4, 6, 8, 10, 16, 20, 24, 32, 40, 48, 64, 96, 128, 192, 256,
 ];
 
+/// The largest table-size scale the high nibble of `tune` may request (T2).
+/// **Measured, and then made structural.** Scale 3 (order tables of 2^27 for
+/// enwik9, a 2.92 GB model) is the adopted point: a full `eval` gate on enwik9
+/// gives 165,344,019 B, `-3,938,320` against scale 0, at a 5.63 GB peak against
+/// the 10 GB rule. Scale 4 doubles the order tables again, which pushes the
+/// projected peak to ~9.7 GB — past the 8 GiB the scored stub will approve, and
+/// close enough to the 10 GB limit that its margin would be a risk rather than a
+/// measurement. So the search space is `0..=3`, and the bound is enforced here
+/// rather than left to a guard that could be bypassed by a forged header.
+///
+/// The consequence worth stating: every archive's model geometry is now
+/// bounded by the accepted one, so `memory::projected_decode` is an upper bound
+/// for any archive the decoder can be handed.
+pub const MAX_TABLE_SCALE: u32 = 3;
+
+/// Phase 11: the measured per-expert adaptation-rate ladder for the accepted
+/// roster, in the order the experts are built:
+///
+/// ```text
+/// Order(0) Order(1) Order(2) Order(3) Order(4) Order(5) Order(6)
+/// Order(8) Order(12) Order(16) Word WordBigram Column MatchByte
+/// ```
+///
+/// Each expert's adaptation is `p += (target - p) >> rate`, so a *smaller* number
+/// adapts faster. The shipped ladder (`4,4,4,5,5,5,5,6,6,6,5,5,5,5`) had no
+/// recorded measurement behind it, and it is arguably backwards: a high-order
+/// context is seen rarely, so it must become confident from few observations.
+///
+/// Measured by `zentropy rate-sweep` — a *trustworthy* screen, because every
+/// point is a real encode by the real coder with no counterfactual — at the
+/// adopted geometry (scale 3), on enwik7:
+///
+/// ```text
+/// uniform  scope=all  delta -2   -96,033
+/// uniform  scope=all  delta -3   -93,747     (-1 -60,233; +1 +75,260)
+/// coordinate scope=all           -106,709    sum of individual gains -199,033
+/// ```
+///
+/// The uniform screen confirms the *direction* (faster); the coordinate pass
+/// gives the vector below. The same pass at scale 0 gave -69,115, so the
+/// mechanism is worth **more** with larger tables — which is the expected shape,
+/// since bigger tables mean sparser contexts.
+///
+/// The enwik7 vector is a **lower bound on the direction, not the answer**: the
+/// fraction a rate screen recovers shrinks as the corpus grows (the same way the
+/// mixer learning rate's optimum moved), so this vector's enwik9 value is
+/// decided by a full `eval` gate, never by extrapolation.
+///
+/// Its executable cost is **not** zero, and measuring that was worth doing: the
+/// shipped stub moves from 112,264 B to **112,392 B** (+128 B, stable across two
+/// identical builds), because the ladder itself and this constant reach the
+/// binary even though only the values changed. Both packaging forms charge the
+/// program twice, so the ladder's price in `S` is **256 B** — noise against a
+/// multi-megabyte archive win, but the rule is that it is *charged*, never waved
+/// away as "just a constant".
+pub const ACCEPTED_RATES: [u32; 14] = [2, 2, 1, 2, 2, 2, 2, 3, 3, 3, 2, 3, 4, 5];
+
 // T2 and Phase 9 both claim the high nibble of `tune`, so they are mutually
 // exclusive. Failing at compile time is the only honest option: silently letting
 // one win would make a *scored* configuration depend on which feature happened
@@ -1667,6 +1745,25 @@ pub const MIXER_LRS: [i32; 16] = [
 compile_error!(
     "features `tune-table` (T2 table-size scale) and `apm-tune` (Phase 9 APM \
      shifts) both select the high nibble of the `tune` byte; enable only one"
+);
+
+// `accepted-core` without `tune-table` is only meaningful as the base of the
+// rejected-axis reproduction. The scored set is `accepted`, and a build that
+// took `accepted-core` alone would silently drop the adopted table scaling — a
+// quieter version of the same mistake `accepted = accepted-core + tune-table`
+// exists to prevent. Fail loudly instead.
+#[cfg(all(
+    feature = "accepted-core",
+    not(feature = "tune-table"),
+    not(feature = "apm-tune"),
+    not(feature = "pre-t2-geometry")
+))]
+compile_error!(
+    "`accepted-core` alone is a research set: it omits the adopted `tune-table` \
+     scaling. Build the scored configuration with `--features accepted`, reproduce \
+     the rejected APM axis with `--no-default-features --features \
+     \"accepted-core,apm-tune\"`, or measure the scale's binary cost with \
+     `--no-default-features --features \"accepted-core,pre-t2-geometry\"`"
 );
 
 /// The APM adaptation shift the scored build uses.
@@ -1786,6 +1883,12 @@ pub struct Predictor {
 
 impl Predictor {
     pub fn new(cfg: &ModelConfig, buf_capacity: usize) -> Self {
+        // Test-plane OOM protection. This is the one place a model is actually
+        // allocated, so one check here covers every test that codes, now and
+        // later. It is `#[cfg(test)]`, so it is absent from every shipped
+        // binary and cannot affect `S`. See `memory::assert_test_budget`.
+        #[cfg(test)]
+        crate::memory::assert_test_budget(cfg.memory_bytes() + buf_capacity as u64);
         let mut models: Vec<ContextModel> = Vec::new();
         let mut specs: Vec<ModelSpec> = Vec::new();
         let mut smodels: Vec<StateModel> = Vec::new();

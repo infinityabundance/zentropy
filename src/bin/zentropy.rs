@@ -160,11 +160,17 @@ fn guard_encode(n: u64, max_ram: Option<u64>) -> Result<(), String> {
     )
 }
 
-fn guard_decode(archive_len: u64, n: u64, max_ram: Option<u64>) -> Result<(), String> {
-    memory::check(
-        memory::projected_decode(archive_len, n),
-        memory::research_budget(max_ram),
-    )
+fn guard_decode(archive: &[u8], max_ram: Option<u64>) -> Result<(), String> {
+    // Project what the archive *declares*, not what we would have chosen. Since
+    // T2 the `tune` byte selects a table-size scale, so a header-driven geometry
+    // must be projected from the header. See `archive::peek_header`.
+    if let Some((method, tune, n)) = archive::peek_header(archive) {
+        memory::check(
+            memory::projected_decode_for(archive.len() as u64, n, method, tune),
+            memory::research_budget(max_ram),
+        )?;
+    }
+    Ok(())
 }
 
 fn write(path: &str, data: &[u8]) -> Result<(), String> {
@@ -241,9 +247,7 @@ fn cmd_decompress(args: &[String]) -> Result<(), String> {
         return Err("decompress: need <archive> <out>".into());
     }
     let arch = read(&args[0])?;
-    if let Some(n) = archive::peek_len(&arch) {
-        guard_decode(arch.len() as u64, n, max_ram_override(args))?;
-    }
+    guard_decode(&arch, max_ram_override(args))?;
     let t0 = Instant::now();
     let out = archive::decode(&arch).ok_or("decompress: malformed archive")?;
     let dt = t0.elapsed();
@@ -263,9 +267,7 @@ fn cmd_verify(args: &[String]) -> Result<(), String> {
     }
     let original = read(&args[0])?;
     let arch = read(&args[1])?;
-    if let Some(n) = archive::peek_len(&arch) {
-        guard_decode(arch.len() as u64, n, max_ram_override(args))?;
-    }
+    guard_decode(&arch, max_ram_override(args))?;
     let t0 = Instant::now();
     let out = archive::decode(&arch).ok_or("verify: malformed archive")?;
     let dt = t0.elapsed();
@@ -301,9 +303,7 @@ fn cmd_bench(args: &[String]) -> Result<(), String> {
     let arch = archive::encode(&data);
     let c_time = t0.elapsed();
 
-    if let Some(n) = archive::peek_len(&arch) {
-        guard_decode(arch.len() as u64, n, max_ram_override(args))?;
-    }
+    guard_decode(&arch, max_ram_override(args))?;
     let t1 = Instant::now();
     let out = archive::decode(&arch).ok_or("bench: malformed archive")?;
     let d_time = t1.elapsed();
@@ -747,8 +747,29 @@ fn cmd_rate_sweep(args: &[String]) -> Result<(), String> {
 
     let data = read(path)?;
     guard_encode(data.len() as u64, max_ram_override(args))?;
-    let cfg = method.config_for(data.len());
+    // The specs must come *through* `with_tune`, because the `tune` byte is part
+    // of the geometry: its high nibble scales every direct expert's table (T2).
+    // Taking them from `config_for` alone silently screened the *unscaled*
+    // model, which is how a `--tune 53` run once reported the baseline of
+    // `tune 5`. `encode_specs_layout` installs the caller's specs verbatim, so
+    // whatever is built here is exactly what gets measured.
+    let cfg = method.config_for(data.len()).with_tune(tune);
     let specs = cfg.specs.clone();
+
+    // Self-check: the roster-based measurement must reproduce the real coder
+    // byte-for-byte at the baseline. If it does not, the harness is measuring a
+    // different model than the one that ships and every delta below is
+    // meaningless. One extra encode buys that guarantee, and it is the check
+    // that would have caught the bug above.
+    let base = archive::encode_specs(&data, method, tune, &specs).len();
+    let expected = archive::encode_tuned(&data, method, tune).len();
+    if base != expected {
+        return Err(format!(
+            "rate-sweep: harness disagreement — the roster path produced {base} B but the \
+             real coder produced {expected} B at tune {tune}, so the screen would not be \
+             measuring the shipped model; refusing to report deltas"
+        ));
+    }
 
     // Which experts are in scope. "order" means the direct byte-order experts,
     // which are the ones whose contexts are sparse enough for the rate to matter.
@@ -2260,6 +2281,33 @@ fn cmd_corrupt_court() -> Result<(), String> {
         return Err("absurd length was accepted".into());
     }
     tested += 2;
+
+    // Adversarial `tune` (T2). Since the high nibble of `tune` selects a
+    // table-size scale and `tune` comes out of the header, the most dangerous
+    // single byte in the archive is byte 5: an unclamped scale would let a
+    // forged header order up 2^(base+15)-slot tables. Decoding must stay bounded
+    // and must not panic for every value of that byte.
+    for t in [0x10u8, 0x30, 0x53, 0x70, 0xF0, 0xFF] {
+        let mut m = arch.clone();
+        m[5] = t;
+        let _ = archive::decode(&m);
+        tested += 1;
+    }
+    // And the bound itself is asserted, not merely exercised: no `tune` byte may
+    // request a model larger than the accepted configuration's. That is what
+    // makes the startup guard's projection an upper bound for *any* archive.
+    let (method, _, n) = archive::peek_header(&arch).ok_or("valid archive did not peek")?;
+    let accepted = memory::model_bytes_for(n as usize, method, archive::ACCEPTED_TUNE);
+    for t in 0u16..256 {
+        let worst = memory::model_bytes_for(n as usize, method, t as u8);
+        if worst > accepted {
+            return Err(format!(
+                "tune {t} requests {worst} B of model, above the accepted {accepted} B: \
+                 the scale clamp is not holding"
+            ));
+        }
+    }
+    tested += 256;
 
     println!("corrupt-court OK: {tested} mutations, no panic, no unbounded allocation");
     Ok(())

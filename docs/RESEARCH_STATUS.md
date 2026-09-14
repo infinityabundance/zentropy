@@ -18,14 +18,15 @@
   `xz -9e` (24,831,656), `brotli -q 11` (25,742,001), `bzip2 -9` (29,008,758)
   and `gzip -9` (36,445,248) on the same input.
 - **The full corpus reconstructs exactly.** The accepted configuration
-  (`Method::Residual` at **`tune 5`** — mixer LR 16) gives enwik9
-  `169,282,339` bytes (`1.3543` bpc), decoded byte-identically. Progression:
-  pre-column `182,949,204` (1.4636 bpc); hoist+column `181,803,607` (1.4544);
-  +A1.1 tokenizer `180,079,678` (1.4406); +Phase 4 `176,204,762` (1.4096);
-  +Phase 6 SSE `174,533,527` (1.3963); +Phase 7 article layout `170,063,733`
-  (1.3605); +Phase 8 learned residual `169,642,087` (1.3571); **+Phase 9 LR
-  re-tune `169,282,339` (1.3543)**. This is milestone G0 (exact 10⁹-byte
-  reconstruction) and G1.
+  (`Method::Residual` at **`tune 53`** — table scale 3 on the high nibble, mixer
+  LR 16 on the low nibble, APM axis off) gives enwik9 `165,344,019` bytes
+  (`1.3228` bpc), decoded byte-identically. Progression: pre-column
+  `182,949,204` (1.4636 bpc); hoist+column `181,803,607` (1.4544); +A1.1 tokenizer
+  `180,079,678` (1.4406); +Phase 4 `176,204,762` (1.4096); +Phase 6 SSE
+  `174,533,527` (1.3963); +Phase 7 article layout `170,063,733` (1.3605); +Phase 8
+  learned residual `169,642,087` (1.3571); +Phase 9 LR re-tune `169,282,339`
+  (1.3543); **+Phase 11 T2 table scale `165,344,019` (1.3228)**. This is milestone
+  G0 (exact 10⁹-byte reconstruction) and G1.
 - **Mechanisms are adopted only by complete, measured cost:** word/bigram
   experts (−653,805 B on enwik8) and orders 0/5/12/16 (−118,676 B on enwik8).
   Structural hoisting is adopted for ≥ enwik7 (−15,130 B on enwik8) but
@@ -34,13 +35,23 @@
 - **Hutter score accounting is sealed:** the three legal submission forms are
   unit-tested constructors, and no mechanism's adoption decision uses an
   estimated byte cost.
-- **The submission path works.** The scored stub is **111,888 B** (Phase 11: rebuilt
+- **The submission path works.** The scored stub is **112,264 B** (Phase 11:
+rebuilt
 `std` with `panic_abort`+`panic_immediate_abort`, `-288,928 B` for a byte-identical
 archive — and, because both legal packaging forms charge the program twice, worth
 **-577,856 B of `S`**; the plain stable build is 400,816 B and remains the fallback),
 `--profile submission --no-default-features --features accepted`) is both `comp9a`
 and `decomp9`; a packed self-extracting `archive9` reconstructs byte-identically
 with no external inputs.
+- **OOM protection is layered, and the test plane is finally covered.** Coding
+  runs are guarded by `mem-guard` (scored), `research_budget` (workstation-safe)
+  and a runtime floor that *pauses* rather than aborting; the decoder's startup
+  guard now projects the configuration the archive *declares* rather than the one
+  we would have chosen. Tests are guarded by `.cargo/config.toml` job and thread
+  caps, `tools/test_guarded.sh`, and a 1 GiB ceiling asserted at the single point
+  where a model is allocated — which, on its first run, exposed a real decoder
+  hole where a forged `tune` byte could have requested an unbounded allocation.
+  See [`MEMORY_GUARD.md`](MEMORY_GUARD.md) §6.
 - **Optimization Phase A is largely closed.** A17 (previous-line/column expert)
   is adopted; A2 (alphabet permutation) and A3 (information inheritance) are
   rejected, each with a negative control that demonstrates the mechanism is real

@@ -1,0 +1,40 @@
+# Cargo-level bounds. These are *build and harness* bounds, deliberately separate
+# from the in-process `mem-guard` in `src/memory.rs`, which only guards coding.
+#
+# Why this file exists
+# --------------------
+# Every long coding run in this project already goes through
+# `tools/run_guarded.sh` (hard `RLIMIT_AS` + a single-heavy-run lock), so the
+# *codec* cannot OOM the workstation. Two things were left unbounded, and both
+# are heavier than they look:
+#
+#   1. **rustc.** `cargo build`/`cargo check` fans out to one codegen job per
+#      core. On a 16-core machine that is 16 concurrent rustc processes; the
+#      scored profile uses `lto = "fat"` and `codegen-units = 1`, so a single
+#      job can hold a large working set. Crucially this is not only *our*
+#      builds: rust-analyzer runs `cargo check` on every edit, so an edit to
+#      `Cargo.toml` could start a many-GiB build behind the editor while two
+#      enwik9 gates were mid-pass. That is how the user's editor was killed.
+#
+#   2. **The test harness.** libtest defaults to one thread per core, so
+#      `cargo test` multiplies every test's allocation by the core count. The
+#      suite is small today, but "small today" is not a guard.
+#
+# Neither bound touches the scored artifact: `tools/package_sfx.sh` invokes
+# rustc directly, and the stub itself spawns nothing.
+#
+# Overriding: `cargo --jobs N` beats `[build] jobs`, and an explicitly exported
+# `RUST_TEST_THREADS` beats `[env]` (cargo does not overwrite a variable that is
+# already set unless `force = true`), so a deliberate wide build is still one
+# flag away and can never be blocked by this file.
+
+[build]
+# Two concurrent rustc jobs. Sequential enough that a rebuild cannot spike the
+# machine, parallel enough that the tree still builds promptly.
+jobs = 2
+
+[env]
+# The test harness's thread count. Bounded here rather than in a wrapper so
+# that every invocation is covered — including `cargo test` typed by hand and
+# the `cargo test` that `tools/courts.sh` runs.
+RUST_TEST_THREADS = "2"

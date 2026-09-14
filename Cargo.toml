@@ -56,7 +56,28 @@ default = ["accepted", "parallel", "progress", "mem-floor"]
 # packaging builds with `--no-default-features --features accepted` so that
 # research-plane machinery (the search layer, rayon) cannot leak into the stub.
 # Keep this list == the adopted mechanisms, and nothing else.
-accepted = ["struct-hoist", "column-model", "word-token", "long-match", "sparse-match", "match-byte", "sse-3", "reorder", "learned", "mem-guard"]
+#
+# `accepted = accepted-core + tune-table`: the two features claim opposite
+# halves of one decision (which mechanism owns the high nibble of `tune`), and
+# only `tune-table` is adopted. The split exists so the *rejected* APM axis can
+# still be reproduced without duplicating this list; see `accepted-core`.
+accepted = ["accepted-core", "tune-table"]
+# The accepted mechanism set **excluding** the mechanism that owns the `tune`
+# high nibble. Research-only: it exists so that `apm-tune` (the rejected Phase-9
+# axis) can be rebuilt as `--no-default-features --features
+# "accepted-core,apm-tune"` without a second hand-maintained copy of the list
+# that could silently drift from `accepted`.
+#
+# A `compile_error!` in `src/context/mod.rs` refuses to build this set on its
+# own, so it cannot be mistaken for a scored configuration.
+accepted-core = ["struct-hoist", "column-model", "word-token", "long-match", "sparse-match", "match-byte", "sse-3", "reorder", "learned", "mem-guard"]
+# Escape hatch for A31 measurements. `accepted-core` without `tune-table` is the
+# *pre-T2 geometry* — the same mechanism set, with the `tune` high nibble inert.
+# It exists so the marginal executable cost of `tune-table` can be measured by
+# building the two otherwise-identical stubs the rule requires, instead of
+# estimating it. Nothing scored enables this: it names a build that is
+# *deliberately* missing an adopted mechanism, so it must be asked for by name.
+pre-t2-geometry = []
 # Research-plane in-process parallelism (rayon). Costs real bytes when linked, so
 # it is deliberately outside `accepted`.
 parallel = ["dep:rayon"]
@@ -149,16 +170,32 @@ ppm = []
 # and variable-rate plumbing are not carried. Compiled in explicitly to
 # reproduce the negative result; the default build fixes all three shifts at 7,
 # which is the pre-Phase-9 behaviour exactly.
+#
+# Since T2 was adopted this axis can no longer be layered on the *scored* set —
+# both claim the high nibble. Reproduce it with:
+#
+#     cargo test --no-default-features --features "accepted-core,apm-tune"
+#     cargo run  --no-default-features --features "accepted-core,apm-tune,progress" -- …
+#
+# and the `compile_error!` in `src/context/mod.rs` will refuse any build that
+# enables both.
 apm-tune = []
 # T2: the high nibble of `tune` selects a table-size scale (in bits) for the
-# direct context experts. The scored ladder caps tables at 2^24 (575 MB for
-# enwik9) although the Hutter envelope allows 10 GB, and that cap has no measured
-# justification — it is a corpus-size heuristic. This knob makes the trade
-# searchable and, crucially, *decoder-derivable*: the scale comes from the
-# archive's own `tune` byte, so encode and decode cannot disagree.
+# direct context experts. The scored ladder capped tables at 2^24 (576 MB for
+# enwik9) although the Hutter envelope allows 10 GB, and that cap had no recorded
+# justification — it was a corpus-size heuristic.
 #
-# Research-plane until a full `eval` gate on enwik9 adopts it. Mutually exclusive
-# with `apm-tune` (both claim the high nibble); the compiler enforces that.
+# **ADOPTED** (in `accepted` above). Full `eval` gates on enwik9 with exact
+# reconstruction: scale 2 (tune 37) 166,328,552 B (-2,953,787) and scale 3
+# (tune 53) 165,344,019 B (-3,938,320) against the accepted 169,282,339 B; peak
+# RSS 5.63 GB at scale 3, against the 10 GB rule. The knob is
+# *decoder-derivable* by construction: the scale comes from the archive's own
+# `tune` byte, so encode and decode cannot disagree.
+#
+# Mutually exclusive with `apm-tune` (both claim the high nibble); the compiler
+# enforces that with a `compile_error!`. Because `accepted` now claims the
+# nibble, reproducing the *rejected* APM axis requires building a research binary
+# that excludes this feature explicitly — see docs/RESOURCE_CLOSURE.md §9.
 # See docs/RESOURCE_CLOSURE.md.
 tune-table = []
 # Phase 7: article-layout compiler (encoder-side reordering + decoder id-sort).

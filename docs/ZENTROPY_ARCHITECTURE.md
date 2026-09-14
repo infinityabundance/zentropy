@@ -145,37 +145,39 @@ Honest status as of the current revision. `MEASURED` means the number exists in
 | 7 | Article-layout compiler (semantic/structural/residual/predictor orders) | **COMPLETE** — the encoder reorders `<page>` blocks by category set, template set, then title; the decoder restores the original order by a free sort on the embedded ascending page id. Adopted at enwik9: **−4,469,794 B** (174,533,527 → 170,063,733, 1.3605 bpc) for a measured 24,208 B. Content-similarity and greedy orders REJECTED; identity control exactly 0, shuffle control +25,519 (see PHASE7_PLAN.md) |
 | 8 | Learned residual corrector (model-size Pareto campaign) | **COMPLETE** — a 120-byte quantized integer MLP consumes the classical mixer/APM outputs and emits a logit correction; offline-trained, embedded, charged. Adopted at enwik9: **−421,646 B** (170,063,733 → 169,642,087, 1.3571 bpc) for a measured 7,848 B; permuted-weight control +2,201,020. Net-gain gate passes (see PHASE8_PLAN.md) |
 | 9 | Global search (DSFB observer, frf-fuzz mutation, Gemel memory) | **COMPLETE** — a deterministic, receipted search layer over the `tune` header byte (search has no decode authority). Campaigns: exhaustive on enwik7 (256 points), coordinate on enwik8 (46), gated by full `eval` on enwik9. The APM adaptation-shift axis is **REJECTED** at enwik9 (+90,996 B at the best LR) and compiled out; the search re-tuned the mixer learning rate 24 → 16 for **−359,748 B at zero binary cost**. The phase nets **−224 B** of executable. See §7.9 |
-| 10 | Equivalence-preserving representation optimizer | PROPOSED — see [`PHASE10_PLAN.md`](PHASE10_PLAN.md) |
-| 11 | Resource closure (RAM/CPU/disk/binary size/determinism) | **IN PROGRESS, two measured wins** — (a) the scored stub is **111,888 B**, down from 400,816 B by rebuilding `std` with `panic_abort`+`panic_immediate_abort`; since both legal forms charge the program twice that is **−577,856 B of `S`**, verified by a byte-identical archive; (b) `for_size` caps tables at 2^24 (576 MB for enwik9) against a 10 GB envelope and archive bytes fall monotonically as they grow (gates in flight). Also measured: the method dispatch is **not** the stub's cost (+24 B to narrow it, hypothesis withdrawn), `mem-guard` is 5,520 B, and the research half (`mem-floor`) is outside `accepted` and now **pauses** rather than aborting a long run. The T1 layout alternative is **REJECTED** ([`LAYOUT_DECISION.md`](LAYOUT_DECISION.md)). See [`RESOURCE_CLOSURE.md`](RESOURCE_CLOSURE.md), [`MEMORY_GUARD.md`](MEMORY_GUARD.md) |
-| 12 | Submission closure (SFX, source, doc, receipts, licence, checklist) | **PARTIAL** — SFX stub + container + packaging court work; not yet a submission |
+| 10 | Equivalence-preserving representation optimizer | **COMPLETE (closed by measurement)** — six stages (recency-ranked ids, model-priced vocabulary, priced filter, affix on the composite, first-use definitions, subword/BPE composition) are each **REJECTED** at enwik6/enwik7, three of them directly contrary to a screening signal that grew with scale. The lesson is that this predictor does not want a different lexical representation. See [`PHASE10_PLAN.md`](PHASE10_PLAN.md) |
+| 11 | Resource closure (RAM/CPU/disk/binary size/determinism) | **COMPLETE, three measured wins** — (a) the scored stub is **112,264 B**, down from 400,816 B by rebuilding `std` with `panic_abort`+`panic_immediate_abort` (**−577,856 B of `S`**, verified by a byte-identical archive); (b) **T2 ADOPTED**: the table-size cap had no recorded justification, and scaling the direct experts' tables is worth **−3,938,320 B at enwik9** for a measured **192 B** of executable (**384 B of `S`**), with the mixer LR re-bracketed at the new geometry; (c) **test-plane OOM protection**, which exposed and fixed a decoder hole where a forged `tune` byte could request an unbounded allocation. Also measured and rejected: the method dispatch is not the stub's cost, the T1 layout alternative, AVX2, parallel blocking and bucket-local layout. See [`RESOURCE_CLOSURE.md`](RESOURCE_CLOSURE.md), [`MEMORY_GUARD.md`](MEMORY_GUARD.md), [`LAYOUT_DECISION.md`](LAYOUT_DECISION.md) |
+| 12 | Submission closure (SFX, source, doc, receipts, licence, checklist) | **PARTIAL** — the SFX stub + container + packaging court work and the accounting is sealed; not yet a submission. See [`PHASE12_PLAN.md`](PHASE12_PLAN.md) |
 
 ## 7. Measured results
 
 The **accepted configuration** is `Method::Residual` (structural hoist + word token
 reversion + column expert + Phase-4 match family + `sse-3` + article layout +
-learned residual corrector) at **`tune 5`** (mixer LR 16, APM axis off). Every
+learned residual corrector) at **`tune 53`** — scale 3 (order tables of 2^27 at
+enwik9) on the high nibble, mixer LR 16 on the low nibble, APM axis off. Every
 number below reconstructs exactly and is bound to a receipt in `evidence/runs/`.
 
 The accepted configuration is tuned **for enwik9, the scored corpus**. The smaller
-rungs are screening instruments, and after Phase 9 they are slightly *worse* than
-they were at the old tune — LR 16 costs enwik6/7/8 a few KB and buys enwik9 360 KB,
-because the optimal mixer rate falls as the corpus grows (§7.9). Reading the ladder
-as a monotone improvement is a category error: the target is enwik9.
+rungs are screening instruments, and after Phases 9 and 11 they are slightly
+*worse* than they were at the old tunes — LR 16 and the larger tables cost
+enwik6/7/8 a few KB and buy enwik9 nearly 4 MB, because the optimum of a
+hyperparameter follows the predictor and the predictor is the 10⁹-byte corpus.
+Reading the ladder as a monotone improvement is a category error: the target is
+enwik9.
 
 | Corpus | bytes | archive (accepted) | bits/byte | ratio | encode wall | peak RSS |
 |---|---|---|---|---|---|---|
-| enwik6 | 1,000,000 | 267,333 | 2.1387 | 3.74 | ~1.0 s | — |
-| enwik7 | 10,000,000 | 2,370,164 | 1.8961 | 4.22 | ~22 s | — |
-| enwik8 | 100,000,000 | 21,245,220 | 1.6996 | 4.71 | ~245 s | — |
-| enwik9 | 1,000,000,000 | 169,282,339 | 1.3543 | 5.91 | ~1,928 s | ~5.5 GiB |
+| enwik6 | 1,000,000 | 262,750 | 2.1020 | 3.81 | ~1.8 s | — |
+| enwik7 | 10,000,000 | 2,333,062 | 1.8664 | 4.29 | ~25 s | — |
+| enwik8 | 100,000,000 | 20,865,077 | 1.6692 | 4.79 | ~330 s | — |
+| enwik9 | 1,000,000,000 | **165,344,019** | **1.3228** | **6.05** | ~58 min | 5.63 GiB |
 
-The accepted configuration's executable is the **111,888 B** scored stub
+The accepted configuration's executable is the **112,264 B** scored stub
 (`--profile submission --no-default-features --features accepted`). `accepted` is
 the single definition of the scored feature set, so research-plane machinery —
 the Phase-9 search layer, rayon — cannot leak into `S` by forgetting a flag. Most
-of the stub is dispatch for rejected methods, which Phase 11 (submission closure)
-must reclaim; it is charged correctly here, but should not survive into a final
-submission.
+of the stub is dispatch for rejected methods, which Phase 12 must reclaim; it is
+charged correctly here, but should not survive into a final submission.
 
 Mechanisms admitted by measurement (each a sequential experiment; a mechanism
 only counts when the *complete* `ΔS` is negative):

@@ -32,7 +32,13 @@ echo ""
 
 # 1. Unit + property exactness courts (transform reversibility, coder round-trip,
 #    IR round-trip on random and malformed input).
-court "unit + property tests" cargo test --quiet --release
+#
+#    Run through `tools/test_guarded.sh` rather than `cargo test` directly: the
+#    harness is a heavy process in its own right (one thread per core by
+#    default) and had no OOM guard until the editor was killed by one. The
+#    wrapper also takes the single-heavy-run lock, so a court can never run
+#    beside a gate.
+court "unit + property tests" sh "$ROOT/tools/test_guarded.sh" --quiet --release
 
 # 1b. The same courts under the *submission* profile. The scored profile differs
 #     from `release` in ways that can change behaviour, not just size: it enables
@@ -40,7 +46,7 @@ court "unit + property tests" cargo test --quiet --release
 #     every other build would abort the judged decoder. Nothing else in the suite
 #     would catch that, because the submission stub is only ever run on a valid
 #     archive — where a wrap and an abort both "work".
-court "unit + property tests (submission profile)" cargo test --quiet --profile submission
+court "unit + property tests (submission profile)" sh "$ROOT/tools/test_guarded.sh" --quiet --profile submission
 
 # 2. Determinism / cross-build: the same input must produce the same archive.
 court "selftest end-to-end" "$Z" selftest
