@@ -34,7 +34,7 @@
 | # | requirement | status | evidence |
 |---|---|---|---|
 | C1 | no network, no external files, no additional installations | **DONE (to be re-proven with `env -i` on the shipped stub)** | The scored path has **zero dependencies** (`cargo tree`), links only libc, and opens only its own image (SFX form) or its two arguments. |
-| C2 | no environment dependence | **OPEN** | The stub honours `ZENTROPY_OUT` for the output filename, defaulting to `data9`. Must be shown that no *coded decision* depends on it; the safer fix is to drop the variable. |
+| C2 | no environment dependence | **DONE** | The former `ZENTROPY_OUT` override was removed; the self-extracting form always writes `data9`. Proven with `env -i` from an empty directory and with `ZENTROPY_OUT=/tmp/evil` (ignored). |
 | C3 | no corpus concealed under obfuscation; no hash-lookup tricks | **DONE** | The payload is entropy-coded model output. The only corpus-derived information in the submitted bytes is the archive header, the charged token dictionary and the model's learned parameters, each counted in `S`; `ALGORITHM.md` §3 documents each. |
 | C4 | the article-layout permutation is a transform, not hidden knowledge | **DONE** | The permutation is derived from page ids that travel in the corpus, costs 0 bytes, and the decoder restores by sorting on those ids. Identity control exactly 0 B; shuffle control +25,519 B. |
 | C5 | published under an OSI-approved licence | **DONE** | MIT (`LICENSE-MIT`), same in `Cargo.toml`, published on crates.io. |
@@ -52,7 +52,8 @@
 
 | # | requirement | status | evidence |
 |---|---|---|---|
-| E1 | runs on the judge's machine | **OPEN — the most material risk** | The dynamic build requires **glibc ≥ 2.34** on x86-64 Linux. The rules' Linux test machine dates from 2021 and "may change without notice". Remedies in order of preference: a statically linked musl build (must be shown archive-identical), building on an older host, or the source-zip submission form. See `LICENCE_INVENTORY.md` §4. |
+| E1 | runs on the judge's machine | **DONE (subject to a final run on the shipped binary)** | The shipped artefact is a **static-pie musl** build: `ldd` reports "statically linked", so it needs no shared library, no loader beyond what the kernel provides, and no glibc version at all. Cost: +19,520 B per copy versus the glibc build. Both produce byte-identical archives on enwik6/enwik7. Residual risk: it is x86-64 only (the rules accept x86 32/64-bit Linux executables), and it has not been executed on the judge's machine. See `LICENCE_INVENTORY.md` §4. |
+| E4 | no environment dependence in the judged path | **DONE** | `env -i ./archive9` from an empty directory reconstructs byte-identically and writes `data9`; the former `ZENTROPY_OUT` override was removed. |
 | E2 | not dependent on host CPU features | **DONE** | No SIMD in the scored path; AVX2 was measured slower and rejected. |
 | E3 | not dependent on a floating-point library | **DONE** | The stub's symbol table contains no libm call: `nm -D --undefined-only <stub> | grep -iE 'log|exp|pow|sqrt|round'` is empty. The trainer that brought in `log2f` is gated out of `accepted`. |
 
