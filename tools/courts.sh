@@ -124,7 +124,10 @@ fi
 #    archive; this court is what turns that from a discovery into a failure.
 #
 #    Court 7 must have run first: it builds the submission stub this reuses.
-STUB="$ROOT/target/x86_64-unknown-linux-gnu/submission/zentropy-sfx"
+#    The path must follow the packaging target, or this court would compare
+#    against a stale binary from the *other* target and pass for the wrong reason.
+TARGET_TRIPLE="${ZENTROPY_TARGET:-x86_64-unknown-linux-musl}"
+STUB="$ROOT/target/$TARGET_TRIPLE/submission/zentropy-sfx"
 if [ -f "$CORPUS_DIR/enwik6" ] && [ -x "$STUB" ]; then
     equiv_court() {
         cargo build --quiet --release --bin zentropy || return 1
