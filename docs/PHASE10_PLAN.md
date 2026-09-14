@@ -217,3 +217,64 @@ this one point the same way: the predictor exploits *stable, sparse* identities,
 a representation change pays only when it makes the model's job **easier**, not when
 it makes the byte string shorter. That is the bar the remaining stages are judged
 against.
+
+### 10.1b Model-priced vocabulary — **REJECTED**, and the screening had the wrong sign
+
+**The hypothesis.** The shipped membership rule keeps a word when
+`count * (len - 2) > len + 1`, i.e. it prices a token at 2 *raw* bytes and a literal
+at `len` raw bytes. But the predictor does not code raw bytes. Since the A26 result
+showed that *adding* coverage past 255 costs 776,196 B, the natural reading was that
+substitution is being priced wrong — so reprice it against what the model actually
+charges.
+
+**The instrument** (`vocab-price`, research-only). The range coder accumulates its
+own ideal code length, and one untokened pass attributes cost to each word run, so
+every candidate word gets a measured `literal_bits`, a token price and a definition
+price at the stream's measured average bits/byte. The vocabulary is a *stored
+dictionary* read back by the decoder, so choosing it is purely encoder-side: no
+format change, no decoder change, no exactness risk.
+
+**The screening looked strong.**
+
+| corpus | shipped vocabulary gain | repriced top-255 gain | screening headroom | overlap | shipped entries with gain ≤ 0 |
+|---|---|---|---|---|---|
+| enwik6 | 87,527 bits | 135,458 bits | **+47,931 bits (5.9 KB)** | 155/255 | 26 |
+| enwik7 | 842,839 bits | 1,198,019 bits | **+355,179 bits (43.4 KB)** | 178/255 | 23 |
+
+The worst offender was `the`: 6,459 occurrences, measured gain **−9,171 bits** — the
+model predicts it almost for free, so substituting it should *cost* bytes. `nbsp`,
+`xml`, `space`, `preserve`, `www`, `REDIRECT` were negative too; `is`, `by`, `or`
+(short words the `len >= 3` filter excludes) appeared in the repriced top ten.
+Headroom was ~1.8–2.2% of the archive and *grew* with scale, which looked like the
+largest Phase-10 opportunity by an order of magnitude.
+
+**The authority said no.** Full `eval`, exact on both rungs:
+
+| policy | enwik6 | Δ | enwik7 | Δ |
+|---|---|---|---|---|
+| `residual-priced` (re-rank by measured gain) | 269,498 | **+2,165** | 2,396,034 | **+25,870** |
+| `residual-price-filter` (keep the shipped vocabulary and **ids**, stop substituting the negative-gain words) | 270,087 | **+2,754** | 2,403,665 | **+33,501** |
+
+Both REJECTED, and the *filter* — the policy aimed at the screening's most confident
+signal — is the **worse** of the two.
+
+**Why the screening was wrong, stated precisely.** A counterfactual cannot be priced
+inside a model that does not have the mechanism. `literal_bits` was measured in a
+pass where *no* word was tokenised, so the contexts, the match model's history and
+the mixer's state around each word were all different from the model that would
+actually do the substitution. The measured cost of `the`-as-literal in that model is
+not the cost of `the`-as-literal in a model already saturated with tokens. The error
+is not a scale factor: it changed the **sign**.
+
+**Consequences.**
+
+1. The shipped count heuristic is *near-optimal for this predictor* despite being
+derived from a clearly wrong model of what coding costs. "The pricing is wrong" was
+a sound criticism that measurement did not turn into bytes.
+2. The A26 coverage rejection was about **dilution**, not pricing. Repricing does not
+rescue it.
+3. A Shannon-cost screen is not a weak-but-directionally-useful oracle here; it can
+be confidently backwards. `S` is authority, and this is that law demonstrated on a
+screen built specifically to try to avoid needing it.
+
+131 tests pass with `vocab-price`, 126 by default.

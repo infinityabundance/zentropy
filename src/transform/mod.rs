@@ -395,6 +395,13 @@ fn is_word_byte(b: u8) -> bool {
     b.is_ascii_alphabetic()
 }
 
+/// Phase 10: the tokenizer's word boundary rule, exposed so a measurement can
+/// walk a stream with *exactly* the same notion of "word" the tokenizer uses.
+/// A private duplicate would drift, and a drifted measurement is worse than none.
+pub fn is_word_byte_at(b: u8) -> bool {
+    is_word_byte(b)
+}
+
 /// Build the corpus-derived vocabulary.
 ///
 /// Candidate words have length >= 3 and count >= 2, and are kept only when a
@@ -517,8 +524,79 @@ impl IdList {
 
 /// Encode `input` with an explicit id mode, emitting `vocabulary || body`.
 pub fn word_token_encode_mode(input: &[u8], reverse: bool, mode: IdMode) -> Vec<u8> {
-    use std::collections::HashMap;
     let vocab = build_word_vocab(input, reverse);
+    word_token_encode_vocab(input, &vocab, mode)
+}
+
+/// Encode `input` against a **given** vocabulary, with a set of words **blocked**
+/// from substitution.
+///
+/// Phase 10 uses this to drop the *use* of a word while keeping its dictionary
+/// slot, which keeps every surviving word's id unchanged. That matters: the id
+/// assignment is a measured axis (A1.1), so a policy that renumbers the survivors
+/// would confound "stop substituting" with "renumber", and the T1/10.4 results
+/// both say the identity axis is where the damage lands.
+///
+/// The decoder is untouched — it expands whatever ids appear — so a blocked word
+/// simply arrives as literal bytes.
+pub fn word_token_encode_vocab_filtered(
+    input: &[u8],
+    vocab: &[Vec<u8>],
+    blocked: &std::collections::HashSet<Vec<u8>>,
+    mode: IdMode,
+) -> Vec<u8> {
+    use std::collections::HashMap;
+    let mut ids: HashMap<&[u8], u8> = HashMap::with_capacity(vocab.len());
+    let mut out = Vec::with_capacity(input.len());
+    out.push(vocab.len() as u8);
+    for (k, w) in vocab.iter().enumerate() {
+        out.push(w.len() as u8);
+        out.extend_from_slice(w);
+        if !blocked.contains(w.as_slice()) {
+            ids.insert(w.as_slice(), k as u8);
+        }
+    }
+    let mut list = IdList::new(vocab.len());
+    let mut i = 0;
+    while i < input.len() {
+        let b = input[i];
+        if is_word_byte(b) {
+            let mut j = i;
+            while j < input.len() && is_word_byte(input[j]) {
+                j += 1;
+            }
+            match ids.get(&input[i..j]) {
+                Some(&vi) => {
+                    out.push(TOK_ESC);
+                    out.push(list.id(vi));
+                    list.touch(vi, mode);
+                }
+                None => out.extend_from_slice(&input[i..j]),
+            }
+            i = j;
+        } else if b == TOK_ESC {
+            out.push(TOK_ESC);
+            out.push(0);
+            i += 1;
+        } else {
+            out.push(b);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Encode `input` against a **given** vocabulary, emitting `vocabulary || body`.
+///
+/// Phase 10 uses this to substitute a vocabulary chosen by the model's own
+/// measured costs for the one the shipped count heuristic picks. The decoder is
+/// untouched: it reads the dictionary out of the stream exactly as before, which
+/// is why a vocabulary change is encoder-side and cannot affect exactness.
+///
+/// `vocab` supplies both the word set and the initial id order, so `mode` is
+/// applied on top of it.
+pub fn word_token_encode_vocab(input: &[u8], vocab: &[Vec<u8>], mode: IdMode) -> Vec<u8> {
+    use std::collections::HashMap;
     let mut ids: HashMap<&[u8], u8> = HashMap::with_capacity(vocab.len());
     let mut out = Vec::with_capacity(input.len());
     out.push(vocab.len() as u8);
@@ -1443,6 +1521,55 @@ mod tests {
 
     // --- Phase 10.4: recency-ranked token ids -------------------------------
 
+    /// Phase 10: encoding against an explicit vocabulary must round-trip through
+    /// the normal decoder, which knows nothing about how the vocabulary was
+    /// chosen. That is the whole safety argument for the priced-vocabulary
+    /// experiment, so it is asserted directly rather than assumed.
+    #[test]
+    fn explicit_vocabulary_roundtrips() {
+        let text = b"alpha beta gamma alpha beta gamma compression compression";
+        for vocab in [
+            vec![b"alpha".to_vec(), b"beta".to_vec()],
+            vec![b"gamma".to_vec()],
+            vec![b"compression".to_vec(), b"alpha".to_vec(), b"beta".to_vec()],
+            Vec::new(),
+        ] {
+            let enc = word_token_encode_vocab(text, &vocab, IdMode::Static);
+            assert_eq!(word_token_decode(&enc), text, "vocab {vocab:?} failed");
+            let ids = id_stream_of(&enc);
+            // Only the listed words may become tokens.
+            assert!(
+                ids.len()
+                    <= vocab
+                        .iter()
+                        .filter(|w| text.windows(w.len()).count() > 0)
+                        .count()
+                        * 3,
+                "unexpected token count for {vocab:?}"
+            );
+        }
+    }
+
+    /// The id stream of a v1 token stream, skipping the dictionary header.
+    fn id_stream_of(enc: &[u8]) -> Vec<u8> {
+        let count = enc[0] as usize;
+        let mut i = 1usize;
+        for _ in 0..count {
+            let l = enc[i] as usize;
+            i += 1 + l;
+        }
+        let mut v = Vec::new();
+        while i < enc.len() {
+            if enc[i] == TOK_ESC {
+                v.push(enc[i + 1]);
+                i += 2;
+            } else {
+                i += 1;
+            }
+        }
+        v
+    }
+
     /// The identity control that makes the id-order experiment measurable: the
     /// static mode must be byte-identical to the shipped v1 encoder, so any
     /// difference in the archive is attributable to the id *assignment* and not
@@ -1503,22 +1630,7 @@ mod tests {
 
         // The id bytes of the body, in order, skipping the vocabulary header.
         fn id_stream(enc: &[u8]) -> Vec<u8> {
-            let count = enc[0] as usize;
-            let mut i = 1usize;
-            for _ in 0..count {
-                let l = enc[i] as usize;
-                i += 1 + l;
-            }
-            let mut v = Vec::new();
-            while i < enc.len() {
-                if enc[i] == TOK_ESC {
-                    v.push(enc[i + 1]);
-                    i += 2;
-                } else {
-                    i += 1;
-                }
-            }
-            v
+            id_stream_of(enc)
         }
 
         let mtf = word_token_encode_mode(text, false, IdMode::Mtf);

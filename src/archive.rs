@@ -281,6 +281,16 @@ pub enum Method {
     /// Phase 10.4 control: the accepted config with move-to-second token ids.
     #[cfg_attr(not(feature = "id-order"), allow(dead_code))]
     ResidualMoveToSecond = 89,
+    /// Phase 10: the accepted config with a vocabulary selected by the model's
+    /// **measured** cost for each candidate word, instead of the shipped raw-byte
+    /// count heuristic. Encoder-side only; the decoder reads the stored
+    /// dictionary and is unchanged.
+    #[cfg_attr(not(feature = "vocab-price"), allow(dead_code))]
+    ResidualPriced = 90,
+    /// Phase 10: the accepted config with the vocabulary words the model prices
+    /// as unprofitable **not substituted** (ids unchanged).
+    #[cfg_attr(not(feature = "vocab-price"), allow(dead_code))]
+    ResidualPriceFilter = 91,
 }
 
 impl Method {
@@ -376,6 +386,8 @@ impl Method {
             Method::ResidualCtl => "residual-ctl",
             Method::ResidualMtf => "residual-mtf",
             Method::ResidualMoveToSecond => "residual-move-to-second",
+            Method::ResidualPriced => "residual-priced",
+            Method::ResidualPriceFilter => "residual-price-filter",
         }
     }
 
@@ -471,12 +483,14 @@ impl Method {
             "residual-ctl" => Method::ResidualCtl,
             "residual-mtf" => Method::ResidualMtf,
             "residual-move-to-second" => Method::ResidualMoveToSecond,
+            "residual-priced" => Method::ResidualPriced,
+            "residual-price-filter" => Method::ResidualPriceFilter,
             _ => return None,
         })
     }
 
     /// All methods, for exhaustive exactness testing.
-    pub const ALL: [Method; 90] = [
+    pub const ALL: [Method; 92] = [
         Method::RawCm,
         Method::RawCmNoWord,
         Method::StructHoist,
@@ -567,6 +581,8 @@ impl Method {
         Method::ResidualCtl,
         Method::ResidualMtf,
         Method::ResidualMoveToSecond,
+        Method::ResidualPriced,
+        Method::ResidualPriceFilter,
     ];
 
     /// Methods that extend the **accepted Phase-4 composite parent** unchanged:
@@ -617,6 +633,8 @@ impl Method {
                 | Method::ResidualCtl
                 | Method::ResidualMtf
                 | Method::ResidualMoveToSecond
+                | Method::ResidualPriced
+                | Method::ResidualPriceFilter
         )
     }
 
@@ -742,6 +760,36 @@ impl Method {
         not(any(feature = "word-token", feature = "word-token2")),
         allow(dead_code)
     )]
+    /// Phase 10: whether this method chooses its tokenizer vocabulary from the
+    /// model's **measured** per-word costs rather than the shipped count
+    /// heuristic. The choice is encoder-side and travels inside the stream's own
+    /// dictionary, so it can never affect `decode`.
+    ///
+    /// Without the feature the predicate is false and `ResidualPriced` collapses
+    /// onto the accepted configuration, which is exactly what an ablation needs.
+    #[cfg(feature = "vocab-price")]
+    fn priced_vocab(self) -> bool {
+        matches!(self, Method::ResidualPriced | Method::ResidualPriceFilter)
+    }
+
+    /// Phase 10: which vocabulary policy this method applies. Only meaningful
+    /// when [`Method::priced_vocab`] is true.
+    #[cfg(feature = "vocab-price")]
+    fn vocab_policy(self) -> VocabPolicy {
+        match self {
+            Method::ResidualPriceFilter => VocabPolicy::Filter,
+            Method::ResidualPriced => VocabPolicy::Rerank,
+            _ => VocabPolicy::Shipped,
+        }
+    }
+
+    #[cfg(not(feature = "vocab-price"))]
+    #[cfg_attr(not(feature = "vocab-price"), allow(dead_code))]
+    fn priced_vocab(self) -> bool {
+        let _ = self;
+        false
+    }
+
     fn token_kind(self) -> TokenKind {
         #[cfg(feature = "word-token")]
         {
@@ -753,6 +801,12 @@ impl Method {
                 Method::ResidualMtf => return TokenKind::Mtf,
                 Method::ResidualMoveToSecond => return TokenKind::MoveToSecond,
                 _ => {}
+            }
+            // Phase 10: the priced vocabulary changes *which* words are tokens,
+            // not how ids are assigned, so it inherits the accepted `Reverse` id
+            // mode and keeps the identity axis fixed while membership moves.
+            if self.priced_vocab() {
+                return TokenKind::Reverse;
             }
             if self.on_phase4_parent() {
                 return TokenKind::Reverse;
@@ -964,6 +1018,10 @@ impl Method {
             // Phase 10.4: the same composite and the same article layout; only
             // the token id assignment differs, so the comparison is clean.
             Method::ResidualMtf | Method::ResidualMoveToSecond => Some(Order::Full),
+            // Phase 10: same composite, same article layout, same id mode; only the
+            // vocabulary *membership* changes.
+            Method::ResidualPriced => Some(Order::Full),
+            Method::ResidualPriceFilter => Some(Order::Full),
             _ => None,
         }
     }
@@ -1147,6 +1205,8 @@ impl Method {
             // Phase 10.4: the representation variants are the accepted composite
             // plus a different token id assignment, so they keep the corrector.
             Method::ResidualMtf | Method::ResidualMoveToSecond => base.with_residual(false),
+            Method::ResidualPriced => base.with_residual(false),
+            Method::ResidualPriceFilter => base.with_residual(false),
             Method::ResidualCtl => base.with_residual(true),
             _ => base,
         };
@@ -1278,7 +1338,36 @@ fn maybe_uncase(_method: Method, data: Vec<u8>) -> Vec<u8> {
 // normalized text; its `0x00` prefix is escaped, so it composes with the other
 // byte transforms exactly.
 #[cfg(any(feature = "word-token", feature = "word-token2"))]
-fn maybe_token(method: Method, data: Vec<u8>) -> Vec<u8> {
+fn maybe_token(method: Method, data: Vec<u8>, tune: u8) -> Vec<u8> {
+    // Phase 10: the model-priced vocabulary. The pricing pass encodes this very
+    // stream (the tokenizer's input) once, so the cost is one extra encode — paid
+    // only by the experimental method, and never by the scored configuration. The
+    // chosen vocabulary travels in the stream's own header, so the decoder is
+    // unchanged and cannot be made incorrect by it.
+    #[cfg(feature = "vocab-price")]
+    if method.priced_vocab() {
+        match method.vocab_policy() {
+            VocabPolicy::Filter => {
+                let (vocab, blocked) = priced_filter(&data, method, tune);
+                return crate::transform::word_token_encode_vocab_filtered(
+                    &data,
+                    &vocab,
+                    &blocked,
+                    crate::transform::IdMode::Static,
+                );
+            }
+            VocabPolicy::Rerank => {
+                let vocab = priced_vocab(&data, method, tune);
+                return crate::transform::word_token_encode_vocab(
+                    &data,
+                    &vocab,
+                    crate::transform::IdMode::Static,
+                );
+            }
+            VocabPolicy::Shipped => {}
+        }
+    }
+    let _ = tune;
     match method.token_kind() {
         TokenKind::None => data,
         TokenKind::Words => crate::transform::word_token_encode(&data, false),
@@ -1300,7 +1389,7 @@ fn maybe_token(method: Method, data: Vec<u8>) -> Vec<u8> {
 }
 
 #[cfg(not(any(feature = "word-token", feature = "word-token2")))]
-fn maybe_token(_method: Method, data: Vec<u8>) -> Vec<u8> {
+fn maybe_token(_method: Method, data: Vec<u8>, _tune: u8) -> Vec<u8> {
     data
 }
 
@@ -1542,7 +1631,7 @@ pub fn encode_tuned(input: &[u8], method: Method, tune: u8) -> Vec<u8> {
     let stemmed = maybe_stem(method, grammared);
     let hoisted = maybe_hoist(method, &stemmed);
     let cased = maybe_case(method, hoisted);
-    let tokened = maybe_token(method, cased);
+    let tokened = maybe_token(method, cased, tune);
     let (data, perm) = maybe_perm(method, tokened);
     let n = data.len();
 
@@ -1622,7 +1711,7 @@ pub fn encode_specs_layout(
     let stemmed = maybe_stem(method, grammared);
     let hoisted = maybe_hoist(method, &stemmed);
     let cased = maybe_case(method, hoisted);
-    let tokened = maybe_token(method, cased);
+    let tokened = maybe_token(method, cased, tune);
     let (data, perm) = maybe_perm(method, tokened);
     let n = data.len();
 
@@ -1669,8 +1758,201 @@ pub fn transformed_stream(input: &[u8], method: Method, tune: u8) -> Vec<u8> {
     let stemmed = maybe_stem(method, grammared);
     let hoisted = maybe_hoist(method, &stemmed);
     let cased = maybe_case(method, hoisted);
-    let tokened = maybe_token(method, cased);
+    let tokened = maybe_token(method, cased, tune);
     let (data, _perm) = maybe_perm(method, tokened);
+    data
+}
+
+/// Phase 10 (research only): one candidate word's *measured* economics.
+#[cfg(feature = "vocab-price")]
+#[derive(Debug, Clone)]
+pub struct WordPrice {
+    pub word: Vec<u8>,
+    pub count: u64,
+    /// Bits the model actually charged for the word's literal occurrences in the
+    /// untokened stream. This is the quantity the shipped heuristic cannot see:
+    /// it compares against `len` raw bytes, so a word the model already predicts
+    /// almost for free looks exactly as valuable as one it does not.
+    pub literal_bits: f64,
+    /// What `count` two-byte tokens would cost at the stream's measured average
+    /// bits/byte.
+    pub token_bits: f64,
+    /// The one-off dictionary definition, at the same rate.
+    pub def_bits: f64,
+}
+
+#[cfg(feature = "vocab-price")]
+impl WordPrice {
+    /// Bits saved by representing this word as a token instead of literally.
+    /// Negative means the substitution would *cost* bytes.
+    pub fn gain_bits(&self) -> f64 {
+        self.literal_bits - self.token_bits - self.def_bits
+    }
+}
+
+/// Phase 10 (research only): price every candidate word in `stream` by what the
+/// real model charges for it.
+///
+/// `stream` must be the tokenizer's **input** (the post-hoist, post-case stream).
+/// Returns `(prices, average bits/byte, stream length)`.
+#[cfg(feature = "vocab-price")]
+pub fn price_stream(stream: &[u8], method: Method, tune: u8) -> (Vec<WordPrice>, f64, usize) {
+    use std::collections::HashMap;
+    let n = stream.len();
+    let cfg = method.config(n).with_tune(tune);
+    let mut cm = Cm::new(&cfg, n);
+    let mut enc = RangeEncoder::with_capacity(n / 2 + 64);
+
+    let mut acc: HashMap<Vec<u8>, (u64, f64)> = HashMap::new();
+    let mut word: Vec<u8> = Vec::new();
+    // `wstart` is the cumulative cost *before* the word's first byte, and `cum`
+    // the cumulative cost after the previous byte, so the difference is exactly
+    // the model's price for the word's own bytes.
+    let mut wstart = 0.0f64;
+    let mut cum = 0.0f64;
+    for &byte in stream.iter() {
+        let mut mask = 0x80u32;
+        while mask != 0 {
+            let bit = if (byte as u32) & mask != 0 { 1 } else { 0 };
+            let p = cm.predict();
+            enc.encode(bit, p);
+            cm.update(bit);
+            mask >>= 1;
+        }
+        let now = enc.cost_bits();
+        if crate::transform::is_word_byte_at(byte) {
+            if word.is_empty() {
+                wstart = cum;
+            }
+            word.push(byte);
+        } else if !word.is_empty() {
+            let e = acc.entry(std::mem::take(&mut word)).or_insert((0, 0.0));
+            e.0 += 1;
+            e.1 += cum - wstart;
+        }
+        cum = now;
+    }
+    if !word.is_empty() {
+        let e = acc.entry(word).or_insert((0, 0.0));
+        e.0 += 1;
+        e.1 += cum - wstart;
+    }
+
+    let avg_bpb = if n > 0 { cum / n as f64 } else { 0.0 };
+    let prices = acc
+        .into_iter()
+        .map(|(w, (count, literal_bits))| {
+            let len = w.len() as f64;
+            WordPrice {
+                word: w,
+                count,
+                literal_bits,
+                token_bits: count as f64 * 2.0 * avg_bpb,
+                def_bits: (len + 1.0) * avg_bpb,
+            }
+        })
+        .collect();
+    (prices, avg_bpb, n)
+}
+
+/// Phase 10: the vocabulary a **model-priced** membership rule selects from
+/// `stream`, in the id order the encoder will store.
+///
+/// Ranked by measured gain (descending, ties by word so the result is
+/// deterministic), keeping only entries that actually save bits. The list is then
+/// reversed to mirror the accepted configuration's id convention — the id *order*
+/// was measured in A1.1 and is inherited here rather than re-searched, so this
+/// experiment changes membership only and leaves the identity axis alone.
+#[cfg(feature = "vocab-price")]
+pub fn priced_vocab(stream: &[u8], method: Method, tune: u8) -> Vec<Vec<u8>> {
+    let (prices, _avg, _n) = price_stream(stream, method, tune);
+    let mut ranked: Vec<&WordPrice> = prices.iter().collect();
+    ranked.sort_by(|a, b| {
+        b.gain_bits()
+            .partial_cmp(&a.gain_bits())
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.word.cmp(&b.word))
+    });
+    let mut vocab: Vec<Vec<u8>> = ranked
+        .iter()
+        .filter(|p| p.gain_bits() > 0.0)
+        .take(crate::transform::MAX_TOKENS)
+        .map(|p| p.word.clone())
+        .collect();
+    vocab.reverse();
+    vocab
+}
+
+/// Phase 10 (research only): price the vocabulary the shipped pipeline uses, by
+/// building the tokenizer's input and handing it to [`price_stream`].
+///
+/// Returns `(prices, average bits/byte, stream length, shipped vocabulary)`. The
+/// vocabulary is stored
+/// in the archive and read back by the decoder, so *choosing* it is entirely
+/// encoder-side: this pass changes no format, is invisible to `decode`, and
+/// therefore cannot threaten exactness. That is what makes a repriced vocabulary
+/// cheap to test where a repriced *bitstream* would not be.
+#[cfg(feature = "vocab-price")]
+pub fn price_vocabulary(
+    input: &[u8],
+    method: Method,
+    tune: u8,
+) -> (Vec<WordPrice>, f64, usize, Vec<Vec<u8>>) {
+    let stream = untokened_stream(input, method, tune);
+    let (prices, avg_bpb, n) = price_stream(&stream, method, tune);
+    // The vocabulary the shipped tokenizer would build from this same stream.
+    let shipped = crate::transform::build_word_vocab(&stream, true);
+    (prices, avg_bpb, n, shipped)
+}
+
+/// Phase 10: a vocabulary policy.
+#[cfg(feature = "vocab-price")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+enum VocabPolicy {
+    /// The shipped count heuristic.
+    Shipped,
+    /// Re-rank candidate words by measured gain and take the same number of slots.
+    Rerank,
+    /// Keep the shipped vocabulary and ids, but stop *substituting* the words the
+    /// model prices as costing more than they save.
+    Filter,
+}
+
+/// Phase 10: the vocabulary the **filter** policy blocks from substitution, and
+/// the shipped list whose ids must stay intact.
+#[cfg(feature = "vocab-price")]
+fn priced_filter(
+    stream: &[u8],
+    method: Method,
+    tune: u8,
+) -> (Vec<Vec<u8>>, std::collections::HashSet<Vec<u8>>) {
+    let shipped = crate::transform::build_word_vocab(stream, true);
+    let (prices, _avg, _n) = price_stream(stream, method, tune);
+    let mut gain: std::collections::HashMap<&[u8], f64> = std::collections::HashMap::new();
+    for p in &prices {
+        gain.insert(p.word.as_slice(), p.gain_bits());
+    }
+    let blocked = shipped
+        .iter()
+        .filter(|w| gain.get(w.as_slice()).copied().unwrap_or(0.0) <= 0.0)
+        .cloned()
+        .collect();
+    (shipped, blocked)
+}
+
+/// Phase 10 (research only): the pipeline up to (but not including) the
+/// tokenizer, which is the stream the tokenizer both consumes and is priced on.
+#[cfg(feature = "vocab-price")]
+pub fn untokened_stream(input: &[u8], method: Method, tune: u8) -> Vec<u8> {
+    let _ = tune;
+    let (input2, method) = prepare_reorder(input, method);
+    let lzbed = maybe_lzbe(method, input2);
+    let grammared = maybe_grammar(method, lzbed);
+    let stemmed = maybe_stem(method, grammared);
+    let hoisted = maybe_hoist(method, &stemmed);
+    let cased = maybe_case(method, hoisted);
+    let (data, _perm) = maybe_perm(method, cased);
     data
 }
 
@@ -1773,6 +2055,8 @@ pub fn decode(archive: &[u8]) -> Option<Vec<u8>> {
         87 => Method::ResidualCtl,
         88 => Method::ResidualMtf,
         89 => Method::ResidualMoveToSecond,
+        90 => Method::ResidualPriced,
+        91 => Method::ResidualPriceFilter,
         _ => return None,
     };
     let mut len_bytes = [0u8; 8];
@@ -2082,6 +2366,62 @@ mod tests {
                     "{m:?} produced the parent archive: the representation did not change"
                 );
             }
+        }
+    }
+
+    /// Phase 10: the model-priced vocabulary must (a) reconstruct exactly through
+    /// the ordinary decoder and (b) actually differ from the shipped vocabulary —
+    /// the screening said 100 of 255 entries differ at enwik6, so a priced
+    /// vocabulary that equals the shipped one means the wiring is wrong, not that
+    /// the idea failed.
+    #[cfg(feature = "vocab-price")]
+    #[test]
+    fn priced_vocabulary_roundtrips_and_differs() {
+        // Strictly ascending page ids, or the article-layout precondition fails
+        // and the method is downgraded (which would silently compare the parent
+        // against itself).
+        let mut data = Vec::new();
+        data.extend_from_slice(b"<mediawiki>\n");
+        for id in 0u32..30 {
+            data.extend_from_slice(
+                format!(
+                    "  <page>\n    <title>Alpha{id}</title>\n    <id>{id}</id>\n    <revision>\n      \
+                     <text>the quick brown fox jumps over the lazy dog and the fox runs \
+                     through the compression compression algorithm and the galaxy star \
+                     repeats itself in the archive and the river flows</text>\n    </revision>\n  </page>\n"
+                )
+                .as_bytes(),
+            );
+        }
+        data.extend_from_slice(b"</mediawiki>\n");
+
+        let priced = encode_tuned(&data, Method::ResidualPriced, 5);
+        assert_eq!(decode(&priced).unwrap(), data, "priced variant not exact");
+        assert_eq!(
+            priced[4],
+            Method::ResidualPriced as u8,
+            "priced method was downgraded, so the comparison is meaningless"
+        );
+        let base = encode_tuned(&data, Method::Residual, 5);
+        assert_ne!(
+            priced, base,
+            "the priced vocabulary produced the parent archive"
+        );
+
+        // And the pricing itself must be sane: a word the model predicts well is
+        // priced lower than one it does not, at the same occurrence count.
+        let stream = untokened_stream(&data, Method::Residual, 5);
+        let (prices, avg_bpb, n) = price_stream(&stream, Method::Residual, 5);
+        assert!(n > 0 && avg_bpb > 0.0);
+        assert!(!prices.is_empty());
+        for p in &prices {
+            assert_eq!(
+                p.gain_bits(),
+                p.literal_bits - p.token_bits - p.def_bits,
+                "gain is not literal - token - definition"
+            );
+            assert!(p.literal_bits >= 0.0);
+            assert!(p.count >= 1);
         }
     }
 

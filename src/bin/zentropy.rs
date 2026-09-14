@@ -87,6 +87,8 @@ fn main() -> ExitCode {
         "pblocks" => cmd_pblocks(&args[2..]),
         #[cfg(not(feature = "submission"))]
         "layout" => cmd_layout(&args[2..]),
+        #[cfg(feature = "vocab-price")]
+        "vocab-price" => cmd_vocab_price(&args[2..]),
         "selftest" => cmd_selftest(),
         "help" | "-h" | "--help" => {
             usage();
@@ -124,7 +126,8 @@ fn usage() {
          zentropy frontier    <receipt.jsonl> [--method <m>]\n  \
          zentropy observe     <receipt.jsonl> [--method <m>]\n  \
          zentropy pblocks     <in> [--blocks <n>] [--jobs <n>] [--tune <t>] [--no-full]\n  \
-         zentropy layout      <in> [--nibble <orders>] [--bits <n>] [--reps <n>] [--method <m>] [--tune <t>]\n",
+         zentropy layout      <in> [--nibble <orders>] [--bits <n>] [--reps <n>] [--method <m>] [--tune <t>]\n  \
+         zentropy vocab-price <in> [--top <n>] [--method <m>] [--tune <t>]   (feature vocab-price)\n",
         version = zentropy::VERSION
     );
 }
@@ -555,6 +558,150 @@ fn cmd_prune(args: &[String]) -> Result<(), String> {
     println!("\nmost negative (prune candidates):");
     for (m, i, label) in rows.iter().take(5) {
         println!("  idx {i:>3}  {label:<28}  marginal(S)={m:+}");
+    }
+    Ok(())
+}
+
+/// Phase 10 (research): price the tokenizer's vocabulary by **what the model
+/// actually charges**, rather than by a raw byte count.
+///
+/// The shipped heuristic keeps a word when `count * (len - 2) > len + 1`, i.e. it
+/// compares a token against `len` *raw* bytes. But the predictor does not code raw
+/// bytes: a word it already predicts well costs almost nothing literally, so
+/// substituting it saves almost nothing. That mismatch is the likely explanation
+/// for the A26 result, where extending vocabulary *coverage* past 255 words
+/// **cost** 776,196 B at enwik8 — replacing predictable text with tokens made the
+/// model's job harder, not easier.
+///
+/// This command reports the size of that mismatch: the measured gain of the
+/// shipped vocabulary against a repriced one, and how much the two sets overlap.
+/// It is a *screening* instrument — Shannon cost over one untokened pass, with the
+/// token and definition prices taken at the stream's average bits/byte — so it
+/// bounds the opportunity rather than proving it. Any reprice that survives it is
+/// decided by `eval` on enwik9 like everything else.
+#[cfg(feature = "vocab-price")]
+fn cmd_vocab_price(args: &[String]) -> Result<(), String> {
+    let path = args.first().ok_or("vocab-price: need <in>")?;
+    let get = |k: &str| -> Option<String> {
+        args.iter()
+            .position(|a| a == k)
+            .and_then(|i| args.get(i + 1))
+            .cloned()
+    };
+    let method = get("--method")
+        .and_then(|s| Method::from_name(&s))
+        .unwrap_or(archive::ACCEPTED_METHOD);
+    let tune: u8 = get("--tune")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(archive::ACCEPTED_TUNE);
+    let top: usize = get("--top").and_then(|v| v.parse().ok()).unwrap_or(10);
+
+    let data = read(path)?;
+    guard_encode(data.len() as u64, max_ram_override(args))?;
+    let (prices, avg_bpb, stream_len, shipped) = archive::price_vocabulary(&data, method, tune);
+
+    let mut by_word: std::collections::HashMap<&[u8], &archive::WordPrice> =
+        std::collections::HashMap::with_capacity(prices.len());
+    for p in &prices {
+        by_word.insert(p.word.as_slice(), p);
+    }
+
+    let shipped_set: std::collections::HashSet<&[u8]> =
+        shipped.iter().map(|w| w.as_slice()).collect();
+    let shipped_gain: f64 = shipped
+        .iter()
+        .filter_map(|w| by_word.get(w.as_slice()))
+        .map(|p| p.gain_bits())
+        .sum();
+    let shipped_negative = shipped
+        .iter()
+        .filter_map(|w| by_word.get(w.as_slice()))
+        .filter(|p| p.gain_bits() <= 0.0)
+        .count();
+
+    // A repriced vocabulary: the top `shipped.len()` candidates by measured gain,
+    // requiring a positive gain. This is what a model-priced membership rule would
+    // select, given the same slot budget.
+    let mut ranked: Vec<&archive::WordPrice> = prices.iter().collect();
+    ranked.sort_by(|a, b| {
+        b.gain_bits()
+            .partial_cmp(&a.gain_bits())
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.word.cmp(&b.word))
+    });
+    let repriced: Vec<&archive::WordPrice> = ranked
+        .iter()
+        .copied()
+        .filter(|p| p.gain_bits() > 0.0)
+        .take(shipped.len())
+        .collect();
+    let repriced_gain: f64 = repriced.iter().map(|p| p.gain_bits()).sum();
+    let overlap = repriced
+        .iter()
+        .filter(|p| shipped_set.contains(p.word.as_slice()))
+        .count();
+
+    println!(
+        "corpus={path} input_bytes={} method={} tune={tune}",
+        data.len(),
+        method.name()
+    );
+    println!("untokened_stream_bytes={stream_len} avg_bits_per_byte={avg_bpb:.4}",);
+    println!("distinct words seen={}", prices.len());
+    println!(
+        "shipped vocabulary: {} entries, measured gain {:.0} bits ({:.1} KB), \
+         {} entries have gain <= 0",
+        shipped.len(),
+        shipped_gain,
+        shipped_gain / 8192.0,
+        shipped_negative
+    );
+    println!(
+        "repriced top-{}: gain {:.0} bits ({:.1} KB), overlap with shipped {}/{}",
+        shipped.len(),
+        repriced_gain,
+        repriced_gain / 8192.0,
+        overlap,
+        shipped.len()
+    );
+    println!(
+        "screening headroom = {:.0} bits ({:.1} KB)   [estimate, not an adoption]",
+        repriced_gain - shipped_gain,
+        (repriced_gain - shipped_gain) / 8192.0
+    );
+
+    println!("\ntop {top} by measured gain (bits saved, count, word):");
+    for p in repriced.iter().take(top) {
+        let in_shipped = if shipped_set.contains(p.word.as_slice()) {
+            "shipped"
+        } else {
+            "NEW"
+        };
+        println!(
+            "  {:>9.0}  {:>8}  {:<24} {}",
+            p.gain_bits(),
+            p.count,
+            String::from_utf8_lossy(&p.word),
+            in_shipped
+        );
+    }
+    println!("\nworst {top} in the shipped vocabulary (gain, count, word):");
+    let mut worst: Vec<&archive::WordPrice> = shipped
+        .iter()
+        .filter_map(|w| by_word.get(w.as_slice()).copied())
+        .collect();
+    worst.sort_by(|a, b| {
+        a.gain_bits()
+            .partial_cmp(&b.gain_bits())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    for p in worst.iter().take(top) {
+        println!(
+            "  {:>9.0}  {:>8}  {}",
+            p.gain_bits(),
+            p.count,
+            String::from_utf8_lossy(&p.word)
+        );
     }
     Ok(())
 }

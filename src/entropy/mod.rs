@@ -32,6 +32,13 @@ pub struct RangeEncoder {
     x1: u32,
     x2: u32,
     out: Vec<u8>,
+    /// Phase 10: accumulated *ideal* code length in bits, for the modelling
+    /// experiments that must price a representation by what the coder actually
+    /// charges rather than by a raw byte count. Research-only (`vocab-price`):
+    /// the field and its arithmetic are compiled out of the scored build, so it
+    /// cannot cost `S` a byte.
+    #[cfg(feature = "vocab-price")]
+    cost: f64,
 }
 
 impl Default for RangeEncoder {
@@ -46,6 +53,8 @@ impl RangeEncoder {
             x1: 0,
             x2: 0xffff_ffff,
             out: Vec::new(),
+            #[cfg(feature = "vocab-price")]
+            cost: 0.0,
         }
     }
 
@@ -54,7 +63,22 @@ impl RangeEncoder {
             x1: 0,
             x2: 0xffff_ffff,
             out: Vec::with_capacity(n),
+            #[cfg(feature = "vocab-price")]
+            cost: 0.0,
         }
+    }
+
+    /// Phase 10: the ideal code length produced so far, in bits.
+    ///
+    /// This is Shannon cost, so it is a *diagnostic*: it prices a representation
+    /// for a search, and never decides an adoption (`S` does that). It is also
+    /// what makes the vocabulary experiment possible — a word's literal cost
+    /// under the real model is precisely the quantity a raw-byte heuristic
+    /// cannot see.
+    #[cfg(feature = "vocab-price")]
+    #[inline]
+    pub fn cost_bits(&self) -> f64 {
+        self.cost
     }
 
     /// Code one bit with `p = P(bit = 1)` in `[1, 4095]`.
@@ -66,6 +90,13 @@ impl RangeEncoder {
     pub fn encode(&mut self, bit: u32, p: u32) {
         debug_assert!((1..PROB_SCALE).contains(&p), "p={p} out of range");
         let p = p.clamp(1, PROB_SCALE - 1);
+        #[cfg(feature = "vocab-price")]
+        {
+            // Ideal length of this binary decision: -log2 of the probability the
+            // model assigned to the outcome that actually occurred.
+            let pi = if bit != 0 { p } else { PROB_SCALE - p };
+            self.cost += -(pi as f64 / PROB_SCALE as f64).log2();
+        }
         let range = self.x2 - self.x1;
         let xmid = self.x1 + ((range >> PROB_BITS) * p);
         if bit != 0 {
