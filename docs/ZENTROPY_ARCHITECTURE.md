@@ -427,7 +427,27 @@ cargo build --release
 
 The submission stub is built separately and packed by the Phase-12 tooling:
 `zentropy-sfx` reads a marker + length + archive appended to its own image and
-writes the reconstructed corpus with no external inputs.
+writes the reconstructed corpus with no external inputs. `tools/make_submission.sh
+<corpus> [outdir]` produces the whole bundle (program, both archive forms, source
+zip, manifest) and refuses to finish unless the shipped stub has reconstructed the
+corpus byte-for-byte and the self-extracting form has done the same under `env -i`
+from an empty directory.
+
+### Watching a silent run
+
+The scored stub carries **no progress machinery**: `progress` is outside
+`accepted`, so the judged binary prints nothing and pays nothing for it. That is
+the right call for `S` and a poor experience for anyone watching a 50-minute pass
+— so the display does not live in the artefact. Observe it from outside:
+
+```sh
+tools/watch_run.sh                 # any zentropy process, every 30 s
+tools/watch_run.sh zentropy-sfx 15 # the scored stub specifically
+```
+
+It reports elapsed wall time, RSS, cumulative CPU time and thread count, and
+exits when the process does. A single-threaded run whose CPU time tracks its wall
+time is alive and working; that is the signal a silent pass can still give.
 
 ## 10. What Zentropy must not become
 

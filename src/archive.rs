@@ -1738,11 +1738,31 @@ pub const ACCEPTED_METHOD: Method = Method::Residual;
 /// one header byte, so the combined marginal executable cost is the `tune-table`
 /// scaling code alone, measured in `docs/RESOURCE_CLOSURE.md` §8.3.
 ///
-/// `53` also puts the accepted point at the **top of the scale range**
+/// **Phase 12 then moved it again, to `51` = scale 3, LR 8.** The table scale and
+/// the adaptation ladder both changed the predictor, and Phase 9's standing rule
+/// is that the LR optimum follows the predictor — the third time it has moved.
+/// Re-descended against the receipted 161,418,616 at the retrained corrector's
+/// weights, all exact:
+///
+/// ```text
+/// tune 49  LR  4   161,324,386     -94,230
+/// tune 50  LR  6   160,292,663  -1,125,953
+/// tune 51  LR  8   160,015,425  -1,403,191   <- adopted
+/// tune 52  LR 10   160,057,110  -1,361,506
+/// tune 48  LR 12   160,232,405  -1,186,211
+/// tune 53  LR 16   160,754,189    -664,427
+/// tune 54  LR 20   162,050,033    +631,417   REJECTED
+/// ```
+///
+/// LR 8 is an interior optimum at the representable granularity: every neighbour in
+/// [`crate::context::MIXER_LRS`] is worse, on both sides, so the ladder is **closed**
+/// rather than merely stopped.
+///
+/// `51` keeps the accepted point at the top of the scale range
 /// ([`crate::context::MAX_TABLE_SCALE`]), which is what makes
 /// `memory::projected_decode` an upper bound for any archive this decoder can be
 /// handed, forged headers included.
-pub const ACCEPTED_TUNE: u8 = 53;
+pub const ACCEPTED_TUNE: u8 = 51;
 
 /// Compress `input` into an archive payload using the accepted configuration.
 pub fn encode(input: &[u8]) -> Vec<u8> {

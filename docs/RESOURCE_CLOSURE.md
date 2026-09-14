@@ -480,11 +480,31 @@ learning that (543 B → 1,728 B for structural hoisting; a 256 B scare from
 deleting an inert call). The charged cost for the submission is therefore **0 B**.
 
 Step 3 of the sequence — re-bracketing the mixer learning rate at the final
-geometry — is in flight (`evidence/runs/lr_at_rates/`), because the ladder
-changed the predictor and Phase 9's rule is that the LR optimum follows it. Those
-gates are deliberately run at the pre-retrain weights, and the weights experiment
+geometry — ran and **the optimum had moved**; see §11.3. Those gates were
+deliberately run at the pre-retrain weights, and the weights experiment
 (`evidence/runs/weights_retrain.jsonl`) is gated separately; the coupling is real
 and is recorded rather than resolved by assumption.
+
+### 9.3b The *other* direction was tested too, and rejected
+
+The screen above only ever moved the ladder **faster**, and the standing worry was
+the mirror image of Phase 9's lesson: that on a 10⁹-byte corpus the optimum might
+sit *slower* than enwik7's. That is a real hypothesis, so it was gated rather than
+argued about. Vector `3,3,3,4,4,4,4,5,5,5,4,4,4,5` (the midpoint between the
+shipped ladder and the adopted one, i.e. deliberately slower than adopted) on
+enwik9:
+
+```text
+baseline (adopted ladder)   161,418,616
+midpoint ladder             162,381,613     +962,997
+```
+
+So the direction is settled in both directions: faster wins, the midpoint loses,
+and the adopted point is not merely the best of the tested set in one direction.
+The two runs also cross-check each other usefully — this `rate-sweep` baseline was
+computed through the *roster* path (`encode_specs`) while the §9.3 gate used the
+real coder (`encode_tuned`), and they agree to the byte, which is the
+`--tune`-through-`with_tune` fix re-verified from the other side.
 
 ### 9.4 Scale 4: from INCONCLUSIVE to **excluded**
 
