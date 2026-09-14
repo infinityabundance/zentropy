@@ -44,3 +44,5 @@
 .vscode/
 *.swp
 *~
+# Phase 12: the assembled submission bundle is a build product, not source.
+/submission/

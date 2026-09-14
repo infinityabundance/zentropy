@@ -44,8 +44,8 @@
 
 | # | requirement | status | evidence |
 |---|---|---|---|
-| D1 | builds from a clean checkout with no network | **OPEN** | The scored path has no dependencies, so `--offline` should work; it has not been tested from a clean clone. The pinned toolchain (`nightly-2026-07-24`) must be present, or the stable fallback used (400,816 B stub, documented). |
-| D2 | build instructions tested from clean | **OPEN** | Same run as D1. |
+| D1 | builds from a clean checkout with no network | **DONE for the scored path** | The generated `source.tar.gz` was extracted to an empty directory and built with `cargo build --offline --no-default-features --features accepted,submission`: success, no network. Only the Rust toolchain is needed, because the scored path has no dependencies to fetch. |
+| D2 | build instructions tested from clean | **DONE (scored path); OPEN (the pinned nightly)** | The offline build above used the default stable toolchain. The *submission* build pins `nightly-2026-07-24` and needs `-Z build-std`; that toolchain must either be present on the judge's machine or the documented stable fallback used (a 400,816 B stub). |
 | D3 | the algorithm is documented for a reviewer | **DONE** | [`ALGORITHM.md`](ALGORITHM.md). |
 
 ## E. Portability
@@ -74,11 +74,19 @@ The stub reclamation moved `S` by **13,712 B**. The remaining gap is a *ratio*
 problem, not a byte-counting problem, and no part of this document should be read
 as suggesting otherwise.
 
-## G. The next three things
+## G. The bundle, and the next three things
+
+`tools/make_submission.sh <corpus> [outdir]` produces the whole submission in one
+command — `comp9a`, `decomp9`, `archive9.bhm`, `archive9`, `source.tar.gz` and a
+`MANIFEST.txt` — and it refuses to write anything unless the **shipped** stub has
+reconstructed the corpus byte-for-byte *and* the self-extracting form has done so
+under `env -i` from an empty directory. Verified end-to-end on enwik6:
+`S_sfx = 496,943`, `S_separate = 496,920`.
 
 1. **Run the authority packaging on enwik9** with the shipped stub, which closes
    A1, B1 and B2 (≈1.7 h).
-2. **Close the portability risk** (E1) — a musl static build proven
-   archive-identical, or a decision to submit source.
-3. **Re-bracket the mixer learning rate** once the adaptation-rate gate lands, per
+2. **Re-bracket the mixer learning rate** once the adaptation-rate gate lands, per
    Phase 9's rule that the LR optimum follows the predictor.
+3. **Decide the submitted form**: the static musl binary (works anywhere, +19,520 B
+   per copy) or the smaller glibc dynamic build (needs glibc ≥ 2.34). Currently the
+   static build is the default for exactly that reason.
