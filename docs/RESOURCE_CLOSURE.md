@@ -218,3 +218,62 @@ two of them by a factor of infinity in the wrong direction. "Most of the stub is
 dispatch for rejected methods" was written in the architecture doc as near-fact and
 measured at +24 B. The lever that mattered was in a place no estimate would have
 looked: the standard library's panic path.
+
+## 8. Results — T2 is **ADOPTED**, and the LR ladder is closed
+
+### 8.1 Table size (T2): measured wins at enwik9
+
+All gates used `tune < 16` as the parent (scale 0, the accepted configuration) and
+reconstructed exactly. `tune = (scale << 4) | lr_idx`, so `tune 37` is scale 2 and
+`tune 53` is scale 3, both at LR 16.
+
+| tune | scale | order tables | archive | Δ vs accepted (169,282,339) | exact | peak RSS | wall |
+|---|---|---|---|---|---|---|---|
+| 5 | 0 | 2^24 | 169,282,339 | — | true | ~3.5 GB | ~54 min |
+| 37 | 2 | 2^26 | 166,328,552 | **−2,953,787** | true | 4.36 GB | 55 min |
+| 53 | 3 | 2^27 | **165,344,019** | **−3,938,320** | true | 5.63 GB | 58 min |
+
+The cap in `for_size` was leaving **3.9 MB** on the table, and it was there for no
+recorded reason. Scale 3 is well inside the envelope: 5.63 GB peak against the 10 GB
+limit, which is a hard requirement rather than a trade, so the margin matters —
+scale 4 (2^28, ~5.0 GB of tables) is in flight to find whether the curve has
+flattened, and scale 5 would be illegal.
+
+### 8.2 Mixer learning rate: the ladder is closed at LR 16
+
+The Phase-9 ladder had only been probed *downward* from LR 24 (24 → 20 → 16, each
+step buying more, which is why the next rung was gated rather than extrapolated).
+The five pending gates have now run:
+
+| tune | mixer LR | archive | Δ vs the accepted LR 16 |
+|---|---|---|---|
+| 5 | **16** | **169,282,339** | — (adopted) |
+| 0 | 12 | 169,449,876 | **+167,537** |
+| 4 | 10 | 169,757,310 | +474,971 |
+| 3 | 8 | 170,416,502 | +1,134,163 |
+| 2 | 6 | 171,623,140 | +2,340,801 |
+| 1 | 4 | 174,028,421 | +4,746,082 |
+
+Every step below 16 regresses, monotonically. Combined with LR 20 (+158,058) and
+LR 24 (+359,748) above it, **LR 16 is a genuine interior optimum, bracketed on both
+sides** — the ladder is closed, not merely stopped.
+
+> **Reading these receipts.** `tools/gate_many.sh` was invoked with `--parent-tune 7`
+> (LR 24) because that was the value the ladder started from, so each receipt's
+> `decision` field compares against *that* parent and prints `ADOPTED` for `tune 0`.
+> The authoritative comparison is against the *current* accepted configuration
+> (LR 16, 169,282,339), which is the Δ column above. The absolute `archive_bytes` in
+> the receipts are unaffected; only their `decision` label is relative to the older
+> parent.
+
+### 8.3 What is still open
+
+* **Scale 4** and the **LR ladder at scale 3** are in flight. The Phase-9 lesson is
+  explicit that the optimal mixer rate is a function of the predictor, and a
+  table-size change alters the predictor — so until the scale-3 neighbours
+  (`lr_idx` 4 and 6) are gated, the *combination* is not final.
+* **Adoption mechanics.** Folding T2 in means the scored set gains the `tune-table`
+  scaling and `ACCEPTED_TUNE` becomes the winning point, so `decode` reads the scale
+  from the archive header. That makes the mechanism decoder-derivable, which it
+  already is, and puts a new constant in the scored path whose **measured** binary
+  cost must be charged (the `for_size` cap was free; the scaling code is not).

@@ -140,14 +140,34 @@ with no external inputs.
   workstation (`xmllint` at 46.7 GB, `SwapFree` 1.95 GB of 131.5 GB), not to
   Zentropy. See [`MEMORY_GUARD.md`](MEMORY_GUARD.md).
 
-- **Phase 11 is in progress and has found a live lever.** `for_size` caps context
-  tables at 2^24 — 576 MB for enwik9 against a **10 GB** envelope — with no
-  recorded measurement behind the cap. Archive bytes fall monotonically as the
-  tables grow (enwik8, 2^22 → 2^26: **−431,806 B, −2.03%**) while the curve
-  flattens and memory climbs, so the interesting window is `bits` 24–26. The knob
-  (`tune-table`) rides the high nibble of `tune`, which the rejected APM axis left
-  free, and is decoder-derivable by construction. **Status: measured, enwik9 gates
-  in flight, not adopted.** See [`RESOURCE_CLOSURE.md`](RESOURCE_CLOSURE.md).
+- **Phase 11 is in progress and has found three measured wins.** (a) The scored stub
+  fell from 400,816 B to **111,888 B** — `-288,928 B` — by rebuilding `std` with
+  `panic_abort`+`panic_immediate_abort`, which removes the panic hook, backtrace
+  machinery, `gimli`/`addr2line` and even a DEFLATE decompressor that the prebuilt
+  rlibs carry unconditionally; both legal packaging forms charge the program twice,
+  so that is **−577,856 B of `S`**, verified by a byte-identical archive on enwik6.
+  (b) The `for_size` table-size cap (2^24, 576 MB for enwik9) had no recorded
+  justification and was costing **3.9 MB**: scaling the order tables to 2^27 saves
+  **−3,938,320 B at enwik9** (exact, 5.63 GB peak against the 10 GB limit), and
+  2^26 saves −2,953,787. (c) The `mem-guard` startup refusal is a measured 5,520 B
+  and is kept deliberately. Two hypotheses were *withdrawn* by measurement: the
+  method dispatch is not the stub's cost (+24 B to narrow it) and
+  `-C force-unwind-tables=no` does nothing (the tables come from prebuilt `std`).
+  See [`RESOURCE_CLOSURE.md`](RESOURCE_CLOSURE.md).
+
+- **The mixer-LR ladder is closed at 16.** The pending gates landed: LR 12 is
+  +167,537 B, LR 10 +474,971, LR 8 +1,134,163, LR 6 +2,340,801, LR 4 +4,746,082 —
+  every step below 16 regresses, monotonically, and LR 20/24 are worse above it. So
+  the optimum is *bracketed on both sides* rather than merely the lowest tried.
+
+- **Phase 10 is closed with six measured rejections.** Rank ids (+213,623 at
+  enwik7), a model-priced vocabulary (+25,870), its filtered variant (+33,501),
+  affix composition on the mature composite (+35,815), first-use definitions
+  (+33,372) and subword/BPE composition (+202,148). Three were directly contrary to
+  a screening signal that looked large and grew with scale; 10.1b in particular was
+  believed to be the largest remaining opportunity before it was measured. This
+  predictor does not want a different lexical representation. See
+  [`PHASE10_PLAN.md`](PHASE10_PLAN.md).
 
 - **Phase 10 is planned.** The representation optimizer — per-span choice among
   literal / token / subword / affix / delta / rule, under a cost oracle repriced by
