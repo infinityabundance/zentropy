@@ -1346,12 +1346,14 @@ impl ModelConfig {
     }
 
     /// Phase 8 (research): train a residual corrector of the given hidden width.
+    #[cfg(feature = "learned-train")]
     pub fn with_residual_train(mut self, hidden: usize) -> Self {
         self.residual_hidden = hidden;
         self
     }
 
     /// Phase 8 (research): the trainer learning rate.
+    #[cfg(feature = "learned-train")]
     pub fn with_residual_lr(mut self, lr: f32) -> Self {
         self.residual_lr = lr;
         self
@@ -1850,12 +1852,15 @@ pub struct Predictor {
     /// Phase 8: frozen learned residual corrector (T1/T2).
     #[cfg(feature = "learned")]
     residual: Option<crate::learned::Net>,
-    /// Phase 8 (research): the offline trainer shadow.
-    #[cfg(feature = "learned")]
+    /// Phase 8 (research): the offline trainer shadow. Gated with the trainer
+    /// itself, because the scored path never has one — see `learned::Trainer`.
+    #[cfg(feature = "learned-train")]
     residual_trainer: Option<crate::learned::Trainer>,
-    #[cfg(feature = "learned")]
+    /// Phase 8 (research): the last feature vector and stretched prior, kept only
+    /// so the trainer can step on them.
+    #[cfg(feature = "learned-train")]
     last_feats: crate::learned::Feats,
-    #[cfg(feature = "learned")]
+    #[cfg(feature = "learned-train")]
     last_s_pr: i32,
     st: StretchTable,
     buf: Vec<u8>,
@@ -2026,7 +2031,7 @@ impl Predictor {
                     None
                 }
             },
-            #[cfg(feature = "learned")]
+            #[cfg(feature = "learned-train")]
             residual_trainer: if cfg.residual_hidden > 0 {
                 Some(crate::learned::Trainer::new(
                     cfg.residual_hidden,
@@ -2035,9 +2040,9 @@ impl Predictor {
             } else {
                 None
             },
-            #[cfg(feature = "learned")]
+            #[cfg(feature = "learned-train")]
             last_feats: crate::learned::Feats([0; crate::learned::NF]),
-            #[cfg(feature = "learned")]
+            #[cfg(feature = "learned-train")]
             last_s_pr: 0,
             st: StretchTable::new(),
             buf: Vec::with_capacity(buf_capacity),
@@ -2431,7 +2436,14 @@ impl Predictor {
         // outputs themselves (the T2 cascade).
         #[cfg(feature = "learned")]
         let pr = {
-            if self.residual.is_some() || self.residual_trainer.is_some() {
+            // The trainer branch is a compile-time constant: with `learned-train`
+            // off (the scored build) it folds to `false` and the only correction
+            // source is the frozen embedded network.
+            #[cfg(feature = "learned-train")]
+            let training = self.residual_trainer.is_some();
+            #[cfg(not(feature = "learned-train"))]
+            let training = false;
+            if self.residual.is_some() || training {
                 let match_dir = {
                     let mut best = 0i32;
                     for k in 0..self.match_models.len() {
@@ -2454,13 +2466,22 @@ impl Predictor {
                     word_open: word_open != 0,
                     rep_active: rep_active != 0,
                 });
+                #[cfg(feature = "learned-train")]
                 let corr = match (self.residual_trainer.as_ref(), self.residual.as_ref()) {
                     (Some(tr), _) => tr.corr_for(&feats),
                     (None, Some(net)) => net.forward(&feats),
                     _ => 0,
                 };
-                self.last_feats = feats;
-                self.last_s_pr = self.st.stretch(pr0);
+                #[cfg(not(feature = "learned-train"))]
+                let corr = match self.residual.as_ref() {
+                    Some(net) => net.forward(&feats),
+                    None => 0,
+                };
+                #[cfg(feature = "learned-train")]
+                {
+                    self.last_feats = feats;
+                    self.last_s_pr = self.st.stretch(pr0);
+                }
                 crate::learned::stretch_and_apply(&self.st, pr0, corr)
             } else {
                 pr0
@@ -2475,10 +2496,10 @@ impl Predictor {
 
     #[inline]
     pub fn update(&mut self, bit: u32) {
-        // Phase 8: one SGD step of the residual trainer, before the model state
-        // advances. Inference has no trainer, so this is a no-op on the scored
-        // path.
-        #[cfg(feature = "learned")]
+        // Phase 8 (research): one SGD step of the residual trainer, before the
+        // model state advances. Compiled out of the scored build entirely —
+        // inference has no trainer, so this is not merely a no-op there.
+        #[cfg(feature = "learned-train")]
         if let Some(tr) = self.residual_trainer.as_mut() {
             tr.step(&self.last_feats, self.last_s_pr, bit);
         }
@@ -2520,13 +2541,13 @@ impl Predictor {
     }
 
     /// Phase 8 (research): the quantized network after offline training.
-    #[cfg(feature = "learned")]
+    #[cfg(feature = "learned-train")]
     pub fn take_residual_net(&self) -> Option<crate::learned::Net> {
         self.residual_trainer.as_ref().map(|t| t.quantize())
     }
 
     /// Phase 8 (research): training diagnostics.
-    #[cfg(feature = "learned")]
+    #[cfg(feature = "learned-train")]
     pub fn residual_stats(&self) -> (u64, f64, f64) {
         self.residual_trainer
             .as_ref()
@@ -2595,13 +2616,13 @@ impl Cm {
     }
 
     /// Phase 8 (research): the trained residual network.
-    #[cfg(feature = "learned")]
+    #[cfg(feature = "learned-train")]
     pub fn take_residual_net(&self) -> Option<crate::learned::Net> {
         self.predictor.take_residual_net()
     }
 
     /// Phase 8 (research): training diagnostics.
-    #[cfg(feature = "learned")]
+    #[cfg(feature = "learned-train")]
     pub fn residual_stats(&self) -> (u64, f64, f64) {
         self.predictor.residual_stats()
     }

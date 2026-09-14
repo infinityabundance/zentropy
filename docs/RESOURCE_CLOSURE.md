@@ -353,8 +353,6 @@ instruments and never a licence to extrapolate.
 
 ## 9. Adaptation rates — another unjustified constant, worth several MB
 
-## 9. Adaptation rates — another unjustified constant, worth several MB
-
 ### 9.1 The finding
 
 Each direct expert's adaptation shift (`p += (target - p) >> rate`) is its memory.
@@ -471,12 +469,66 @@ next thing after the rate verdict.
 Coupling is real in both directions, which is why each step is its own gate rather
 than a joint search: a combined point would make `ΔS` unattributable.
 
-### 9.4 Scale 4 is **INCONCLUSIVE**, and the reason is mine
+### 9.4 Scale 4: from INCONCLUSIVE to **excluded**
 
 The scale-4 gate (`tune 69`, 2^28 order tables) died with
 `memory allocation of 428851336 bytes failed` under the 9 GiB `RLIMIT_AS` I set. That
-is a limit I imposed, not a property of the mechanism, so scale 4 is **untested at
-enwik9** rather than rejected — its address space exceeds 9 GiB even though its
-*resident* peak would plausibly be ~7.5 GB against the 10 GB rule. It is recorded as
-inconclusive, with re-testing (at a larger cap, and only if the rate work leaves
-headroom worth spending) as the follow-up.
+is a limit I imposed, not a property of the mechanism, so the run itself decided
+nothing.
+
+But the question it was asking has since been answered by arithmetic instead of by
+a re-run, and the answer is that scale 4 is **ineligible**: doubling the order
+tables again projects ~9.7 GB of model plus buffers, which is past the 8 GiB the
+scored stub will approve and within 0.3 GB of the hard 10 GB rule. A configuration
+whose peak has no margin against a hard requirement is not a candidate, however
+well it compresses. `context::MAX_TABLE_SCALE = 3` makes that boundary structural
+— see §8.4 — so the scale-4 question is closed as an eligibility limit rather
+than left open as an untested one.
+
+## 10. Phase 12: reclaiming the stub, measured byte by byte
+
+The stub is charged **twice** by both legal packaging forms (`S = 2P + bhm`, and
+`archive9` embeds a copy), so every executable byte is worth two bytes of `S`.
+This section records the reductions, each measured by building two
+otherwise-identical stubs and taking a stable delta (A31).
+
+### 10.1 The offline trainer was linked into the scored stub
+
+**Found by accident, and it was worse than a size bug.** The scored stub's
+dynamic symbol table contained `log2f@GLIBC_2.27` — a *libm* call. Tracing it:
+`learned::Trainer` (the floating-point shadow used only to produce
+`weights.bin`) was gated on `learned`, which *is* in `accepted`. The stub never
+constructs a trainer, so the code was unreachable at runtime — but it was linked,
+which means the judged binary depended on the host's floating-point library for
+nothing at all.
+
+That is a determinism question the project had been answering by argument ("the
+integer path never reads a float") when it could be answered by a symbol table.
+The trainer now lives behind `learned-train` (research only: in `default`, not in
+`accepted`), and the guarantee is one command:
+
+```sh
+nm -D --undefined-only <stub> | grep -iE 'log|exp|pow|sqrt|round'   # must be empty
+```
+
+| build | stub bytes | libm | `NEEDED` |
+|---|---|---|---|
+| `accepted` + `learned-train` (before) | 112,392 | `log2f` | `libm.so.6`, `libc.so.6` |
+| **`accepted` (shipped)** | **109,432** | **none** | `libc.so.6` |
+
+**−2,960 B per copy = −5,920 B of `S`**, and the archive is proven unchanged:
+byte-identical on enwik6 (246,808 B) and enwik7 (2,226,353 B) between the two
+stubs. A size change that alters the archive is a compression change wearing a
+size change's clothes, so that check is not optional.
+
+The general lesson: **a feature gate is a claim about what is in the binary, and
+only the symbol table can confirm it.** `#[cfg(feature = "learned")]` reads as
+"the learned corrector", but the field it gated was the *trainer* — one letter of
+intent away from shipping the wrong thing.
+
+### 10.2 Still open in Phase 12
+
+`Method::ALL` is 95 variants and every one of their `config()` arms is reachable
+from the stub's `method_from_id` dispatch, so a large share of the remaining
+109,432 B is dispatch for methods that are rejected. Gating that roster is the
+next measured step; see [`PHASE12_PLAN.md`](PHASE12_PLAN.md) §12.1.

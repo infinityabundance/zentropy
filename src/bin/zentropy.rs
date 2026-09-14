@@ -1154,7 +1154,7 @@ fn cmd_reorder_out(_args: &[String]) -> Result<(), String> {
 /// Phase 8 research: train the learned residual corrector on a corpus prefix and
 /// write the quantized weights. The trainer runs on the *transformed* stream the
 /// predictor actually codes, so training sees the inference distribution.
-#[cfg(feature = "learned")]
+#[cfg(feature = "learned-train")]
 fn cmd_train_residual(args: &[String]) -> Result<(), String> {
     let path = args.first().ok_or("train-residual: need <in>")?;
     let get = |k: &str| -> Option<String> {
@@ -1204,9 +1204,9 @@ fn cmd_train_residual(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(feature = "learned"))]
+#[cfg(not(feature = "learned-train"))]
 fn cmd_train_residual(_args: &[String]) -> Result<(), String> {
-    Err("train-residual: built without the `learned` feature".into())
+    Err("train-residual: built without the `learned-train` feature".into())
 }
 
 /// Phase 9: measure one `tune` point for a method — encode, hash, receipt.

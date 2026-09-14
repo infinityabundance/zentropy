@@ -66,7 +66,10 @@ pub const WSCALE: i32 = 256;
 /// Clamp on the logit correction, in stretch units.
 pub const CORR_CLAMP: i32 = 1024;
 
-/// splitmix64: a deterministic, dependency-free 64-bit mixer.
+/// splitmix64: a deterministic, dependency-free 64-bit mixer. The offline
+/// trainer is the only caller, so it is gated with the trainer rather than left
+/// as dead code in the scored build.
+#[cfg(feature = "learned-train")]
 #[inline]
 fn splitmix64(mut x: u64) -> u64 {
     x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -198,6 +201,17 @@ impl Net {
 /// Floating-point shadow used only by the offline trainer. The trainer mirrors
 /// the integer forward pass so the quantized network it produces behaves as it
 /// was trained.
+///
+/// **Research-plane, and gated out of the scored build** (`learned-train`). It is
+/// the only code in the tree that calls a libm function, and shipping it in the
+/// stub would make the scored binary depend on the host's `libm` for no
+/// behaviour at all: the stub never constructs a trainer, so the code could not
+/// execute. Gating it is therefore two things at once — a measured reduction in
+/// `S`, and a *structural* guarantee that the judged binary's output cannot
+/// depend on a floating-point library implementation. Determination by argument
+/// ("the integer path never reads a float") is weaker than a symbol table with
+/// no `log2f` in it.
+#[cfg(feature = "learned-train")]
 pub struct Trainer {
     pub nh: usize,
     pub w1: Vec<f32>,
@@ -212,6 +226,7 @@ pub struct Trainer {
     pub ema_bits: f64,
 }
 
+#[cfg(feature = "learned-train")]
 impl Trainer {
     pub fn new(nh: usize, lr: f32) -> Self {
         // Small deterministic random weights: a zero-initialised hidden layer has
@@ -415,6 +430,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "learned-train")]
     fn embedded_int_net_matches_dequantized_float() {
         // If this fails, the integer runtime and the float trainer disagree and
         // the trained network cannot be shipped.
@@ -462,6 +478,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "learned-train")]
     fn trainer_learns_a_constant_bias() {
         // With zero features and a target bit always 1, the corrector must learn
         // a positive correction (the bounded global bias reaches +4).
