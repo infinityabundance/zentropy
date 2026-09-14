@@ -146,7 +146,7 @@ Honest status as of the current revision. `MEASURED` means the number exists in
 | 8 | Learned residual corrector (model-size Pareto campaign) | **COMPLETE** — a 120-byte quantized integer MLP consumes the classical mixer/APM outputs and emits a logit correction; offline-trained, embedded, charged. Adopted at enwik9: **−421,646 B** (170,063,733 → 169,642,087, 1.3571 bpc) for a measured 7,848 B; permuted-weight control +2,201,020. Net-gain gate passes (see PHASE8_PLAN.md) |
 | 9 | Global search (DSFB observer, frf-fuzz mutation, Gemel memory) | **COMPLETE** — a deterministic, receipted search layer over the `tune` header byte (search has no decode authority). Campaigns: exhaustive on enwik7 (256 points), coordinate on enwik8 (46), gated by full `eval` on enwik9. The APM adaptation-shift axis is **REJECTED** at enwik9 (+90,996 B at the best LR) and compiled out; the search re-tuned the mixer learning rate 24 → 16 for **−359,748 B at zero binary cost**. The phase nets **−224 B** of executable. See §7.9 |
 | 10 | Equivalence-preserving representation optimizer | PROPOSED — see [`PHASE10_PLAN.md`](PHASE10_PLAN.md) |
-| 11 | Resource closure (RAM/CPU/disk/binary size/determinism) | **IN PROGRESS** — OOM guard complete and **measured**: the scored half (`mem-guard`, the startup refusal) costs a real **~5.5–5.8 KB** of the 399,888 B stub; the research half (`mem-floor`) is gated out and now **pauses** rather than aborting a long run ([`MEMORY_GUARD.md`](MEMORY_GUARD.md)). The RAM↔ratio trade is the live item: `for_size` caps tables at 2^24 (576 MB for enwik9) against a 10 GB envelope, and archive bytes fall monotonically as they grow ([`RESOURCE_CLOSURE.md`](RESOURCE_CLOSURE.md)). The T1 layout alternative is **REJECTED** ([`LAYOUT_DECISION.md`](LAYOUT_DECISION.md)) |
+| 11 | Resource closure (RAM/CPU/disk/binary size/determinism) | **IN PROGRESS, two measured wins** — (a) the scored stub is **111,888 B**, down from 400,816 B by rebuilding `std` with `panic_abort`+`panic_immediate_abort`; since both legal forms charge the program twice that is **−577,856 B of `S`**, verified by a byte-identical archive; (b) `for_size` caps tables at 2^24 (576 MB for enwik9) against a 10 GB envelope and archive bytes fall monotonically as they grow (gates in flight). Also measured: the method dispatch is **not** the stub's cost (+24 B to narrow it, hypothesis withdrawn), `mem-guard` is 5,520 B, and the research half (`mem-floor`) is outside `accepted` and now **pauses** rather than aborting a long run. The T1 layout alternative is **REJECTED** ([`LAYOUT_DECISION.md`](LAYOUT_DECISION.md)). See [`RESOURCE_CLOSURE.md`](RESOURCE_CLOSURE.md), [`MEMORY_GUARD.md`](MEMORY_GUARD.md) |
 | 12 | Submission closure (SFX, source, doc, receipts, licence, checklist) | **PARTIAL** — SFX stub + container + packaging court work; not yet a submission |
 
 ## 7. Measured results
@@ -169,7 +169,7 @@ as a monotone improvement is a category error: the target is enwik9.
 | enwik8 | 100,000,000 | 21,245,220 | 1.6996 | 4.71 | ~245 s | — |
 | enwik9 | 1,000,000,000 | 169,282,339 | 1.3543 | 5.91 | ~1,928 s | ~5.5 GiB |
 
-The accepted configuration's executable is the **399,888 B** scored stub
+The accepted configuration's executable is the **111,888 B** scored stub
 (`--profile submission --no-default-features --features accepted`). `accepted` is
 the single definition of the scored feature set, so research-plane machinery —
 the Phase-9 search layer, rayon — cannot leak into `S` by forgetting a flag. Most
@@ -269,7 +269,7 @@ transformed representation and can only add binary cost. A production that
 The accepted configuration is the `residual` method at `tune 5`. The scored stub
 (`target/submission/zentropy-sfx`, `--profile submission --no-default-features
 --features accepted`, `opt-level="z"`, LTO, stripped) is both `comp9a` and
-`decomp9` and is **399,888 B**. Measured on enwik6 (`bhm = 267,333 B`,
+`decomp9` and is **111,888 B**. Measured on enwik6 (`bhm = 267,333 B`,
 `archive9 = 666,972 B`) the two legal packaging forms score:
 
 ```

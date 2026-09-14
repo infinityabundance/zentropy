@@ -34,7 +34,10 @@
 - **Hutter score accounting is sealed:** the three legal submission forms are
   unit-tested constructors, and no mechanism's adoption decision uses an
   estimated byte cost.
-- **The submission path works.** The scored stub (399,888 B,
+- **The submission path works.** The scored stub is **111,888 B** (Phase 11: rebuilt
+`std` with `panic_abort`+`panic_immediate_abort`, `-288,928 B` for a byte-identical
+archive — and, because both legal packaging forms charge the program twice, worth
+**-577,856 B of `S`**; the plain stable build is 400,816 B and remains the fallback),
 `--profile submission --no-default-features --features accepted`) is both `comp9a`
 and `decomp9`; a packed self-extracting `archive9` reconstructs byte-identically
 with no external inputs.
@@ -259,7 +262,9 @@ item 2/7: a cheap probe, not an optimisation campaign.
   mechanism is gated on that, not on our hardware.
 - **Memory.** The model already uses ~450 MB for enwik8; enwik9 needs a
   careful allocation budget under 10 GB.
-- **Binary size.** The stub is 399,888 B. Phases 6–9 added ≈33 KB of dispatch and
+- **Binary size.** The stub is **111,888 B** after Phase 11 (§7 of
+[`RESOURCE_CLOSURE.md`](RESOURCE_CLOSURE.md)); `mem-guard` is 5,520 B of it, and
+the claim that the dispatch dominated was measured at +24 B and withdrawn. The old text read:
   mechanism code; Phase 11 must gate the rejected methods out of the submission
   build. The accepted mechanisms' own marginal costs are small (SSE 256 B,
   reorder 24,208 B, learned 7,848 B).

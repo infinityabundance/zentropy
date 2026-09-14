@@ -2022,15 +2022,22 @@ pub fn untokened_stream(input: &[u8], method: Method, tune: u8) -> Vec<u8> {
     data
 }
 
-/// Decode an archive payload produced by [`encode_with`].
-pub fn decode(archive: &[u8]) -> Option<Vec<u8>> {
-    if archive.len() < HEADER_LEN {
-        return None;
-    }
-    if &archive[0..4] != MAGIC {
-        return None;
-    }
-    let method = match archive[4] {
+/// Map an archive header's method byte to a [`Method`].
+///
+/// Every method is decodable, so any ablation can be reproduced and every negative
+/// result stays inspectable.
+///
+/// It was worth testing whether a *submission* build could narrow this to the two
+/// ids the accepted encoder can emit — [`Method::Residual`], plus [`Method::Sse3`]
+/// as the article-layout compiler's downgrade target for a corpus whose page ids
+/// are not strictly ascending. Measured: narrowing it saved **minus 24 B**, i.e.
+/// nothing, because fat LTO already removes the model-configuration code that no
+/// reachable method reaches. The dispatch is not where a scored artifact's bytes
+/// go; see `docs/RESOURCE_CLOSURE.md` section 6. The
+/// experiment was removed rather than kept, since a two-method decoder is a
+/// correctness risk that buys nothing.
+fn method_from_id(id: u8) -> Option<Method> {
+    Some(match id {
         0 => Method::RawCm,
         1 => Method::RawCmNoWord,
         2 => Method::StructHoist,
@@ -2127,7 +2134,18 @@ pub fn decode(archive: &[u8]) -> Option<Vec<u8>> {
         93 => Method::ResidualFirstUse,
         94 => Method::ResidualSubword,
         _ => return None,
-    };
+    })
+}
+
+/// Decode an archive payload produced by [`encode_with`].
+pub fn decode(archive: &[u8]) -> Option<Vec<u8>> {
+    if archive.len() < HEADER_LEN {
+        return None;
+    }
+    if &archive[0..4] != MAGIC {
+        return None;
+    }
+    let method = method_from_id(archive[4])?;
     let mut len_bytes = [0u8; 8];
     len_bytes.copy_from_slice(&archive[6..14]);
     let n = u64::from_le_bytes(len_bytes);

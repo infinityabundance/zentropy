@@ -103,12 +103,19 @@ rebuilt twice per row and stable.
 |---|---|
 | `accepted` + `mem-floor` | 399,632 |
 | **`accepted`** (the scored set; floor implementation gated out) | **399,888** |
+
+> **Superseded in Phase 11.** These four rows are the *stable* build, measured before
+> the `panic_immediate_abort` change; the shipped stub is now **111,888 B** and the
+> `mem-guard` marginal is **5,520 B** there. The relative findings (mem-guard real,
+> mem-floor noise-level) are unchanged; see
+> [`RESOURCE_CLOSURE.md`](RESOURCE_CLOSURE.md) §7.
 | `accepted` − `mem-guard` + `mem-floor` | 394,128 |
 | `accepted` − `mem-guard` | 394,096 |
 
 Therefore:
 
-- **`mem-guard` costs ~5.5–5.8 KB** (399,888 − 394,096 = 5,792 B; 399,632 − 394,128
+- **`mem-guard` costs ~5.5–5.8 KB** in the stable build (**5,520 B** in the shipped
+  one) (399,888 − 394,096 = 5,792 B; 399,632 − 394,128
   = 5,504 B). This is a real, reproducible, same-sign cost and is the one genuinely
   interesting Phase-11 target in this document.
 - **`mem-floor`'s marginal cost is noise-level and sign-inconsistent**: −256 B in the

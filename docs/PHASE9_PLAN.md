@@ -71,7 +71,7 @@ campaign resumable after an interruption.
 `S` is authority, so the phase's executable cost is charged by building the
 scored stub, not by argument. These figures are **historical**: they were measured
 at the Phase-9 revision, and `opt-level="z"` is not monotone in code size, so the
-absolute numbers have since drifted (the current `accepted` stub is **399,888 B**,
+absolute numbers have since drifted (the current `accepted` stub is **111,888 B**,
 see [`MEMORY_GUARD.md`](MEMORY_GUARD.md) §4). The *deltas* are the phase's claim:
 
 | build | stub bytes | vs HEAD |

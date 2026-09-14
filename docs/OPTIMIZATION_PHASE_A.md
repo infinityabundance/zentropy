@@ -12,7 +12,7 @@
 > `Method::Residual` at `tune 5` (mixer LR 16, APM axis off), and every `tune 7`
 > reference below is the A20-adopted value at the time of the phase, superseded by
 > Phase 9. Likewise the `315,760 B` stub figure is the A0 parent, not the current
-> artifact (**399,888 B**, see [`MEMORY_GUARD.md`](MEMORY_GUARD.md) §4). Read the
+> artifact (**111,888 B**, see [`RESOURCE_CLOSURE.md`](RESOURCE_CLOSURE.md) §7). Read the
 > phase's *measurements and controls* here; read
 > [`RESEARCH_STATUS.md`](RESEARCH_STATUS.md) for what is true now.
 

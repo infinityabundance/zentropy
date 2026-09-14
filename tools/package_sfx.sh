@@ -16,16 +16,34 @@ NAME=$(basename "$IN")
 mkdir -p "$OUTDIR"
 
 cd "$ROOT"
-echo "building submission stub (profile=submission, features=accepted)..." >&2
-# Portability guard: pin default codegen. A developer experimenting with
-# `RUSTFLAGS=-C target-cpu=native` (see tools/build_research.sh) must not be able
-# to leak a host-specific build into a scored artifact — a native build emits
+echo "building submission stub (nightly + build-std, panic=immediate-abort)..." >&2
+# THREE things are pinned here, and each was measured rather than assumed.
+#
+# 1. Toolchain. `nightly-2026-07-24` is pinned by date, not `+nightly`, so the
+#    artifact is reproducible: an unpinned channel would silently move.
+#
+# 2. `-Z build-std=std,panic_abort` + `-Cpanic=immediate-abort`. This is the single
+#    largest Phase-11 win by a wide margin: it rebuilds `std` without the panic
+#    hook, the backtrace machinery and the unwinding tables that the *prebuilt*
+#    std carries unconditionally (its prebuilt rlibs are compiled panic=unwind).
+#    Measured saving: 400,816 B -> 111,888 B, i.e. **-288,928 B (-72%)**, and the
+#    resulting stub produces a BYTE-IDENTICAL archive to the stable build
+#    (verified on enwik6: 267,333 B both ways, exact round-trip). The bytes being
+#    removed are `gimli`, `addr2line`, `miniz_oxide`, `rustc_demangle` and four
+#    `quicksort` instantiations - none of which touch the codec.
+#    A stable build still works and is 288,928 B larger; that is the fallback.
+#
+# 3. Target, named explicitly, so a host-specific default cannot leak in.
+#
+# Portability guard: RUSTFLAGS is set here rather than inherited, so a developer
+# experimenting with `-C target-cpu=native` (see tools/build_research.sh) cannot
+# leak a host-specific build into a scored artifact - a native build emits
 # AVX2/BMI2 unconditionally, and the judged machines "may change without notice".
-# Measured: native is ~13% faster for research; x86-64-v2 is a null result, so
-# there is no portability-safe codegen win to claim here.
-RUSTFLAGS="" cargo build --quiet --profile submission --no-default-features --features accepted --bin zentropy-sfx
-
-STUB="$ROOT/target/submission/zentropy-sfx"
+RUSTFLAGS="-Zunstable-options -Cpanic=immediate-abort" cargo +nightly-2026-07-24 \
+    -Z build-std=std,panic_abort \
+    build --quiet --profile submission --no-default-features --features accepted \
+    --bin zentropy-sfx --target x86_64-unknown-linux-gnu
+STUB="$ROOT/target/x86_64-unknown-linux-gnu/submission/zentropy-sfx"
 BHM="$OUTDIR/$NAME.bhm"
 SFX="$OUTDIR/${NAME}.archive9"
 

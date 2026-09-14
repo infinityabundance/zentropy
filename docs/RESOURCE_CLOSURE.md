@@ -126,3 +126,95 @@ Separate questions, same harness:
 
 The `layout` command supports both (`--nibble` for T1, `--bits` for T2) because a
 throughput change must never be able to hide behind an unmeasured ratio change.
+
+## 7. The scored stub's executable bytes — **−288,928 B measured, worth 2x in `S`**
+
+**Why executable bytes matter twice as much as they look.** Both legal packaging
+forms charge the program *twice*:
+
+```text
+separate form:   S = comp9a + decomp9 + bhm,  and with one binary comp9a = decomp9
+                 S = 2 x P + bhm
+self-extracting: archive9 embeds the program, so S = comp9 + archive9
+                 archive9 = P + bhm + 23,  giving S = 2 x P + bhm + 23
+```
+
+So one byte of executable is **two** bytes of `S`. Measured on enwik6 with the
+shipped stub: `program_bytes=111,888`, `bhm=267,333`, `archive9=379,244`,
+`S(self-extracting)=491,132`, `S(separate)=491,109` — the 23-byte difference between
+the forms is the SFX marker plus the length field, which is also the sanity check
+that both accounting paths agree.
+
+### 7.1 What the stub's bytes actually were
+
+Measured composition of the 400,816 B stable stub (`objdump -h`, and
+`nm --size-sort -S` on a `strip=none` build):
+
+| section | bytes | note |
+|---|---|---|
+| `.text` | 295,352 | code |
+| `.eh_frame` + `.eh_frame_hdr` + `.gcc_except_table` | 38,460 | unwinding tables, useless under `panic=abort` |
+| `.rodata` | 27,448 | strings and the learned weights |
+| `.rela.dyn` + `.dynsym`/`.dynstr`/`.dynamic`/`.got` | ~20,000 | dynamic-link machinery |
+
+The largest *symbols* were the finding. Zentropy's biggest was `Cm::new` at 5,629 B;
+above it sat `std`'s panic/backtrace apparatus —
+`backtrace_rs::symbolize::gimli::Cache::with_global` (18,619 B),
+`gimli::read::dwarf::Unit::new` (8,863 B), `miniz_oxide::inflate::core::decompress`
+(7,344 B), `addr2line::…parse_children` (4,692 B), `rustc_demangle::try_demangle`
+(2,479 B) and four `quicksort` instantiations — none of which touch the codec.
+
+### 7.2 Four candidate levers, measured
+
+| lever | result | verdict |
+|---|---|---|
+| narrow the 95-way method dispatch to the 2 ids the accepted encoder emits | **+24 B** | **REJECTED** — fat LTO already removes the config code no reachable method reaches. The hypothesis was wrong; the experiment was deleted rather than kept, since a two-method decoder is a correctness risk that buys nothing |
+| `-C force-unwind-tables=no` | 0 B | no effect: the unwinding tables come from the **prebuilt** `std` rlibs, which are compiled `panic=unwind` regardless of our profile |
+| `-C target-feature=+crt-static` | **+905,552 B** | REJECTED — static glibc is enormous |
+| `-Z build-std=std,panic_abort` + `-Cpanic=immediate-abort` | **−288,928 B (−72%)** | **ADOPTED** |
+
+### 7.3 The adopted lever, and why it is legitimate
+
+`std`'s prebuilt rlibs carry a panic hook, backtrace capture, DWARF parsing
+(`gimli`), symbolisation (`addr2line`), name demangling and a DEFLATE decompressor,
+unconditionally. Rebuilding `std` with `panic_abort` and
+`panic_immediate_abort` removes all of it.
+
+```text
+stable, --features accepted                          400,816 B
+nightly-2026-07-24 + build-std + panic=immediate-abort 111,888 B
+```
+
+Verification, because a smaller binary that codes differently is worthless: on
+enwik6 the nightly stub produces an archive **byte-identical** to the stable
+build's (267,333 B) and reconstructs the corpus exactly; `tools/package_sfx.sh`
+reports `exactness: PASS (byte-identical)` end-to-end through the self-extracting
+path.
+
+**Effect on `S`:** the program shrinks by 288,928 B, and the program is charged
+twice, so `S` falls by **577,856 B** — the second-largest single reduction in the
+project after the Phase-4 composite, and larger than the entire Phase-8 learned
+corrector (−421,646 B).
+
+Reproducibility is pinned in `tools/package_sfx.sh`: the toolchain is
+`nightly-2026-07-24` (by date, not `+nightly`), the target is named explicitly, and
+`-Z build-std` needs that toolchain's `rust-src` component. A plain stable build
+still works and is 288,928 B larger — that is the documented fallback, so the source
+is never hostage to a nightly.
+
+### 7.4 `mem-guard` is the one remaining binary cost worth noting
+
+Measured under the adopted build: `accepted` 111,888 B, `accepted` minus `mem-guard`
+106,368 B → the scored startup refusal costs **5,520 B**, which is 5,520 × 2 =
+**11,040 B of `S`**. It is kept deliberately: it is the OOM protection that makes a
+mis-provisioned judged machine fail cleanly instead of being OOM-killed, and 11 KB
+is 0.007% of `S`. The *research* half of the guard (`mem-floor`) stays outside
+`accepted` and is charged nothing (see [`MEMORY_GUARD.md`](MEMORY_GUARD.md)).
+
+### 7.5 The lesson Phase 11 keeps re-teaching
+
+Every one of the four levers above was a plausible estimate, and three were wrong —
+two of them by a factor of infinity in the wrong direction. "Most of the stub is
+dispatch for rejected methods" was written in the architecture doc as near-fact and
+measured at +24 B. The lever that mattered was in a place no estimate would have
+looked: the standard library's panic path.
