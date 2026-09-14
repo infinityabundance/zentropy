@@ -1507,13 +1507,19 @@ pub fn encode_tuned(input: &[u8], method: Method, tune: u8) -> Vec<u8> {
     let cfg = method.config(n).with_tune(tune);
     let mut cm = Cm::new(&cfg, n);
     let mut enc = RangeEncoder::with_capacity(n / 2 + 64);
+    #[cfg(feature = "progress")]
+    let mut prog = crate::progress::Progress::new("encode", n as u64);
 
     for (i, &byte) in data.iter().enumerate() {
         // Protect the machine: a long run re-checks available memory as it codes.
         // The guard is armed only by the research driver, so this is a no-op on
-        // the judged path (one relaxed atomic load per megabyte).
+        // the judged path (one relaxed atomic load per megabyte). The same point
+        // reports progress, which is how a run shows it is alive rather than
+        // appearing to hang for half an hour.
         if i & (crate::memory::RUNTIME_CHECK_INTERVAL - 1) == 0 {
             crate::memory::enforce_runtime_floor();
+            #[cfg(feature = "progress")]
+            prog.tick(i as u64);
         }
         let mut mask = 0x80u32;
         while mask != 0 {
@@ -1524,6 +1530,8 @@ pub fn encode_tuned(input: &[u8], method: Method, tune: u8) -> Vec<u8> {
             mask >>= 1;
         }
     }
+    #[cfg(feature = "progress")]
+    prog.finish();
     out.extend_from_slice(&enc.finish());
     out
 }
@@ -1724,10 +1732,15 @@ pub fn decode(archive: &[u8]) -> Option<Vec<u8>> {
     let mut cm = Cm::new(&cfg, n);
     let mut dec = RangeDecoder::new(payload);
     let mut decoded = Vec::with_capacity(n);
+    #[cfg(feature = "progress")]
+    let mut prog = crate::progress::Progress::new("decode", n as u64);
     for i in 0..n {
-        // Decode is as long as encode, so it carries the same runtime floor.
+        // Decode is as long as encode, so it carries the same runtime floor and
+        // the same progress reporting.
         if i & (crate::memory::RUNTIME_CHECK_INTERVAL - 1) == 0 {
             crate::memory::enforce_runtime_floor();
+            #[cfg(feature = "progress")]
+            prog.tick(i as u64);
         }
         let mut byte = 0u32;
         for _ in 0..8 {
@@ -1738,6 +1751,8 @@ pub fn decode(archive: &[u8]) -> Option<Vec<u8>> {
         }
         decoded.push(byte as u8);
     }
+    #[cfg(feature = "progress")]
+    prog.finish();
 
     let unpermuted = maybe_unperm(decoded, perm.as_ref());
     let untokened = maybe_untoken(method, unpermuted);

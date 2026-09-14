@@ -43,6 +43,10 @@ pub mod mixer;
 #[cfg(feature = "learned")]
 pub mod learned;
 pub mod score;
+// Research-plane progress reporting for long coding passes. Deliberately outside
+// the `accepted` feature bundle: the scored stub carries none of it.
+#[cfg(feature = "progress")]
+pub mod progress;
 // Phase 9: global search — the runtime hyperparameter space, the frf-fuzz
 // mutation operator, the DSFB observer and the Gemel-memory query helpers. This
 // is research-plane machinery: the scored path needs only

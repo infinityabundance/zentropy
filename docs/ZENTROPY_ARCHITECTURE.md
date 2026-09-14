@@ -78,7 +78,7 @@ bytes ──► [reversible structural hoist]      (Phase 3, fixed 31-entry tabl
            previous-line/column]
       ──► [match tiers: dense short, long-distance, sparse/gapped]
       ──► [matched-literal expert over the match prediction]  (Phase 4)
-      ──► [logistic mixer over expert predictions]   (A20, tune 7)
+      ──► [logistic mixer over expert predictions]   (A20, re-tuned in Phase 9 to tune 5)
       ──► [APM/SSE calibration ×2]
       ──► [binary range coder]
       ──► archive9

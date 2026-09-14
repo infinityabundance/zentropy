@@ -900,6 +900,10 @@ fn cmd_sweep_tune(args: &[String]) -> Result<(), String> {
             if todo.is_empty() {
                 continue;
             }
+            // Concurrent passes would interleave their progress lines, so the
+            // status line is silenced for the duration of the batch.
+            #[cfg(feature = "progress")]
+            zentropy::progress::set(false);
             #[cfg(feature = "parallel")]
             let mut measured: Vec<(u8, zentropy::search::Trial, Vec<u8>)> = {
                 use rayon::prelude::*;
@@ -919,6 +923,8 @@ fn cmd_sweep_tune(args: &[String]) -> Result<(), String> {
                 })
                 .collect();
             measured.sort_by_key(|(t, _, _)| *t);
+            #[cfg(feature = "progress")]
+            zentropy::progress::set(true);
             for (t, tr, arch) in measured {
                 write_tune_receipt(method, t, &tr, &arch, path, &sha, receipt.as_deref())?;
                 tried.insert(t);
@@ -1113,6 +1119,8 @@ fn cmd_pblocks(args: &[String]) -> Result<(), String> {
 
     let t = Instant::now();
     let mut parts: Vec<Vec<u8>> = Vec::with_capacity(ranges.len());
+    #[cfg(feature = "progress")]
+    zentropy::progress::set(false);
     for chunk in ranges.chunks(jobs) {
         #[cfg(feature = "parallel")]
         let mut out: Vec<Vec<u8>> = {
@@ -1129,6 +1137,8 @@ fn cmd_pblocks(args: &[String]) -> Result<(), String> {
             .collect();
         parts.append(&mut out);
     }
+    #[cfg(feature = "progress")]
+    zentropy::progress::set(true);
     let blocked_s = t.elapsed().as_secs_f64();
 
     // Exactness: decode every block, reassemble, compare.
@@ -1494,12 +1504,14 @@ fn cmd_eval(args: &[String]) -> Result<(), String> {
     };
 
     let t1 = Instant::now();
+    eprintln!("eval: [1/2] encoding the candidate — this is the long pass");
     let cand_arch = archive::encode_tuned(&data, candidate, tune);
     let cand_s = t1.elapsed();
 
     // Decode the candidate once: the exactness court and the receipt's decoded
     // digest both need the result, and on enwik9 a second decode costs ~30
     // minutes.
+    eprintln!("eval: [2/2] decoding the candidate to prove exactness");
     let cand_dec = archive::decode(&cand_arch);
     let cand_ok = cand_dec.as_deref() == Some(&data[..]);
 
