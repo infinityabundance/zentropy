@@ -54,7 +54,8 @@ fn main() -> ExitCode {
     }
     // OOM protection: the research driver arms the runtime memory floor, so a
     // multi-hour run aborts cleanly if the machine tightens underneath it rather
-    // than pushing the user's session into swap. The judged stub never arms it.
+    // than pushing the user's session into swap. The judged stub never arms it,
+    // and does not carry its implementation (`mem-floor` is outside `accepted`).
     memory::enable_runtime_guard();
     let result = match args[1].as_str() {
         "hash" => cmd_hash(&args[2..]),
@@ -1776,7 +1777,13 @@ fn cmd_meminfo(args: &[String]) -> Result<(), String> {
     // budget is what the submission stub applies. Printing both makes the
     // difference explicit (the reserve the driver keeps for the workstation).
     let b = memory::research_budget(max_ram_override(args));
+    #[cfg(feature = "mem-floor")]
     println!("{}", memory::summary());
+    #[cfg(not(feature = "mem-floor"))]
+    println!(
+        "{} bytes available; run floor compiled out (feature `mem-floor`)",
+        memory::available_bytes().unwrap_or(0)
+    );
     println!(
         "research_budget_bytes={} ({:.2} GiB)",
         b,

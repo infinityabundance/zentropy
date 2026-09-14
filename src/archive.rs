@@ -1422,7 +1422,7 @@ fn maybe_unreorder(_method: Method, data: Vec<u8>) -> Vec<u8> {
 /// title; the decoder restores the original order by a stable sort on the
 /// embedded ascending page id (zero permutation bytes). Adopted at enwik9:
 /// archive 170,063,733 (1.3605 bpc vs 1.3963), DeltaS -4,469,794 at a measured
-/// 10,256 B executable cost; the identity control is exactly 0 and the shuffle
+/// 24,208 B executable cost; the identity control is exactly 0 and the shuffle
 /// control is +25,519 at enwik7.
 ///
 /// Phase 8 (8.3): the learned residual corrector is adopted on top of the

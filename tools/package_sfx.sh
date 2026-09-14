@@ -17,11 +17,13 @@ mkdir -p "$OUTDIR"
 
 cd "$ROOT"
 echo "building submission stub (profile=submission, features=accepted)..." >&2
-# `--features accepted` is the scored configuration and nothing else: it excludes
-# research-plane machinery (the search layer, rayon) so those bytes cannot leak
-# into `S`. Using the named bundle rather than the default keeps the exclusion
-# honest and drift-free.
-cargo build --quiet --profile submission --no-default-features --features accepted --bin zentropy-sfx
+# Portability guard: pin default codegen. A developer experimenting with
+# `RUSTFLAGS=-C target-cpu=native` (see tools/build_research.sh) must not be able
+# to leak a host-specific build into a scored artifact — a native build emits
+# AVX2/BMI2 unconditionally, and the judged machines "may change without notice".
+# Measured: native is ~13% faster for research; x86-64-v2 is a null result, so
+# there is no portability-safe codegen win to claim here.
+RUSTFLAGS="" cargo build --quiet --profile submission --no-default-features --features accepted --bin zentropy-sfx
 
 STUB="$ROOT/target/submission/zentropy-sfx"
 BHM="$OUTDIR/$NAME.bhm"

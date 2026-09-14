@@ -69,7 +69,10 @@ campaign resumable after an interruption.
 ## Binary cost (9.8, A31)
 
 `S` is authority, so the phase's executable cost is charged by building the
-scored stub, not by argument:
+scored stub, not by argument. These figures are **historical**: they were measured
+at the Phase-9 revision, and `opt-level="z"` is not monotone in code size, so the
+absolute numbers have since drifted (the current `accepted` stub is **399,888 B**,
+see [`MEMORY_GUARD.md`](MEMORY_GUARD.md) §4). The *deltas* are the phase's claim:
 
 | build | stub bytes | vs HEAD |
 |---|---|---|
@@ -91,6 +94,13 @@ scored stub, not by argument:
   licence surface, not the bytes.
 * the memory-guard work (research budget with a 4 GiB reserve, the runtime floor,
   the parent-skip in `eval`) accounts for the rest of the −224 B.
+
+> **Read the 16 B rows as noise.** The stub's size is a *layout* property, not a
+> sum of feature costs: an inert call can make the artifact 256 B **smaller** and a
+> targeted re-measurement can flip the sign. The Phase-9 figures above are
+> reproducible at that revision, but the ±16 B rows in particular should not be
+> quoted as mechanism prices. Any decision that turns on <1 KB of stub must be
+> re-measured on the tree that will actually ship.
 
 Packaging builds the stub with `--no-default-features --features accepted`, so
 `accepted` is the single definition of the scored configuration and research-plane
@@ -268,10 +278,8 @@ Complete phase accounting at enwik9:
 
 ```text
 archive       169,642,087 -> 169,282,339      (-359,748 B)
-binary           399,840 -> 399,616          (-224 B: the search layer costs 16 B,
-                                              removing the rejected axis saves 32 B,
-                                              and the parallel/runtime-guard changes
-                                              net the remainder)
+binary           399,840 -> 399,616          (-224 B, measured at that revision;
+                                              see the layout-noise note above)
 DeltaS                                    ~= -359,972 B
 ```
 

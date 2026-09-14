@@ -47,10 +47,11 @@ name = "zentropy-sfx"
 path = "src/bin/zentropy_sfx.rs"
 
 [features]
-# Only ADOPTED mechanisms are in the default (scored) build. Rejected or
-# experimental mechanisms are compiled in explicitly with --features so they
-# reproduce but do not cost submission bytes.
-default = ["accepted", "parallel", "progress"]
+# Only ADOPTED mechanisms are in the default (scored) build, plus research-plane
+# infrastructure that is useful when developing (`parallel`, `progress`,
+# `mem-floor`). Rejected or experimental mechanisms are compiled in explicitly with
+# `--features` so they reproduce but do not cost submission bytes.
+default = ["accepted", "parallel", "progress", "mem-floor"]
 # The scored configuration: exactly the adopted mechanisms. The submission
 # packaging builds with `--no-default-features --features accepted` so that
 # research-plane machinery (the search layer, rayon) cannot leak into the stub.
@@ -62,6 +63,12 @@ parallel = ["dep:rayon"]
 # Research-plane progress reporting for long passes (percent, throughput, ETA).
 # Outside `accepted`: the scored stub prints nothing and carries none of it.
 progress = []
+# Research-plane runtime memory floor: abort a long run if the *machine* tightens
+# underneath it (with a patience window, so a transient dip from an unrelated
+# process cannot discard an hour of work). Outside `accepted`, and deliberately
+# so: the judged decoder never arms it, so in the stub it would be pure `S` cost
+# with no protective value. See `src/memory.rs`.
+mem-floor = []
 # Gates the Phase-3 structural-hoisting transform into the binary. Disabling it
 # yields an otherwise-identical binary used ONLY to measure the mechanism's
 # real executable-byte cost. `S` is authority: an estimate is never allowed to
@@ -131,8 +138,10 @@ apm-tune = []
 reorder = []
 # Phase 8: learned residual corrector (integer inference + embedded weights).
 learned = []
-# Out-of-memory protection in the scored stub. On by default; disabling it
-# yields an otherwise-identical binary used to measure its executable cost.
+# Out-of-memory protection in the scored stub: refuse to *start* a run whose
+# projected peak exceeds the budget. On by default; disabling it yields an
+# otherwise-identical binary used to measure its executable cost. This is the
+# scored half of the OOM guard — the runtime floor is `mem-floor`, above.
 mem-guard = []
 # `submission` gates out research-only machinery from the decoder stub.
 submission = []

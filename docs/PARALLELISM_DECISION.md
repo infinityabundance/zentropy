@@ -41,10 +41,19 @@ parallel runs. The adaptive `guided` schedule stays serial because it chooses it
 next point from measured results; `coord`/`full`/`fuzz`/`--tunes` are parallel.
 
 **Scored-path cost: zero.** `rayon` is an *optional* dependency, not in
-`accepted`, so the submission stub never links it. Measured anyway, for honesty:
-the stub is 399,616 B without rayon and 399,632 B with it — **16 B**, i.e. fat LTO
-removes essentially all of it when unused. The reason to keep it out is not bytes
-but the dependency/licence surface of a scored artifact.
+`accepted`, so the submission stub never links it. Measured anyway, for honesty
+(`RUSTFLAGS="" cargo build --profile submission --no-default-features --features …`):
+
+| features | stub bytes |
+|---|---|
+| `accepted` (the scored stub) | **399,632** |
+| `accepted,parallel` | 399,616 |
+
+The `parallel` build is **16 B smaller**, i.e. the difference is code-layout noise
+from fat LTO, not a cost of rayon — nothing in the SFX path calls it. Treat ±16 B
+as the layout-noise band for any single-feature measurement; do not read a 16 B
+delta as a mechanism's price. The reason to keep rayon out is not bytes but the
+dependency/licence surface of a scored artifact.
 
 ## 3. Parallel blocking — REJECTED for the archive, kept as a probe
 

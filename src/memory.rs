@@ -31,12 +31,31 @@
 //! 3. **Runtime floor** ([`enforce_runtime_floor`]) — a long run re-checks
 //!    available memory as it codes and aborts if the machine tightens underneath
 //!    it. This is what stops a two-hour job from swapping a user's session to
-//!    death. It is **opt-in** ([`enable_runtime_guard`]) so the judged decoder
-//!    can never abort a legitimate reconstruction.
+//!    death.
+//!
+//! Layers 1–2 are the **scored** protection (feature `mem-guard`): cheap, and a
+//! refusal is always safe. Layer 3 is **research only** (feature `mem-floor`):
+//! its *implementation* — `/proc` parsing, the patience state and the abort text
+//! — is compiled out of the scored stub, because the judged decoder never arms it
+//! and a mid-reconstruction abort would fail a run for no benefit.
+//!
+//! What stays in every build is the *call site*: the coding loops call
+//! [`enforce_runtime_floor`] unconditionally and it tests one relaxed atomic. That
+//! keeps `archive.rs` free of `cfg` sprawl and costs nothing measurable. It is
+//! worth recording why, because the measurement was counter-intuitive:
+//! `opt-level="z"` is not monotone in code size, and removing the floor's body
+//! made the scored stub **256 B larger** (399,632 → 399,888, three identical
+//! repetitions). Gating only the body did *not* recover the smaller size, so the
+//! lever is the body's effect on LLVM's inliner rather than the call itself. The
+//! 256 B is a layout artifact, not a mechanism price; it is charged honestly and
+//! left to Phase 11, which restructures the stub and must re-measure. See
+//! `docs/MEMORY_GUARD.md` §4.
 //!
 //! A hard kernel-enforced ceiling (`ulimit -v`) is applied by the long-run
 //! wrappers in `tools/`; see `tools/p9_gate.sh`.
 
+#[cfg(feature = "mem-floor")]
+use std::sync::atomic::AtomicU32;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Hard ceiling on the default budget, in bytes (8 GiB). Chosen below the
@@ -56,23 +75,52 @@ pub const RESERVE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 /// The distinction from [`RESERVE_BYTES`] matters: the reserve stops a run from
 /// *starting* when the machine is already tight, while this floor stops a run
 /// that was fine at startup from thrashing the machine an hour later.
+#[cfg(feature = "mem-floor")]
 pub const RUN_FLOOR_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 /// Bytes coded between runtime memory checks. Cheap enough to be free (one
 /// relaxed atomic load per megabyte) and frequent enough to react in seconds.
 pub const RUNTIME_CHECK_INTERVAL: usize = 1 << 20;
 
-/// Whether the runtime floor is armed. Off by default: the submission stub must
-/// never abort a legitimate reconstruction because the judge's machine is busy.
+/// Consecutive below-floor samples tolerated before a run aborts.
+///
+/// A single sample is **not** evidence of a machine that is out of memory. Any
+/// unrelated transient — a compiler link, a browser tab, a page-cache eviction —
+/// can drop `MemAvailable` below the floor for a moment. Reacting to one sample
+/// discards the whole run, and an enwik9 pass is ~45 minutes: that is exactly what
+/// happened when a `cargo build` was started alongside five live gates, which
+/// killed all five at 87% for a dip that cleared within seconds.
+///
+/// Three consecutive samples is several seconds of *sustained* pressure (one
+/// sample is one mebibyte of coded stream, ~1 s on a small rung and ~3 s on
+/// enwik9). A genuine exhaustion event always lasts that long; a blip does not.
+/// The delay is safe because this process's own footprint is fixed after startup
+/// (bounded by the [`budget`] check), so it cannot be the process consuming the
+/// last of the floor while it waits.
+#[cfg(feature = "mem-floor")]
+pub const FLOOR_BREACH_PATIENCE: u32 = 3;
+
+/// Whether the runtime floor is armed.
+///
+/// Always present (it is one byte of `.bss` and no code), because the *call*
+/// site is kept in every build for the layout reason in the module docs. It
+/// defaults to false and the submission stub never sets it, so the guard is inert
+/// on the judged path — a legitimate reconstruction can never be aborted.
 static RUNTIME_GUARD: AtomicBool = AtomicBool::new(false);
 
+/// Length of the current run of consecutive below-floor samples. Reset to zero
+/// by any sample at or above the floor, so only a *sustained* breach aborts.
+#[cfg(feature = "mem-floor")]
+static FLOOR_BREACHES: AtomicU32 = AtomicU32::new(0);
+
 /// Arm the runtime memory floor. The research driver calls this once at startup;
-/// the submission stub never does.
+/// the submission stub never does. An unarmed guard is a no-op in every build.
 pub fn enable_runtime_guard() {
     RUNTIME_GUARD.store(true, Ordering::Relaxed);
 }
 
 /// The running floor, honouring `ZENTROPY_RUN_FLOOR_BYTES`.
+#[cfg(feature = "mem-floor")]
 pub fn run_floor() -> u64 {
     std::env::var("ZENTROPY_RUN_FLOOR_BYTES")
         .ok()
@@ -223,10 +271,26 @@ pub fn fits(projected: u64, budget: u64) -> bool {
 }
 
 /// True while the machine still has the running floor available.
+#[cfg(feature = "mem-floor")]
 pub fn runtime_ok() -> bool {
     match available_bytes() {
         Some(a) => a >= run_floor(),
         None => true,
+    }
+}
+
+/// The pure part of the floor logic: fold one sample into the breach streak and
+/// say whether the run must stop. Split out so the behaviour is testable without
+/// touching the machine's actual memory (which no test may control).
+///
+/// Returns `(new_streak, abort)`.
+#[cfg(feature = "mem-floor")]
+fn note_sample(streak: u32, available: u64, floor: u64) -> (u32, bool) {
+    if available >= floor {
+        (0, false)
+    } else {
+        let n = streak.saturating_add(1);
+        (n, n >= FLOOR_BREACH_PATIENCE)
     }
 }
 
@@ -238,26 +302,55 @@ pub fn runtime_ok() -> bool {
 /// point is to stop a long run before the kernel's OOM killer starts choosing
 /// victims, and the victim is otherwise likely to be the user's editor rather
 /// than the compressor.
+///
+/// A breach must persist for [`FLOOR_BREACH_PATIENCE`] consecutive samples
+/// before it aborts; the first sample of a streak is *reported* instead, so a
+/// tolerated dip leaves a trace in the run log rather than passing silently.
+///
+/// The function itself is present in every build, so the call sites need no
+/// `cfg`; only the implementation is gated, and a stub that never arms the guard
+/// therefore never carries the `/proc` parsing or the abort text. See the module
+/// docs for the measured, and counter-intuitive, size consequence of that choice.
 #[inline]
 pub fn enforce_runtime_floor() {
     if !RUNTIME_GUARD.load(Ordering::Relaxed) {
         return;
     }
-    let floor = run_floor();
-    if let Some(a) = available_bytes() {
-        if a < floor {
-            panic!(
-                "memory floor breached: {:.2} GiB available, floor {:.2} GiB. \
-                 Aborting this run to protect the machine. Free memory, or lower the \
-                 model with --max-ram / ZENTROPY_MAX_RAM_BYTES, then retry.",
+    #[cfg(feature = "mem-floor")]
+    {
+        let floor = run_floor();
+        let Some(a) = available_bytes() else {
+            return;
+        };
+        let streak = FLOOR_BREACHES.load(Ordering::Relaxed);
+        let (next, abort) = note_sample(streak, a, floor);
+        FLOOR_BREACHES.store(next, Ordering::Relaxed);
+        if next == 1 {
+            eprintln!(
+                "zentropy: memory floor: {:.2} GiB available, floor {:.2} GiB — \
+                 monitoring {} more samples before aborting",
                 a as f64 / (1024.0 * 1024.0 * 1024.0),
                 floor as f64 / (1024.0 * 1024.0 * 1024.0),
+                FLOOR_BREACH_PATIENCE - 1
+            );
+        }
+        if abort {
+            panic!(
+                "memory floor breached: {:.2} GiB available, floor {:.2} GiB, for {} \
+                 consecutive samples ({:.2} MiB coded). Aborting this run to protect \
+                 the machine. Free memory, or lower the model with --max-ram / \
+                 ZENTROPY_MAX_RAM_BYTES, then retry.",
+                a as f64 / (1024.0 * 1024.0 * 1024.0),
+                floor as f64 / (1024.0 * 1024.0 * 1024.0),
+                next,
+                (RUNTIME_CHECK_INTERVAL * next as usize) as f64 / (1024.0 * 1024.0),
             );
         }
     }
 }
 
 /// A one-line human summary of the current memory situation.
+#[cfg(feature = "mem-floor")]
 pub fn summary() -> String {
     let gib = 1024.0 * 1024.0 * 1024.0;
     let avail = available_bytes()
@@ -327,6 +420,7 @@ mod tests {
         assert_eq!(none, 0);
     }
 
+    #[cfg(feature = "mem-floor")]
     #[test]
     fn runtime_guard_is_off_until_enabled() {
         // The guard must never fire on the judged path, so it is opt-in. The
@@ -334,6 +428,38 @@ mod tests {
         enforce_runtime_floor();
         assert!(run_floor() > 0);
         assert_eq!(RUNTIME_CHECK_INTERVAL, 1 << 20);
+    }
+
+    #[cfg(feature = "mem-floor")]
+    #[test]
+    fn a_transient_dip_does_not_abort_but_a_sustained_one_does() {
+        // The whole point of the patience window: a single below-floor sample is
+        // not evidence of exhaustion, so a run must survive it. An enwik9 pass is
+        // ~45 min and was previously thrown away by one sample.
+        let floor = RUN_FLOOR_BYTES;
+        let low = floor - 1;
+        let ok = floor + 1;
+
+        // One dip: tolerated, streak recorded, no abort.
+        let (streak, abort) = note_sample(0, low, floor);
+        assert_eq!((streak, abort), (1, false));
+        // Sustained dip: aborts exactly at the patience bound, not before.
+        let mut streak = 0;
+        let mut aborted_at = None;
+        for i in 1..=(FLOOR_BREACH_PATIENCE + 2) {
+            let (s, a) = note_sample(streak, low, floor);
+            streak = s;
+            if a && aborted_at.is_none() {
+                aborted_at = Some(i);
+            }
+        }
+        assert_eq!(aborted_at, Some(FLOOR_BREACH_PATIENCE));
+        // A sample back above the floor clears the streak entirely, so the window
+        // must be *consecutive* — otherwise a slow leak would still be tolerated.
+        let (streak, abort) = note_sample(FLOOR_BREACH_PATIENCE - 1, ok, floor);
+        assert_eq!((streak, abort), (0, false));
+        let (streak, abort) = note_sample(streak, low, floor);
+        assert_eq!((streak, abort), (1, false));
     }
 
     #[test]
