@@ -90,6 +90,11 @@ word-token = []
 # A1.1/A26 v2: escape-extended word vocabulary (thousands of tokens).
 # Experimental; not in the default build until measured on the ladder.
 word-token2 = []
+# Phase 10.4: recency-ranked token ids (move-to-front, move-to-second). Decoder-
+# derivable from the id sequence alone, so it costs zero side-stream bytes; it is
+# a *representation identity* experiment, not a coverage one. Implies `word-token`
+# because these modes are variants of the v1 tokenizer.
+id-order = ["word-token"]
 # Phase 4.1: long-distance match tier (a second, longer-minimum match index).
 long-match = []
 # Phase 4.2: sparse (gapped) match tier.

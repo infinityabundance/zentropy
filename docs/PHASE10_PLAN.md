@@ -184,3 +184,36 @@ column expert's `ColumnNoLine` null control, and the T1 layout's 0.97× "speedup
 A stage is adopted only when a **full `eval` on enwik9** returns `ΔS < 0` **with
 exact reconstruction**, where `ΔS` includes payload, dictionary, side streams,
 perturbed streams, and measured executable bytes. Nothing weaker earns a place.
+
+## 10. Results
+
+### 10.4 Token recency (move-to-front / move-to-second ids) — **REJECTED**
+
+`IdMode::{Static, Mtf, MoveToSecond}` behind the `id-order` feature, exposed as
+`residual-mtf` and `residual-move-to-second`. The id list is maintained by both
+sides from the id sequence alone, so the transform stores **zero** side-stream bytes
+and stays invertible from the archive. Measured by full `eval` (exact on every rung):
+
+| corpus | parent | `residual-mtf` | Δ | `residual-move-to-second` | Δ |
+|---|---|---|---|---|---|
+| enwik6 | 267,333 | 284,261 | **+16,928** (+6.3%) | 284,128 | **+16,795** |
+| enwik7 | 2,370,164 | 2,583,787 | **+213,623** (+9.0%) | 2,583,728 | **+213,564** |
+
+Both rejected, and the loss **grows with scale**, which identifies the mechanism
+rather than leaving it as a mystery: a rank transform destroys the *absolute byte
+identity* of a token. A context-mixing predictor with a match model and high-order
+contexts exploits exactly that identity — the same word is the same byte string in
+every context it appears in — and recency ranking makes the same word a different
+id depending on history. The measureable prediction was seconds versus kilobytes;
+the project's repeated warning that rank transforms must be ablated per stream is
+now backed by a number.
+
+No executable cost is charged because the decision is already negative on archive
+size alone; adopting it could only add bytes.
+
+**The general lesson carries forward.** The v2 coverage result
+([`OPTIMIZATION_PHASE_A.md`](OPTIMIZATION_PHASE_A.md) A26, `+776,196` at enwik8) and
+this one point the same way: the predictor exploits *stable, sparse* identities, so
+a representation change pays only when it makes the model's job **easier**, not when
+it makes the byte string shorter. That is the bar the remaining stages are judged
+against.

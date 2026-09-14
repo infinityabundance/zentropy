@@ -423,8 +423,100 @@ pub fn build_word_vocab(input: &[u8], reverse: bool) -> Vec<Vec<u8>> {
     cand.into_iter().map(|(w, _)| w).collect()
 }
 
-/// Encode `input`, emitting `vocabulary || body`.
+/// Encode `input`, emitting `vocabulary || body`, with static ids.
 pub fn word_token_encode(input: &[u8], reverse: bool) -> Vec<u8> {
+    word_token_encode_mode(input, reverse, IdMode::Static)
+}
+
+// --- Phase 10.4 (A1.11): recency-ranked token ids ---------------------------
+//
+// The vocabulary header keeps the *word set* and the initial id order; the id a
+// body byte carries is the token's position in a list that both sides maintain
+// with the same rule. Nothing extra is stored: the list is a pure function of the
+// id sequence already coded, so the transform stays invertible from the archive
+// alone and costs **zero** side-stream bytes.
+//
+// This attacks representation *identity* rather than coverage. The accepted
+// configuration already ranks ids by ascending frequency (`reverse`), and that
+// choice measurably beat descending order — so the id assignment is worth
+// something. Recency is the other classic candidate: recently used tokens become
+// cheap. The honest risk is the opposite effect, since a rank transform destroys
+// the absolute identity a context model can memorise. That is why every stream
+// gets its own ablation rather than a shared verdict.
+
+/// How a token's id is derived from its position in the vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdMode {
+    /// Position in the initial (frequency) order — the existing scheme.
+    Static,
+    /// Move-to-front: the id is the current position, and the token is promoted
+    /// to the front afterwards.
+    Mtf,
+    /// Move-to-second: promote to position 1, leaving position 0 untouched, so a
+    /// token repeated immediately keeps a stable id.
+    MoveToSecond,
+}
+
+/// A permutation of the vocabulary with O(1) id lookup and O(n) promotion.
+///
+/// `n <= 255` always holds for the v1 vocabulary (`MAX_TOKENS` is 255 and the
+/// header count is a `u8`), so ids fit in a byte by construction; the v2
+/// escape-extended scheme has its own codec and is unaffected.
+struct IdList {
+    /// `order[position] = vocabulary index`.
+    order: Vec<u8>,
+    /// `pos[vocabulary index] = position`.
+    pos: Vec<u8>,
+}
+
+impl IdList {
+    fn new(n: usize) -> Self {
+        let n = n.min(255);
+        IdList {
+            order: (0..n as u8).collect(),
+            pos: (0..n as u8).collect(),
+        }
+    }
+
+    /// The id byte for a vocabulary index (1-based; 0 is the literal-NUL escape).
+    #[inline]
+    fn id(&self, vi: u8) -> u8 {
+        self.pos[vi as usize] + 1
+    }
+
+    /// The vocabulary index an id byte names.
+    #[inline]
+    fn resolve(&self, id: u8) -> u8 {
+        self.order[id as usize - 1]
+    }
+
+    /// Apply the mode's promotion after a token has been used.
+    #[inline]
+    fn touch(&mut self, vi: u8, mode: IdMode) {
+        if mode == IdMode::Static {
+            return;
+        }
+        let p = self.pos[vi as usize] as usize;
+        let target = match mode {
+            IdMode::Static => p,
+            IdMode::Mtf => 0,
+            IdMode::MoveToSecond => 1.min(p),
+        };
+        if p == target {
+            return;
+        }
+        for k in (target..p).rev() {
+            let v = self.order[k];
+            self.order[k + 1] = v;
+            self.pos[v as usize] = (k + 1) as u8;
+        }
+        self.order[target] = vi;
+        self.pos[vi as usize] = target as u8;
+    }
+}
+
+/// Encode `input` with an explicit id mode, emitting `vocabulary || body`.
+pub fn word_token_encode_mode(input: &[u8], reverse: bool, mode: IdMode) -> Vec<u8> {
     use std::collections::HashMap;
     let vocab = build_word_vocab(input, reverse);
     let mut ids: HashMap<&[u8], u8> = HashMap::with_capacity(vocab.len());
@@ -433,8 +525,9 @@ pub fn word_token_encode(input: &[u8], reverse: bool) -> Vec<u8> {
     for (k, w) in vocab.iter().enumerate() {
         out.push(w.len() as u8);
         out.extend_from_slice(w);
-        ids.insert(w.as_slice(), (k + 1) as u8);
+        ids.insert(w.as_slice(), k as u8);
     }
+    let mut list = IdList::new(vocab.len());
     let mut i = 0;
     while i < input.len() {
         let b = input[i];
@@ -444,9 +537,10 @@ pub fn word_token_encode(input: &[u8], reverse: bool) -> Vec<u8> {
                 j += 1;
             }
             match ids.get(&input[i..j]) {
-                Some(&id) => {
+                Some(&vi) => {
                     out.push(TOK_ESC);
-                    out.push(id);
+                    out.push(list.id(vi));
+                    list.touch(vi, mode);
                 }
                 None => out.extend_from_slice(&input[i..j]),
             }
@@ -465,6 +559,11 @@ pub fn word_token_encode(input: &[u8], reverse: bool) -> Vec<u8> {
 
 /// Exact inverse of [`word_token_encode`]. Total on malformed input.
 pub fn word_token_decode(data: &[u8]) -> Vec<u8> {
+    word_token_decode_mode(data, IdMode::Static)
+}
+
+/// Exact inverse of [`word_token_encode_mode`]. Total on malformed input.
+pub fn word_token_decode_mode(data: &[u8], mode: IdMode) -> Vec<u8> {
     if data.is_empty() {
         return Vec::new();
     }
@@ -483,6 +582,7 @@ pub fn word_token_decode(data: &[u8]) -> Vec<u8> {
         dict.push(&data[i..i + l]);
         i += l;
     }
+    let mut list = IdList::new(dict.len());
     let mut out = Vec::new();
     while i < data.len() {
         let b = data[i];
@@ -493,7 +593,9 @@ pub fn word_token_decode(data: &[u8]) -> Vec<u8> {
                 if id == 0 {
                     out.push(0);
                 } else if id <= dict.len() {
-                    out.extend_from_slice(dict[id - 1]);
+                    let vi = list.resolve(id as u8);
+                    out.extend_from_slice(dict[vi as usize]);
+                    list.touch(vi, mode);
                 }
             } else {
                 i += 1;
@@ -1337,6 +1439,120 @@ mod tests {
         // must never be a valid token id.
         let text = b"a\x00b a\x00b a\x00b";
         assert_eq!(word_token_decode(&word_token_encode(text, false)), text);
+    }
+
+    // --- Phase 10.4: recency-ranked token ids -------------------------------
+
+    /// The identity control that makes the id-order experiment measurable: the
+    /// static mode must be byte-identical to the shipped v1 encoder, so any
+    /// difference in the archive is attributable to the id *assignment* and not
+    /// to a reimplementation of the tokenizer.
+    #[test]
+    fn id_mode_static_is_bit_identical_to_the_shipped_tokenizer() {
+        for text in [
+            &b""[..],
+            &b"the quick brown fox and the lazy dog"[..],
+            &b"compression compression compression algorithm algorithm"[..],
+            &b"<page><title>Zentropy</title><text>archive archive</text></page>\n"[..],
+            &b"a\x00b a\x00b"[..],
+        ] {
+            for reverse in [false, true] {
+                assert_eq!(
+                    word_token_encode_mode(text, reverse, IdMode::Static),
+                    word_token_encode(text, reverse),
+                    "static mode diverged for {text:?} reverse={reverse}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn id_modes_roundtrip_exactly() {
+        let cases: [&[u8]; 6] = [
+            b"",
+            b"the quick brown fox and the lazy dog",
+            b"compression compression compression algorithm algorithm algorithm",
+            b"alpha beta alpha beta alpha beta",
+            b"<page><title>Zentropy</title><text>archive archive</text></page>\n",
+            b"a\x00b a\x00b a\x00b",
+        ];
+        for text in cases {
+            for reverse in [false, true] {
+                for mode in [IdMode::Static, IdMode::Mtf, IdMode::MoveToSecond] {
+                    let enc = word_token_encode_mode(text, reverse, mode);
+                    assert_eq!(
+                        word_token_decode_mode(&enc, mode),
+                        text,
+                        "mode {mode:?} reverse={reverse} failed on {text:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Move-to-front must actually move to front, and the two modes must differ.
+    /// Asserting the id stream directly is stronger than inferring the mechanism
+    /// from a size: a mode that never promoted would still round-trip.
+    #[test]
+    fn mtf_promotes_the_most_recent_token() {
+        // The vocabulary keeps a word only when `count * (len - 2) > len + 1`, so
+        // alpha (len 5) needs count >= 3 and beta (len 4) needs count >= 3. A
+        // first attempt used each word twice, which left only `alpha` as a token
+        // and tested nothing about promotion.
+        let text = b"alpha beta beta beta gamma gamma gamma alpha alpha alpha";
+
+        // The id bytes of the body, in order, skipping the vocabulary header.
+        fn id_stream(enc: &[u8]) -> Vec<u8> {
+            let count = enc[0] as usize;
+            let mut i = 1usize;
+            for _ in 0..count {
+                let l = enc[i] as usize;
+                i += 1 + l;
+            }
+            let mut v = Vec::new();
+            while i < enc.len() {
+                if enc[i] == TOK_ESC {
+                    v.push(enc[i + 1]);
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            v
+        }
+
+        let mtf = word_token_encode_mode(text, false, IdMode::Mtf);
+        assert_eq!(word_token_decode_mode(&mtf, IdMode::Mtf), text);
+        let ids = id_stream(&mtf);
+        assert_eq!(ids.len(), 10, "expected ten token emissions, got {ids:?}");
+        // alpha, beta, beta, beta, gamma, gamma, gamma, alpha, alpha, alpha.
+        // Every immediate repeat is the most recently used token, so it must be
+        // id 1: positions 2, 3 (beta), 5, 6 (gamma) and 8, 9 (alpha).
+        for k in [2usize, 3, 5, 6, 8, 9] {
+            assert_eq!(
+                ids[k], 1,
+                "immediate repeat at {k} was not promoted: {ids:?}"
+            );
+        }
+        // At least one id must exceed 1, or the mode is collapsing everything to
+        // one id and the promotion is not doing anything selective.
+        assert!(
+            ids.iter().any(|&i| i > 1),
+            "all ids collapsed to 1: {ids:?}"
+        );
+        assert!(
+            ids.iter().all(|&i| (1..=3).contains(&i)),
+            "id out of range: {ids:?}"
+        );
+
+        let m2 = word_token_encode_mode(text, false, IdMode::MoveToSecond);
+        assert_eq!(word_token_decode_mode(&m2, IdMode::MoveToSecond), text);
+        assert_ne!(ids, id_stream(&m2), "the two modes produced identical ids");
+
+        // The static control must be a different stream again, or the experiment
+        // would have nothing to attribute a delta to.
+        let st = word_token_encode_mode(text, false, IdMode::Static);
+        assert_ne!(ids, id_stream(&st));
     }
 
     // --- A1.1/A26 v2 escape-extended vocabulary -----------------------------

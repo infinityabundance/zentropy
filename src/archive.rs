@@ -84,6 +84,14 @@ enum TokenKind {
     /// Phase 4.8: vocabulary with affix-referenced derived tokens.
     #[cfg_attr(not(feature = "affix-token"), allow(dead_code))]
     Affix,
+    /// Phase 10.4: the same vocabulary with **move-to-front** ids, maintained by
+    /// both sides from the id sequence alone (no side stream).
+    #[cfg_attr(not(feature = "id-order"), allow(dead_code))]
+    Mtf,
+    /// Phase 10.4 control: move-to-second rather than move-to-front, so a token
+    /// used twice in a row keeps a stable id.
+    #[cfg_attr(not(feature = "id-order"), allow(dead_code))]
+    MoveToSecond,
 }
 
 /// Coding method. New mechanisms are added as variants so each is ablatable.
@@ -267,6 +275,12 @@ pub enum Method {
     Residual = 86,
     /// Phase 8.7 control: the same corrector with permuted weights.
     ResidualCtl = 87,
+    /// Phase 10.4: the accepted config with move-to-front token ids.
+    #[cfg_attr(not(feature = "id-order"), allow(dead_code))]
+    ResidualMtf = 88,
+    /// Phase 10.4 control: the accepted config with move-to-second token ids.
+    #[cfg_attr(not(feature = "id-order"), allow(dead_code))]
+    ResidualMoveToSecond = 89,
 }
 
 impl Method {
@@ -360,6 +374,8 @@ impl Method {
             Method::ReorderFullResidual => "reorder-full-residual",
             Method::Residual => "residual",
             Method::ResidualCtl => "residual-ctl",
+            Method::ResidualMtf => "residual-mtf",
+            Method::ResidualMoveToSecond => "residual-move-to-second",
         }
     }
 
@@ -453,12 +469,14 @@ impl Method {
             "reorder-full-residual" => Method::ReorderFullResidual,
             "residual" => Method::Residual,
             "residual-ctl" => Method::ResidualCtl,
+            "residual-mtf" => Method::ResidualMtf,
+            "residual-move-to-second" => Method::ResidualMoveToSecond,
             _ => return None,
         })
     }
 
     /// All methods, for exhaustive exactness testing.
-    pub const ALL: [Method; 88] = [
+    pub const ALL: [Method; 90] = [
         Method::RawCm,
         Method::RawCmNoWord,
         Method::StructHoist,
@@ -547,6 +565,8 @@ impl Method {
         Method::ReorderFullResidual,
         Method::Residual,
         Method::ResidualCtl,
+        Method::ResidualMtf,
+        Method::ResidualMoveToSecond,
     ];
 
     /// Methods that extend the **accepted Phase-4 composite parent** unchanged:
@@ -595,6 +615,8 @@ impl Method {
                 | Method::ReorderFullResidual
                 | Method::Residual
                 | Method::ResidualCtl
+                | Method::ResidualMtf
+                | Method::ResidualMoveToSecond
         )
     }
 
@@ -723,6 +745,15 @@ impl Method {
     fn token_kind(self) -> TokenKind {
         #[cfg(feature = "word-token")]
         {
+            // Phase 10.4: check the representation variants *before* the
+            // composite shortcut below, which would otherwise pin every
+            // Phase-4-parent method to `Reverse`.
+            #[cfg(feature = "id-order")]
+            match self {
+                Method::ResidualMtf => return TokenKind::Mtf,
+                Method::ResidualMoveToSecond => return TokenKind::MoveToSecond,
+                _ => {}
+            }
             if self.on_phase4_parent() {
                 return TokenKind::Reverse;
             }
@@ -930,6 +961,9 @@ impl Method {
             Method::ReorderFull => Some(Order::Full),
             Method::ReorderFullResidual => Some(Order::FullResidual),
             Method::Residual | Method::ResidualCtl => Some(Order::Full),
+            // Phase 10.4: the same composite and the same article layout; only
+            // the token id assignment differs, so the comparison is clean.
+            Method::ResidualMtf | Method::ResidualMoveToSecond => Some(Order::Full),
             _ => None,
         }
     }
@@ -1110,6 +1144,9 @@ impl Method {
         // permutes them).
         let base = match self {
             Method::Residual => base.with_residual(false),
+            // Phase 10.4: the representation variants are the accepted composite
+            // plus a different token id assignment, so they keep the corrector.
+            Method::ResidualMtf | Method::ResidualMoveToSecond => base.with_residual(false),
             Method::ResidualCtl => base.with_residual(true),
             _ => base,
         };
@@ -1251,6 +1288,14 @@ fn maybe_token(method: Method, data: Vec<u8>) -> Vec<u8> {
         TokenKind::PhraseFreq => crate::transform::word_token_phrase_encode(&data, false),
         TokenKind::Front => crate::transform::word_token_front_encode(&data, true),
         TokenKind::Affix => crate::transform::word_token_affix_encode(&data, true),
+        TokenKind::Mtf => {
+            crate::transform::word_token_encode_mode(&data, true, crate::transform::IdMode::Mtf)
+        }
+        TokenKind::MoveToSecond => crate::transform::word_token_encode_mode(
+            &data,
+            true,
+            crate::transform::IdMode::MoveToSecond,
+        ),
     }
 }
 
@@ -1268,6 +1313,12 @@ fn maybe_untoken(method: Method, data: Vec<u8>) -> Vec<u8> {
         TokenKind::Phrase | TokenKind::PhraseFreq => crate::transform::word_token_decode(&data),
         TokenKind::Front => crate::transform::word_token_front_decode(&data),
         TokenKind::Affix => crate::transform::word_token_affix_decode(&data),
+        TokenKind::Mtf => {
+            crate::transform::word_token_decode_mode(&data, crate::transform::IdMode::Mtf)
+        }
+        TokenKind::MoveToSecond => {
+            crate::transform::word_token_decode_mode(&data, crate::transform::IdMode::MoveToSecond)
+        }
     }
 }
 
@@ -1720,6 +1771,8 @@ pub fn decode(archive: &[u8]) -> Option<Vec<u8>> {
         85 => Method::ReorderFullResidual,
         86 => Method::Residual,
         87 => Method::ResidualCtl,
+        88 => Method::ResidualMtf,
+        89 => Method::ResidualMoveToSecond,
         _ => return None,
     };
     let mut len_bytes = [0u8; 8];
@@ -1979,6 +2032,56 @@ mod tests {
                 data,
                 "tune={tune} did not round-trip"
             );
+        }
+    }
+
+    /// Phase 10.4: the recency-id variants must reconstruct exactly through the
+    /// real archive path, and must produce *different* archives from the parent —
+    /// otherwise the experiment has nothing to attribute a delta to.
+    ///
+    /// The two halves matter equally. Exactness is the constitutional gate;
+    /// "different" is what makes the measurement meaningful rather than a long
+    /// way of re-measuring the parent.
+    #[cfg(feature = "id-order")]
+    #[test]
+    fn id_order_variants_roundtrip_and_differ() {
+        // Self-contained data (not the shared page corpus, which is gated on
+        // `reorder`): this test must run in a bare `--features id-order` build.
+        //
+        // The page ids are **strictly ascending**, which is the article-layout
+        // compiler's free-restoration precondition. Without it the encoder
+        // downgrades the method (to `Sse3`) and both variants then code the
+        // parent's representation — producing identical archives and silently
+        // testing nothing. That is not a hypothetical: the first version of this
+        // test used a repeated 1,2,1,2 pattern and failed exactly that way.
+        let mut data = Vec::new();
+        data.extend_from_slice(b"<mediawiki>\n");
+        for id in 0u32..20 {
+            data.extend_from_slice(
+                format!(
+                    "  <page>\n    <title>Alpha{id}</title>\n    <id>{id}</id>\n    <revision>\n      <text>alpha alpha star galaxy compression compression</text>\n    </revision>\n  </page>\n"
+                )
+                .as_bytes(),
+            );
+        }
+        data.extend_from_slice(b"</mediawiki>\n");
+        let base = encode_tuned(&data, Method::Residual, 5);
+        assert_eq!(decode(&base).unwrap(), data);
+        assert_eq!(base[4], Method::Residual as u8, "parent was downgraded");
+        for m in [Method::ResidualMtf, Method::ResidualMoveToSecond] {
+            for tune in [0u8, 5, 37, 255] {
+                // Every tune, because the id list is decoder-side state that a
+                // tune perturbation must not desynchronise.
+                let arch = encode_tuned(&data, m, tune);
+                assert_eq!(decode(&arch).unwrap(), data, "{m:?} tune={tune} not exact");
+                // The precondition must still hold for the candidate, or the
+                // archive was downgraded and the comparison is meaningless.
+                assert_eq!(arch[4], m as u8, "{m:?} tune={tune} was downgraded");
+                assert_ne!(
+                    arch, base,
+                    "{m:?} produced the parent archive: the representation did not change"
+                );
+            }
         }
     }
 
