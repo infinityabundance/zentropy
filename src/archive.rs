@@ -291,6 +291,12 @@ pub enum Method {
     /// as unprofitable **not substituted** (ids unchanged).
     #[cfg_attr(not(feature = "vocab-price"), allow(dead_code))]
     ResidualPriceFilter = 91,
+    /// Phase 10.3: the accepted config with the **affix** representation family —
+    /// words comped as root+affix tokens — measured on the mature composite.
+    /// Phase 4.8 rejected the same family on a much weaker parent, so this is a
+    /// re-measurement of a *family*, not a re-litigation of that rejection.
+    #[cfg_attr(not(feature = "affix-token"), allow(dead_code))]
+    ResidualAffix = 92,
 }
 
 impl Method {
@@ -388,6 +394,7 @@ impl Method {
             Method::ResidualMoveToSecond => "residual-move-to-second",
             Method::ResidualPriced => "residual-priced",
             Method::ResidualPriceFilter => "residual-price-filter",
+            Method::ResidualAffix => "residual-affix",
         }
     }
 
@@ -485,12 +492,13 @@ impl Method {
             "residual-move-to-second" => Method::ResidualMoveToSecond,
             "residual-priced" => Method::ResidualPriced,
             "residual-price-filter" => Method::ResidualPriceFilter,
+            "residual-affix" => Method::ResidualAffix,
             _ => return None,
         })
     }
 
     /// All methods, for exhaustive exactness testing.
-    pub const ALL: [Method; 92] = [
+    pub const ALL: [Method; 93] = [
         Method::RawCm,
         Method::RawCmNoWord,
         Method::StructHoist,
@@ -583,6 +591,7 @@ impl Method {
         Method::ResidualMoveToSecond,
         Method::ResidualPriced,
         Method::ResidualPriceFilter,
+        Method::ResidualAffix,
     ];
 
     /// Methods that extend the **accepted Phase-4 composite parent** unchanged:
@@ -635,6 +644,7 @@ impl Method {
                 | Method::ResidualMoveToSecond
                 | Method::ResidualPriced
                 | Method::ResidualPriceFilter
+                | Method::ResidualAffix
         )
     }
 
@@ -807,6 +817,12 @@ impl Method {
             // mode and keeps the identity axis fixed while membership moves.
             if self.priced_vocab() {
                 return TokenKind::Reverse;
+            }
+            // Phase 10.3: the affix family on the composite, checked before the
+            // `on_phase4_parent` shortcut for the same reason as the others.
+            #[cfg(feature = "affix-token")]
+            if matches!(self, Method::ResidualAffix) {
+                return TokenKind::Affix;
             }
             if self.on_phase4_parent() {
                 return TokenKind::Reverse;
@@ -1022,6 +1038,7 @@ impl Method {
             // vocabulary *membership* changes.
             Method::ResidualPriced => Some(Order::Full),
             Method::ResidualPriceFilter => Some(Order::Full),
+            Method::ResidualAffix => Some(Order::Full),
             _ => None,
         }
     }
@@ -1207,6 +1224,7 @@ impl Method {
             Method::ResidualMtf | Method::ResidualMoveToSecond => base.with_residual(false),
             Method::ResidualPriced => base.with_residual(false),
             Method::ResidualPriceFilter => base.with_residual(false),
+            Method::ResidualAffix => base.with_residual(false),
             Method::ResidualCtl => base.with_residual(true),
             _ => base,
         };
@@ -2057,6 +2075,7 @@ pub fn decode(archive: &[u8]) -> Option<Vec<u8>> {
         89 => Method::ResidualMoveToSecond,
         90 => Method::ResidualPriced,
         91 => Method::ResidualPriceFilter,
+        92 => Method::ResidualAffix,
         _ => return None,
     };
     let mut len_bytes = [0u8; 8];

@@ -278,3 +278,50 @@ be confidently backwards. `S` is authority, and this is that law demonstrated on
 screen built specifically to try to avoid needing it.
 
 131 tests pass with `vocab-price`, 126 by default.
+
+### 10.3 Affix composition — **REJECTED** (re-measured on the mature composite)
+
+Phase 4.8 rejected the affix family on a Phase-4-era parent, so the plan's rule
+("do not re-open what is closed") arguably covered it. It is measured again anyway,
+because the *parent* changed materially — the match family, the article-layout
+compiler and the learned corrector all landed afterwards — and a family's value is a
+property of the predictor it is attached to. This is a re-measurement of the family,
+not a re-litigation of the earlier verdict.
+
+`Method::ResidualAffix` is the accepted composite with the affix tokenizer. Full
+`eval`, exact on both rungs:
+
+| corpus | parent | `residual-affix` | Δ |
+|---|---|---|---|
+| enwik6 | 267,333 | 270,538 | **+3,205** |
+| enwik7 | 2,370,164 | 2,405,979 | **+35,815** |
+
+REJECTED, and the margin is essentially the same as 10.1b's repriced vocabulary and
+worse than nothing — the third independent confirmation that this predictor does not
+want a richer lexical representation.
+
+### 10.x Phase 10 interim: the representation is not the bottleneck
+
+Four measured stages, four rejections, all exact, all with an identified mechanism:
+
+| stage | enwik6 | enwik7 | mechanism |
+|---|---|---|---|
+| 10.4 rank ids (MTF) | +16,928 | +213,623 | destroys absolute token identity |
+| 10.1b priced re-rank | +2,165 | +25,870 | counterfactual priced in the wrong model |
+| 10.6a priced filter | +2,754 | +33,501 | same, aimed at the strongest screening signal |
+| 10.3 affix on the composite | +3,205 | +35,815 | richer lexical representation dilutes |
+
+Three of the four are *directly contrary* to a screening signal that looked large
+and grew with scale. The honest reading is that Phase 10's thesis — that the
+remaining bytes are in how spans are **represented** — is not supported by
+measurement for this predictor, and that the phase's value has been to establish
+that with numbers rather than to collect mechanisms.
+
+What that redirects effort to is where the measurements *are* positive: the model's
+**resource envelope** (Phase 11 — `for_size` caps tables at 2^24 against a 10 GB
+allowance, and archive bytes fall monotonically as they grow) and the predictor
+itself. Stages 10.2 (subword/BPE) and 10.5 (first-use productions) remain
+unimplemented; the evidence above makes 10.2 the least promising item in the plan
+(A26 already showed coverage past 255 costs 776,196 B via dilution, and BPE ids
+beyond 254 would occupy the same three-byte encoding), and 10.5 is bounded at a few
+hundred bytes of dictionary locality.
