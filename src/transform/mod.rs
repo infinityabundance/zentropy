@@ -528,6 +528,127 @@ pub fn word_token_encode_mode(input: &[u8], reverse: bool, mode: IdMode) -> Vec<
     word_token_encode_vocab(input, &vocab, mode)
 }
 
+// --- Phase 10.5 (A12.1): first-use inline definitions ---------------------
+//
+// The shipped tokenizer pays a **dictionary header** up front: every entry is
+// defined at the very start of the stream, where the model has no context, and the
+// words sit far from the text that uses them. This variant removes the header and
+// defines each entry where it is first *used*.
+//
+// The arithmetic, before any modelling effect, per entry:
+//
+//   header form   1 byte (length) + word bytes   + 2 bytes per use
+//   first-use      0x00 0xFF id len + word bytes + 2 bytes per later use
+//
+// i.e. exactly **+1 byte per entry**, less the header's count byte. For 255 entries
+// that is +254 raw bytes. The only proposed benefit is locality — a definition
+// spelled in its own context should be cheaper for the model than one clustered
+// among 254 others at a cold start — so this is a small, honest, marginal
+// experiment rather than a candidate mechanism, and it is expected to land near
+// the noise floor in either direction.
+//
+// Ids are carried explicitly in the definition (rather than allocated in first-use
+// order) so that the *id assignment* stays exactly what the shipped encoder chose.
+// Experiment 10.4 measured that moving ids is catastrophic (+213,623 B at enwik7),
+// so confounding this test with an id change would guarantee the wrong verdict.
+// Id 255 is reserved as the definition escape, so the vocabulary is capped at 254
+// entries here — one fewer than the shipped form, and stated rather than hidden.
+
+/// Ids at or above this are unavailable to the first-use form (255 is the escape).
+pub const FIRST_USE_MAX_TOKENS: usize = 254;
+const FU_DEF: u8 = 0xFF;
+
+/// Encode with no dictionary header, defining each vocabulary entry at first use.
+pub fn word_token_encode_firstuse(input: &[u8], vocab: &[Vec<u8>]) -> Vec<u8> {
+    use std::collections::HashMap;
+    let vocab: Vec<&Vec<u8>> = vocab.iter().take(FIRST_USE_MAX_TOKENS).collect();
+    let mut ids: HashMap<&[u8], u8> = HashMap::with_capacity(vocab.len());
+    for (k, w) in vocab.iter().enumerate() {
+        ids.insert(w.as_slice(), (k + 1) as u8);
+    }
+    let mut defined = vec![false; vocab.len()];
+    let mut out = Vec::with_capacity(input.len());
+    let mut i = 0;
+    while i < input.len() {
+        let b = input[i];
+        if is_word_byte(b) {
+            let mut j = i;
+            while j < input.len() && is_word_byte(input[j]) {
+                j += 1;
+            }
+            match ids.get(&input[i..j]) {
+                Some(&id) => {
+                    let vi = id as usize - 1;
+                    if defined[vi] {
+                        out.push(TOK_ESC);
+                        out.push(id);
+                    } else {
+                        defined[vi] = true;
+                        out.push(TOK_ESC);
+                        out.push(FU_DEF);
+                        out.push(id);
+                        out.push((j - i) as u8);
+                        out.extend_from_slice(&input[i..j]);
+                    }
+                }
+                None => out.extend_from_slice(&input[i..j]),
+            }
+            i = j;
+        } else if b == TOK_ESC {
+            out.push(TOK_ESC);
+            out.push(0);
+            i += 1;
+        } else {
+            out.push(b);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Exact inverse of [`word_token_encode_firstuse`]. Total on malformed input:
+/// an undefined id is simply dropped, and a truncated definition is ignored.
+pub fn word_token_decode_firstuse(data: &[u8]) -> Vec<u8> {
+    let mut dict: Vec<Vec<u8>> = vec![Vec::new(); FIRST_USE_MAX_TOKENS + 1];
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < data.len() {
+        let b = data[i];
+        if b == TOK_ESC {
+            if i + 1 >= data.len() {
+                break;
+            }
+            let id = data[i + 1] as usize;
+            if id == 0 {
+                out.push(0);
+                i += 2;
+            } else if id == FU_DEF as usize {
+                if i + 3 >= data.len() {
+                    break;
+                }
+                let tid = data[i + 2] as usize;
+                let len = data[i + 3] as usize;
+                if i + 4 + len > data.len() || tid == 0 || tid > FIRST_USE_MAX_TOKENS {
+                    break;
+                }
+                let w = data[i + 4..i + 4 + len].to_vec();
+                dict[tid] = w.clone();
+                out.extend_from_slice(&w);
+                i += 4 + len;
+            } else {
+                if id <= FIRST_USE_MAX_TOKENS {
+                    out.extend_from_slice(&dict[id]);
+                }
+                i += 2;
+            }
+        } else {
+            out.push(b);
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Encode `input` against a **given** vocabulary, with a set of words **blocked**
 /// from substitution.
 ///
@@ -1520,6 +1641,53 @@ mod tests {
     }
 
     // --- Phase 10.4: recency-ranked token ids -------------------------------
+
+    /// Phase 10.5: the first-use form must round-trip, and its size must match the
+    /// arithmetic the design claims — exactly `+1` byte per entry (a definition
+    /// costs `escape + id + len + word`, the header entry it replaces costs
+    /// `len + word`), less the header's one-byte count. Asserting the byte
+    /// identity catches a format slip that a round-trip alone would not
+    /// (a symmetric bug in encode and decode still round-trips).
+    #[test]
+    fn firstuse_definitions_roundtrip_and_cost_one_byte_per_entry() {
+        let text = b"compression compression algorithm compression algorithm algorithm \
+                     galaxy compression galaxy algorithm";
+        let vocab = build_word_vocab(text, true);
+        assert!(!vocab.is_empty(), "test needs a non-empty vocabulary");
+
+        let header = word_token_encode_vocab(text, &vocab, IdMode::Static);
+        let first = word_token_encode_firstuse(text, &vocab);
+        assert_eq!(
+            word_token_decode_firstuse(&first),
+            text,
+            "first-use not exact"
+        );
+        assert_eq!(word_token_decode(&header), text, "header form not exact");
+
+        // Every entry is used (the builder requires count >= 2 and the vocabulary
+        // is derived from this very text), so the identity holds exactly.
+        assert_eq!(
+            first.len(),
+            header.len() + vocab.len() - 1,
+            "first-use cost is not +1 byte per entry less the count byte \
+             (vocab {}, header {}, first-use {})",
+            vocab.len(),
+            header.len(),
+            first.len()
+        );
+    }
+
+    #[test]
+    fn firstuse_caps_ids_below_the_definition_escape() {
+        // 0xFF is the definition marker, so it can never be a token id. A
+        // vocabulary longer than the cap must be truncated rather than producing a
+        // stream the decoder would misread.
+        assert!(FIRST_USE_MAX_TOKENS < 255);
+        let long: Vec<Vec<u8>> = (0..300u32).map(|i| format!("w{i}x").into_bytes()).collect();
+        let text = b"w1x w1x w2x w2x";
+        let enc = word_token_encode_firstuse(text, &long);
+        assert_eq!(word_token_decode_firstuse(&enc), text);
+    }
 
     /// Phase 10: encoding against an explicit vocabulary must round-trip through
     /// the normal decoder, which knows nothing about how the vocabulary was

@@ -84,6 +84,9 @@ enum TokenKind {
     /// Phase 4.8: vocabulary with affix-referenced derived tokens.
     #[cfg_attr(not(feature = "affix-token"), allow(dead_code))]
     Affix,
+    /// Phase 10.5: no header — each entry is defined where it is first used.
+    #[cfg_attr(not(feature = "first-use"), allow(dead_code))]
+    FirstUse,
     /// Phase 10.4: the same vocabulary with **move-to-front** ids, maintained by
     /// both sides from the id sequence alone (no side stream).
     #[cfg_attr(not(feature = "id-order"), allow(dead_code))]
@@ -292,11 +295,16 @@ pub enum Method {
     #[cfg_attr(not(feature = "vocab-price"), allow(dead_code))]
     ResidualPriceFilter = 91,
     /// Phase 10.3: the accepted config with the **affix** representation family —
-    /// words comped as root+affix tokens — measured on the mature composite.
+    /// words composed as root+affix tokens — measured on the mature composite.
     /// Phase 4.8 rejected the same family on a much weaker parent, so this is a
     /// re-measurement of a *family*, not a re-litigation of that rejection.
     #[cfg_attr(not(feature = "affix-token"), allow(dead_code))]
     ResidualAffix = 92,
+    /// Phase 10.5: the accepted composite with **first-use inline definitions**
+    /// instead of a dictionary header. Ids are preserved, so the identity axis is
+    /// untouched; the change is where a definition lives, not what it is.
+    #[cfg_attr(not(feature = "first-use"), allow(dead_code))]
+    ResidualFirstUse = 93,
 }
 
 impl Method {
@@ -395,6 +403,7 @@ impl Method {
             Method::ResidualPriced => "residual-priced",
             Method::ResidualPriceFilter => "residual-price-filter",
             Method::ResidualAffix => "residual-affix",
+            Method::ResidualFirstUse => "residual-first-use",
         }
     }
 
@@ -493,12 +502,13 @@ impl Method {
             "residual-priced" => Method::ResidualPriced,
             "residual-price-filter" => Method::ResidualPriceFilter,
             "residual-affix" => Method::ResidualAffix,
+            "residual-first-use" => Method::ResidualFirstUse,
             _ => return None,
         })
     }
 
     /// All methods, for exhaustive exactness testing.
-    pub const ALL: [Method; 93] = [
+    pub const ALL: [Method; 94] = [
         Method::RawCm,
         Method::RawCmNoWord,
         Method::StructHoist,
@@ -592,6 +602,7 @@ impl Method {
         Method::ResidualPriced,
         Method::ResidualPriceFilter,
         Method::ResidualAffix,
+        Method::ResidualFirstUse,
     ];
 
     /// Methods that extend the **accepted Phase-4 composite parent** unchanged:
@@ -645,6 +656,7 @@ impl Method {
                 | Method::ResidualPriced
                 | Method::ResidualPriceFilter
                 | Method::ResidualAffix
+                | Method::ResidualFirstUse
         )
     }
 
@@ -823,6 +835,11 @@ impl Method {
             #[cfg(feature = "affix-token")]
             if matches!(self, Method::ResidualAffix) {
                 return TokenKind::Affix;
+            }
+            // Phase 10.5: first-use definitions.
+            #[cfg(feature = "first-use")]
+            if matches!(self, Method::ResidualFirstUse) {
+                return TokenKind::FirstUse;
             }
             if self.on_phase4_parent() {
                 return TokenKind::Reverse;
@@ -1039,6 +1056,7 @@ impl Method {
             Method::ResidualPriced => Some(Order::Full),
             Method::ResidualPriceFilter => Some(Order::Full),
             Method::ResidualAffix => Some(Order::Full),
+            Method::ResidualFirstUse => Some(Order::Full),
             _ => None,
         }
     }
@@ -1225,6 +1243,7 @@ impl Method {
             Method::ResidualPriced => base.with_residual(false),
             Method::ResidualPriceFilter => base.with_residual(false),
             Method::ResidualAffix => base.with_residual(false),
+            Method::ResidualFirstUse => base.with_residual(false),
             Method::ResidualCtl => base.with_residual(true),
             _ => base,
         };
@@ -1395,6 +1414,10 @@ fn maybe_token(method: Method, data: Vec<u8>, tune: u8) -> Vec<u8> {
         TokenKind::PhraseFreq => crate::transform::word_token_phrase_encode(&data, false),
         TokenKind::Front => crate::transform::word_token_front_encode(&data, true),
         TokenKind::Affix => crate::transform::word_token_affix_encode(&data, true),
+        TokenKind::FirstUse => {
+            let vocab = crate::transform::build_word_vocab(&data, true);
+            crate::transform::word_token_encode_firstuse(&data, &vocab)
+        }
         TokenKind::Mtf => {
             crate::transform::word_token_encode_mode(&data, true, crate::transform::IdMode::Mtf)
         }
@@ -1420,6 +1443,7 @@ fn maybe_untoken(method: Method, data: Vec<u8>) -> Vec<u8> {
         TokenKind::Phrase | TokenKind::PhraseFreq => crate::transform::word_token_decode(&data),
         TokenKind::Front => crate::transform::word_token_front_decode(&data),
         TokenKind::Affix => crate::transform::word_token_affix_decode(&data),
+        TokenKind::FirstUse => crate::transform::word_token_decode_firstuse(&data),
         TokenKind::Mtf => {
             crate::transform::word_token_decode_mode(&data, crate::transform::IdMode::Mtf)
         }
@@ -2076,6 +2100,7 @@ pub fn decode(archive: &[u8]) -> Option<Vec<u8>> {
         90 => Method::ResidualPriced,
         91 => Method::ResidualPriceFilter,
         92 => Method::ResidualAffix,
+        93 => Method::ResidualFirstUse,
         _ => return None,
     };
     let mut len_bytes = [0u8; 8];
