@@ -30,20 +30,35 @@ receipt, not with an assertion.
    `gate = floor(0.99 × L)`. Maintain `T0` (accepted record), `T1` (strongest
    credible pending), `T2 = 95,000,000` (internal moonshot, not a claim).
    The gate is derived, never hardcoded.
-3. State the gap honestly. As of Phase 11's close,
-   `S ≈ 165,344,019 + 2 × 112,264 = 165,568,547` against a 109,685,196 gate:
-   about **55.9 MB** short. No phase may present a number as competitive that is
-   not.
+3. State the gap honestly. At the Phase-11 close the score was
+   `S = 165,344,019 + 2 × 112,264 = 165,568,547` against a 109,685,196 gate;
+   Phase 12.1 has since taken the program to 105,536 B (dynamic) / 125,056 B
+   (shipped, static musl), i.e. `S ≈ 165,555,091` or `165,595,131` depending on
+   the target — still about **55.9 MB** short. No phase may present a number as
+   competitive that is not.
 
 ---
 
 ## 12.1 Reclaim the stub: measured, mechanism by mechanism
 
-The stub is **112,264 B**, and most of it is dispatch for methods that are
-rejected. `--features submission` already gates the research machinery out of the
-driver, and `package_sfx.sh` already builds `--no-default-features --features
-accepted`, but the *method roster* itself is not yet gated: `Method::ALL` is 95
-variants and every one of their `config()` arms is reachable in the stub.
+The stub is **105,536 B** (dynamic) or **125,056 B** (static musl, the shipped
+artifact), and most of what remains is dispatch for methods that are rejected.
+`--features submission` used to gate the research machinery out of the driver,
+but the *method roster* itself was not gated: `Method::ALL` is 95 variants and
+every one of their `config()` arms was reachable from the stub's dispatch.
+
+**Done so far** (each measured, each proven by a byte-identical archive):
+
+| step | per-copy | of `S` |
+|---|---|---|
+| the offline trainer, which brought in `log2f` | −2,960 B | −5,920 B |
+| the 95-arm research constructor (`Method::config_for`) | −3,896 B | −7,792 B |
+| static musl, for eligibility rather than size | +19,520 B | +39,040 B |
+
+Still open here: the ~20 small predicates the transform pipeline calls with a
+runtime `method`. Removing those needs the pipeline to stop being
+method-generic; the measurements above say the prize is small relative to that
+risk, so it stays recorded rather than attempted blind.
 
 Because both legal packaging forms charge the program **twice**, every byte here
 is worth two bytes of `S`: reclaiming 20 KB is **40 KB of `S`**, which is a

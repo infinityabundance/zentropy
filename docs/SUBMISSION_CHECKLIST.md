@@ -65,8 +65,9 @@
 | strongest credible pending (`fx2-cmix-transformer`) | ≈100,424,672 |
 | internal moonshot target (not a claim) | 95,000,000 |
 | Zentropy `S` at the Phase-11 result (tune 53) | `2 × 112,264 + 165,344,019` = **165,568,547** |
-| Zentropy `S` after Phase 12.1 stub reclamation | `2 × 105,536 + 165,344,019` = **165,555,091** |
-| **gap to the gate** | **≈55,869,895 B (≈55.9 MB)** |
+| Zentropy `S` after Phase 12.1 stub reclamation, dynamic target | `2 × 105,536 + 165,344,019` = **165,555,091** |
+| Zentropy `S` after Phase 12.1, **shipped static musl target** | `2 × 125,056 + 165,344,019` = **165,594,131** |
+| **gap to the gate** | **≈55.9 MB** |
 
 The stub reclamation moved `S` by **13,712 B**. The remaining gap is a *ratio*
 problem, not a byte-counting problem, and no part of this document should be read

@@ -35,13 +35,20 @@
 - **Hutter score accounting is sealed:** the three legal submission forms are
   unit-tested constructors, and no mechanism's adoption decision uses an
   estimated byte cost.
-- **The submission path works.** The scored stub is **112,264 B** (Phase 11:
-rebuilt
-`std` with `panic_abort`+`panic_immediate_abort`, `-288,928 B` for a byte-identical
+- **The submission path works.** The scored stub is **125,056 B** — a static-pie
+musl build, so it needs no shared library and no glibc version (the smaller
+dynamic glibc build is 105,536 B and requires glibc ≥ 2.34, so it is the
+fallback, not the submission). The ladder: 400,816 B → 112,392 B by rebuilding
+`std` with `panic_abort`+`panic_immediate_abort` (`-288,928 B` for a byte-identical
 archive — and, because both legal packaging forms charge the program twice, worth
-**-577,856 B of `S`**; the plain stable build is 400,816 B and remains the fallback),
-`--profile submission --no-default-features --features accepted`) is both `comp9a`
-and `decomp9`; a packed self-extracting `archive9` reconstructs byte-identically
+**-577,856 B of `S`**), then Phase 12.1 removed the offline trainer (`-2,960 B`,
+which also removed the stub's only libm call) and the 95-arm research model
+constructor (`-3,896 B`), each verified by a byte-identical archive. A stable,
+non-`build-std` build still works at 400,816 B and remains the last-resort
+fallback.
+It (`--profile submission --no-default-features --features accepted,submission`)
+is both `comp9a` and `decomp9`; a packed self-extracting `archive9` reconstructs
+byte-identically
 with no external inputs.
 - **OOM protection is layered, and the test plane is finally covered.** Coding
   runs are guarded by `mem-guard` (scored), `research_budget` (workstation-safe)

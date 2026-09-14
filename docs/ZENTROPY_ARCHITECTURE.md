@@ -146,8 +146,8 @@ Honest status as of the current revision. `MEASURED` means the number exists in
 | 8 | Learned residual corrector (model-size Pareto campaign) | **COMPLETE** — a 120-byte quantized integer MLP consumes the classical mixer/APM outputs and emits a logit correction; offline-trained, embedded, charged. Adopted at enwik9: **−421,646 B** (170,063,733 → 169,642,087, 1.3571 bpc) for a measured 7,848 B; permuted-weight control +2,201,020. Net-gain gate passes (see PHASE8_PLAN.md) |
 | 9 | Global search (DSFB observer, frf-fuzz mutation, Gemel memory) | **COMPLETE** — a deterministic, receipted search layer over the `tune` header byte (search has no decode authority). Campaigns: exhaustive on enwik7 (256 points), coordinate on enwik8 (46), gated by full `eval` on enwik9. The APM adaptation-shift axis is **REJECTED** at enwik9 (+90,996 B at the best LR) and compiled out; the search re-tuned the mixer learning rate 24 → 16 for **−359,748 B at zero binary cost**. The phase nets **−224 B** of executable. See §7.9 |
 | 10 | Equivalence-preserving representation optimizer | **COMPLETE (closed by measurement)** — six stages (recency-ranked ids, model-priced vocabulary, priced filter, affix on the composite, first-use definitions, subword/BPE composition) are each **REJECTED** at enwik6/enwik7, three of them directly contrary to a screening signal that grew with scale. The lesson is that this predictor does not want a different lexical representation. See [`PHASE10_PLAN.md`](PHASE10_PLAN.md) |
-| 11 | Resource closure (RAM/CPU/disk/binary size/determinism) | **COMPLETE, three measured wins** — (a) the scored stub is **112,264 B**, down from 400,816 B by rebuilding `std` with `panic_abort`+`panic_immediate_abort` (**−577,856 B of `S`**, verified by a byte-identical archive); (b) **T2 ADOPTED**: the table-size cap had no recorded justification, and scaling the direct experts' tables is worth **−3,938,320 B at enwik9** for a measured **192 B** of executable (**384 B of `S`**), with the mixer LR re-bracketed at the new geometry; (c) **test-plane OOM protection**, which exposed and fixed a decoder hole where a forged `tune` byte could request an unbounded allocation. Also measured and rejected: the method dispatch is not the stub's cost, the T1 layout alternative, AVX2, parallel blocking and bucket-local layout. See [`RESOURCE_CLOSURE.md`](RESOURCE_CLOSURE.md), [`MEMORY_GUARD.md`](MEMORY_GUARD.md), [`LAYOUT_DECISION.md`](LAYOUT_DECISION.md) |
-| 12 | Submission closure (SFX, source, doc, receipts, licence, checklist) | **PARTIAL** — the SFX stub + container + packaging court work and the accounting is sealed; not yet a submission. See [`PHASE12_PLAN.md`](PHASE12_PLAN.md) |
+| 11 | Resource closure (RAM/CPU/disk/binary size/determinism) | **COMPLETE, three measured wins** — (a) the scored stub fell from 400,816 B to 112,392 B by (i) rebuilding `std` with `panic_abort`+`panic_immediate_abort` (**−288,928 B**, and since both legal forms charge the program twice that is **−577,856 B of `S`**, verified by a byte-identical archive) and (ii) adopting T2's table scale (**+192 B**, see below); (b) **T2 ADOPTED**: the table-size cap had no recorded justification, and scaling the direct experts' tables is worth **−3,938,320 B at enwik9** for a measured **192 B** of executable (**384 B of `S`**), with the mixer LR re-bracketed at the new geometry; (c) **test-plane OOM protection**, which exposed and fixed a decoder hole where a forged `tune` byte could request an unbounded allocation. Also measured and rejected: the method dispatch is not the stub's cost, the T1 layout alternative, AVX2, parallel blocking and bucket-local layout. See [`RESOURCE_CLOSURE.md`](RESOURCE_CLOSURE.md), [`MEMORY_GUARD.md`](MEMORY_GUARD.md), [`LAYOUT_DECISION.md`](LAYOUT_DECISION.md) |
+| 12 | Submission closure (SFX, source, doc, receipts, licence, checklist) | **IN PROGRESS** — the stub has been reclaimed (112,392 → **105,536 B** dynamic, **125,056 B** shipped as a static-pie musl build so it runs on any x86-64 Linux; **−13,712 B of `S`** plus the portability fix), and the licence inventory, algorithm document, checklist and packaging path exist. Still open: the authority run of the *shipped* stub on the full 10⁹ bytes, a clean-clone offline build, and the mixer-LR re-bracket once the adaptation-rate gate lands. See [`PHASE12_PLAN.md`](PHASE12_PLAN.md), [`SUBMISSION_CHECKLIST.md`](SUBMISSION_CHECKLIST.md) |
 
 ## 7. Measured results
 
@@ -172,12 +172,16 @@ enwik9.
 | enwik8 | 100,000,000 | 20,865,077 | 1.6692 | 4.79 | ~330 s | — |
 | enwik9 | 1,000,000,000 | **165,344,019** | **1.3228** | **6.05** | ~58 min | 5.63 GiB |
 
-The accepted configuration's executable is the **112,264 B** scored stub
-(`--profile submission --no-default-features --features accepted`). `accepted` is
-the single definition of the scored feature set, so research-plane machinery —
-the Phase-9 search layer, rayon — cannot leak into `S` by forgetting a flag. Most
-of the stub is dispatch for rejected methods, which Phase 12 must reclaim; it is
-charged correctly here, but should not survive into a final submission.
+The accepted configuration's executable is the **125,056 B** scored stub
+(`--profile submission --no-default-features --features accepted,submission`,
+target `x86_64-unknown-linux-musl` — static-pie, so it needs no glibc version at
+all; the smaller dynamic build is 105,536 B and requires glibc ≥ 2.34). See
+[`LICENCE_INVENTORY.md`](LICENCE_INVENTORY.md) §4 for why eligibility beats 19 KB.
+`accepted` is the single definition of the scored feature set, so research-plane
+machinery — the Phase-9 search layer, rayon — cannot leak into `S` by forgetting
+a flag. Most of the stub is dispatch for rejected methods, which Phase 12
+reclaims; it is charged correctly here, but should not survive into a final
+submission.
 
 Mechanisms admitted by measurement (each a sequential experiment; a mechanism
 only counts when the *complete* `ΔS` is negative):
