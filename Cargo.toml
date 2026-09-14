@@ -1,6 +1,6 @@
 [package]
 name = "zentropy"
-version = "0.0.6"
+version = "0.0.7"
 edition = "2021"
 rust-version = "1.74"
 description = "Zentropy: the smallest legitimate executable explanation of enwik9. A Hutter Prize contender."
@@ -15,6 +15,13 @@ categories = ["compression", "algorithms", "command-line-utilities"]
 # scored path: everything the submission needs is implemented in-tree so that we
 # control binary size, determinism and licence inventory exactly.
 [dependencies]
+# Rayon is used by the *research* plane only: in-process parallelism across
+# independent trials (candidate tunes), so a campaign runs N-way on one loaded
+# corpus. The Hutter rules do not forbid it (the runtime stays self-contained;
+# it is statically linked and touches no files or network), but every linked byte
+# is charged to `S`, so the scored stub is built with `--features accepted` and
+# does not include it. See docs/HUTTER_RULES.md §4.
+rayon = { version = "1", optional = true }
 
 [dev-dependencies]
 
@@ -43,7 +50,15 @@ path = "src/bin/zentropy_sfx.rs"
 # Only ADOPTED mechanisms are in the default (scored) build. Rejected or
 # experimental mechanisms are compiled in explicitly with --features so they
 # reproduce but do not cost submission bytes.
-default = ["struct-hoist", "column-model", "word-token", "long-match", "sparse-match", "match-byte", "sse-3", "reorder", "learned", "mem-guard"]
+default = ["accepted", "parallel"]
+# The scored configuration: exactly the adopted mechanisms. The submission
+# packaging builds with `--no-default-features --features accepted` so that
+# research-plane machinery (the search layer, rayon) cannot leak into the stub.
+# Keep this list == the adopted mechanisms, and nothing else.
+accepted = ["struct-hoist", "column-model", "word-token", "long-match", "sparse-match", "match-byte", "sse-3", "reorder", "learned", "mem-guard"]
+# Research-plane in-process parallelism (rayon). Costs real bytes when linked, so
+# it is deliberately outside `accepted`.
+parallel = ["dep:rayon"]
 # Gates the Phase-3 structural-hoisting transform into the binary. Disabling it
 # yields an otherwise-identical binary used ONLY to measure the mechanism's
 # real executable-byte cost. `S` is authority: an estimate is never allowed to
@@ -102,6 +117,13 @@ collision = []
 # Phase 6.8: bounded PPM-C byte model expert. REJECTED at enwik9 (+61,133 B on
 # top of sse-3; wins at enwik7/enwik8) — fixed table capacity.
 ppm = []
+# Phase 9: the APM adaptation-shift axis of the `tune` byte. REJECTED at enwik9:
+# at the best mixer LR the best APM point is 90,996 B *worse* than APM-off
+# (169,575,025 vs 169,484,029), so the axis earns nothing and its 288 B of table
+# and variable-rate plumbing are not carried. Compiled in explicitly to
+# reproduce the negative result; the default build fixes all three shifts at 7,
+# which is the pre-Phase-9 behaviour exactly.
+apm-tune = []
 # Phase 7: article-layout compiler (encoder-side reordering + decoder id-sort).
 reorder = []
 # Phase 8: learned residual corrector (integer inference + embedded weights).

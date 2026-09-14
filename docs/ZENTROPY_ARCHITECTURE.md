@@ -144,32 +144,38 @@ Honest status as of the current revision. `MEASURED` means the number exists in
 | 6 | Serious context-mixing floor (ICM/ISSE, state maps, word/stem, SSE) | **COMPLETE** — the extra order-2 SSE stage (`sse-3`, enwik9 −1,671,235) is ADOPTED; state maps, ICM/ISSE, sparse contexts, collision control, the PPM-C expert, the stem model and high-order pruning are REJECTED with controls at enwik9/enwik8 (see PHASE6_PLAN.md) |
 | 7 | Article-layout compiler (semantic/structural/residual/predictor orders) | **COMPLETE** — the encoder reorders `<page>` blocks by category set, template set, then title; the decoder restores the original order by a free sort on the embedded ascending page id. Adopted at enwik9: **−4,469,794 B** (174,533,527 → 170,063,733, 1.3605 bpc) for a measured 24,208 B. Content-similarity and greedy orders REJECTED; identity control exactly 0, shuffle control +25,519 (see PHASE7_PLAN.md) |
 | 8 | Learned residual corrector (model-size Pareto campaign) | **COMPLETE** — a 120-byte quantized integer MLP consumes the classical mixer/APM outputs and emits a logit correction; offline-trained, embedded, charged. Adopted at enwik9: **−421,646 B** (170,063,733 → 169,642,087, 1.3571 bpc) for a measured 7,848 B; permuted-weight control +2,201,020. Net-gain gate passes (see PHASE8_PLAN.md) |
-| 9 | Global search (DSFB observer, frf-fuzz mutation, Gemel memory) | PROPOSED |
+| 9 | Global search (DSFB observer, frf-fuzz mutation, Gemel memory) | **COMPLETE** — a deterministic, receipted search layer over the `tune` header byte (search has no decode authority). Campaigns: exhaustive on enwik7 (256 points), coordinate on enwik8 (46), gated by full `eval` on enwik9. The APM adaptation-shift axis is **REJECTED** at enwik9 (+90,996 B at the best LR) and compiled out; the search re-tuned the mixer learning rate 24 → 16 for **−359,748 B at zero binary cost**. The phase nets **−224 B** of executable. See §7.9 |
 | 10 | Equivalence-preserving representation optimizer | PROPOSED |
-| 11 | Resource closure (RAM/CPU/disk/binary size/determinism) | **PARTIAL** — OOM guard + deterministic integer model in place; scored stub (346,208 B) not yet size-optimised |
+| 11 | Resource closure (RAM/CPU/disk/binary size/determinism) | **PARTIAL** — OOM guard (startup budget with a 4 GiB reserve, runtime memory floor, hard `RLIMIT_AS` + serialisation in `tools/run_guarded.sh`) and a deterministic integer model in place; scored stub (399,616 B) not yet size-optimised |
 | 12 | Submission closure (SFX, source, doc, receipts, licence, checklist) | **PARTIAL** — SFX stub + container + packaging court work; not yet a submission |
 
 ## 7. Measured results
 
-The **accepted configuration** is `struct-hoist + column + word-token-reverse +
-tune 7`; the Phase-2 floor (`rawcm`) is raw bytes through the predictor with no
-transform. Every number below reconstructs exactly and is bound to an immutable
-receipt in `evidence/runs/receipts.jsonl`.
+The **accepted configuration** is `Method::Residual` (structural hoist + word token
+reversion + column expert + Phase-4 match family + `sse-3` + article layout +
+learned residual corrector) at **`tune 5`** (mixer LR 16, APM axis off). Every
+number below reconstructs exactly and is bound to a receipt in `evidence/runs/`.
+
+The accepted configuration is tuned **for enwik9, the scored corpus**. The smaller
+rungs are screening instruments, and after Phase 9 they are slightly *worse* than
+they were at the old tune — LR 16 costs enwik6/7/8 a few KB and buys enwik9 360 KB,
+because the optimal mixer rate falls as the corpus grows (§7.9). Reading the ladder
+as a monotone improvement is a category error: the target is enwik9.
 
 | Corpus | bytes | archive (accepted) | bits/byte | ratio | encode wall | peak RSS |
 |---|---|---|---|---|---|---|
-| enwik6 | 1,000,000 | 267,100 | 2.1368 | 3.74 | ~0.8 s | — |
-| enwik7 | 10,000,000 | 2,368,527 | 1.8948 | 4.22 | ~11 s | — |
-| enwik8 | 100,000,000 | 21,237,221 | 1.6990 | 4.71 | ~218 s | — |
-| enwik9 | 1,000,000,000 | 169,642,087 | 1.3571 | 5.89 | ~1,928 s | ~5.5 GiB |
+| enwik6 | 1,000,000 | 267,333 | 2.1387 | 3.74 | ~1.0 s | — |
+| enwik7 | 10,000,000 | 2,370,164 | 1.8961 | 4.22 | ~22 s | — |
+| enwik8 | 100,000,000 | 21,245,220 | 1.6996 | 4.71 | ~245 s | — |
+| enwik9 | 1,000,000,000 | 169,282,339 | 1.3543 | 5.91 | ~1,928 s | ~5.5 GiB |
 
-The accepted configuration is now `Method::Residual` = the Phase-4 composite
-+ the order-2 SSE stage (6.4) + the Phase-7 article layout (7.8) + the
-Phase-8 learned residual corrector (8.3), adopted at enwik9 `−421,646` for a
-measured 7,848 B of executable. The scored stub is **399,824 B**: most of the
-growth over the raw mechanisms is dispatch for rejected methods, which Phase 11
-(submission closure) must reclaim — it is charged correctly here, but it should
-not survive into a final submission.
+The accepted configuration's executable is the **399,616 B** scored stub
+(`--profile submission --no-default-features --features accepted`). `accepted` is
+the single definition of the scored feature set, so research-plane machinery —
+the Phase-9 search layer, rayon — cannot leak into `S` by forgetting a flag. Most
+of the stub is dispatch for rejected methods, which Phase 11 (submission closure)
+must reclaim; it is charged correctly here, but should not survive into a final
+submission.
 
 Mechanisms admitted by measurement (each a sequential experiment; a mechanism
 only counts when the *complete* `ΔS` is negative):
@@ -179,7 +185,7 @@ only counts when the *complete* `ΔS` is negative):
 | word + word-bigram experts | −73,635 B on enwik7; −653,805 B on enwik8 | **ADOPTED** |
 | orders 0, 5, 12, 16 added to the ladder | −12,551 B on enwik7; −118,676 B on enwik8 | **ADOPTED** |
 | structural hoisting (fixed dictionary in `.rodata`) | complete ΔS with **measured** 1,712 B executable cost: **+322 B on enwik6 (REJECTED)**, −4,472 B on enwik7, −15,130 B on enwik8 | **ADOPTED for ≥ enwik7** |
-| A20 mixer learning rate 24 (tune 7, zero executable cost) | −9,492 B on enwik7; **−76,483 B on enwik8** | **ADOPTED** |
+| A20 mixer learning rate 24 (tune 7, zero executable cost) | −9,492 B on enwik7; **−76,483 B on enwik8** — **superseded in Phase 9**: the optimum moved to LR 16 once Phases 6–8 landed (§7.9) | ADOPTED then, superseded now |
 | A17 previous-line/column expert | −8,689 B on enwik7; **−58,737 B on enwik8** (measured 720 B cost) | **ADOPTED** |
 | A1.1/A26 dynamic word tokenizer (corpus-derived dictionary in the archive, reverse ids) | complete ΔS with **measured** 21,848 B executable cost: **+14,805 B on enwik7 (REJECTED)**, −109,441 B on enwik8, **−1,702,081 B on enwik9** | **ADOPTED for large corpora** |
 | Phase 4.1 long-distance match tier (Z6) | enwik7 −4,229; enwik8 −77,348; **enwik9 −1,454,881** (1,240 B cost) | **ADOPTED** |
@@ -190,6 +196,9 @@ only counts when the *complete* `ΔS` is negative):
 | Phase 6.8 bounded PPM-C expert (`ppm`) | enwik7 −49,505 over `sse-3`; enwik8 −121,466 over `sse-3`; **enwik9 +61,133 (REJECTED)** — fixed table capacity | **REJECTED at scale** |
 | Phase 7 article-layout compiler (`reorder-full`) | enwik7 −21,722; enwik8 −317,313; **enwik9 −4,469,794** (24,208 B; identity control 0, shuffle control +25,519); **zero permutation bytes** paid | **ADOPTED** |
 | Phase 8 learned residual corrector (`residual`, 120 B model) | enwik7 −7,831; enwik8 −65,245; **enwik9 −421,646** (7,848 B binary incl. weights; permuted-weight control +2,201,020) | **ADOPTED (accepted configuration)** |
+| Phase 9 search layer (DSFB observer, frf-fuzz mutation, Pareto, corpus-scoped Gemel memory) | courted (whole 0..=255 space round-trips; memory prevents re-payment; campaigns deterministic) | **ADOPTED** (net **−224 B** of executable) |
+| Phase 9 mixer-LR re-tune (**LR 16**, `tune 5`, zero executable cost) | enwik9 **−359,748** (169,642,087 → 169,282,339, 1.3543 bpc); LR 20 was −158,058 and LR 24 the old accepted value | **ADOPTED** |
+| Phase 9 APM adaptation-shift axis | enwik7 ≈−12 KB on the mean, enwik8 +653 at the best LR, **enwik9 +90,996 at the best LR** | **REJECTED at scale**, compiled out (`--features apm-tune` reproduces it) |
 
 > **Accounting note.** The executable cost of a mechanism is *measured*, never
 > estimated: build an otherwise-identical submission binary with and without the
@@ -256,15 +265,16 @@ transformed representation and can only add binary cost. A production that
 
 ### Submission-plane measurement
 
-The accepted configuration is `struct-hoist + word-token-reverse + column + match
-family (4.1/4.2/4.4) + tune 7`. The scored stub (`target/submission/zentropy-sfx`,
-`opt-level="z"`, LTO, stripped) is both `comp9a` and `decomp9` and is currently
-**351,784 B**. For enwik6 (`bhm = 267,277 B`, `archive9 = 619,084 B`) the two legal
-packaging forms score:
+The accepted configuration is the `residual` method at `tune 5`. The scored stub
+(`target/submission/zentropy-sfx`, `--profile submission --no-default-features
+--features accepted`, `opt-level="z"`, LTO, stripped) is both `comp9a` and
+`decomp9` and is **399,616 B**. Measured on enwik6 (`bhm = 267,333 B`,
+`archive9 = 666,972 B`) the two legal packaging forms score:
 
 ```
-S(self-extracting:  comp9 + archive9)          =   970,868
-S(separate, comp9a = decomp9:  2P + bhm)       =   970,845
+S(self-extracting:  comp9 + archive9)          = 1,066,588
+S(separate, comp9a = decomp9:  2P + bhm)       = 1,066,565
+exactness: byte-identical
 ```
 
 The two differ by exactly 23 bytes — the SFX marker (15) plus the length field
@@ -281,6 +291,70 @@ optimisation target.
 > **No claim of competitiveness is made yet.** The floor exists so that every
 > subsequent mechanism can be attributed by ablation. A mechanism adds value
 > only when the *complete* `ΔS` is negative.
+
+### 7.9 Phase 9 completion — global search
+
+The `tune` header byte became a two-axis hyperparameter vector: the low nibble
+selects one of 16 mixer learning rates, the high nibble one of 16 APM
+adaptation-shift sets. `tune < 16` reproduces the pre-Phase-9 behaviour exactly.
+Around it sits the search layer: deterministic frf-fuzz mutation, a DSFB observer
+(per-axis means, coordinate-wise optimum, `coordinate_consistent`, spread), a
+Pareto report, and a Gemel memory that is **scoped by corpus digest** and can read
+any number of receipt logs, so a campaign never re-pays for a configuration it has
+already measured — or mistakes a tune measured on another corpus for evidence
+about this one. **Search has no decode authority**: the knob is a header byte both
+sides apply identically, so the exactness court is the whole 0..=255 space
+round-tripping.
+
+Campaigns: **exhaustive** on enwik7 (256 points), **coordinate** on enwik8 (46,
+covering both axes at two LR levels), and **gated by full `eval` on enwik9**.
+
+| mechanism | authority measurement (enwik9) | binary | decision |
+|---|---|---|---|
+| search layer | courted; campaigns deterministic; memory verified | +16 B | **ADOPTED** |
+| APM adaptation-shift axis | +90,996 B at the best LR | +304 B | **REJECTED**, compiled out |
+| mixer-LR re-tune 24 → 16 | **−359,748 B** | 0 B | **ADOPTED** |
+
+The phase's headline result is that **the optimal mixer learning rate is a
+function of the predictor and of scale**, and that A20 had tuned it against a
+predictor that no longer exists:
+
+| rung | best mixer LR | margin over LR 24 |
+|---|---|---|
+| enwik7 | 24 | — |
+| enwik8 | 20 | −3,086 |
+| enwik9 | 20 | −158,058 |
+| enwik9 | **16** | **−359,748** |
+
+Every step down the ladder bought more, so the rung below (LR 10) was gated rather
+than extrapolated. The knob costs zero executable bytes because the ladder already
+existed and the winning point has the APM axis off.
+
+The APM axis is the phase's clean negative: worth ≈12 KB on the *mean* at enwik7
+and within 653 B at enwik8, it is **91 KB of harm** at enwik9. A near-tie at a
+smaller rung is not a rejection, which is exactly why the authority gate exists.
+
+Three proposals were measured and rejected rather than argued about; both records
+are in-tree so the questions are not re-litigated from intuition:
+
+| proposal | measured verdict | record |
+|---|---|---|
+| AVX2 intrinsics in the predictor | 1.19–1.51× **slower** on the dominant (random table) loop; only 1.10× on the real mixer types | [`SIMD_DECISION.md`](SIMD_DECISION.md) |
+| parallel blocking in the archive | 3.4–9.1× faster for **+6.2% to +16.3%** ratio — an order of magnitude worse than the phase's win | [`PARALLELISM_DECISION.md`](PARALLELISM_DECISION.md) |
+| rayon research threads | **ADOPTED for the research plane**: 3.0× on four concurrent tunes, byte-identical output, ~16 B if ever linked into the stub | [`PARALLELISM_DECISION.md`](PARALLELISM_DECISION.md) |
+
+And one pure-waste fix that mattered more than any of them: `eval` used to spend
+**two of its four full passes** re-encoding and re-decoding the parent — the
+already-accepted configuration whose archive size is receipted. `eval
+--parent-archive-bytes <n>` skips those passes (the candidate is still encoded and
+exactly decoded), halving every gate; `tools/gate_many.sh` then runs N gates
+concurrently. A gate that took 2.5 hours now takes ~1 hour, and that is a
+measurement-discipline change, not a compression result.
+
+> **Open, well-posed follow-up.** The learned residual corrector's weights were
+trained on an LR-24 trajectory. The gate measures what is actually shipped (LR 16
+with those weights) and it is a 360 KB win, but retraining the corrector against
+the new trajectory can only help.
 
 ## 8. Admission procedure
 

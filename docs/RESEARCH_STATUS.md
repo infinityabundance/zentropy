@@ -6,7 +6,7 @@
 
 ## What is true right now
 
-- **Exactness holds.** 68 unit/property tests plus 7 scripted courts pass. The
+- **Exactness holds.** 119 unit/property tests plus 8 scripted courts pass. The
   Wikipedia IR (`ZIR-0`) round-trips arbitrary and malformed input exactly. The
   archive decoder rejects corruption without panicking or allocating without
   bound. A deterministic incompressible stream does not compress.
@@ -17,15 +17,14 @@
   `xz -9e` (24,831,656), `brotli -q 11` (25,742,001), `bzip2 -9` (29,008,758)
   and `gzip -9` (36,445,248) on the same input.
 - **The full corpus reconstructs exactly.** The accepted configuration
-  (`struct-hoist + word-token-reverse + column + Phase-4 match family + order-2
-  SSE stage + Phase-7 article layout + Phase-8 learned residual corrector +
-  tune 7`) gives enwik9 `169,642,087` bytes (`1.3571` bpc), decoded
-  byte-identically. Progression: pre-column `182,949,204` (1.4636 bpc);
-  hoist+column `181,803,607` (1.4544); +A1.1 tokenizer `180,079,678` (1.4406);
-  +Phase 4 `176,204,762` (1.4096); +Phase 6 SSE `174,533,527` (1.3963);
-  +Phase 7 article layout `170,063,733` (1.3605); **+Phase 8 learned residual
-  `169,642,087` (1.3571)**. This is milestone G0 (exact 10⁹-byte reconstruction)
-  and G1.
+  (`Method::Residual` at **`tune 5`** — mixer LR 16) gives enwik9
+  `169,282,339` bytes (`1.3543` bpc), decoded byte-identically. Progression:
+  pre-column `182,949,204` (1.4636 bpc); hoist+column `181,803,607` (1.4544);
+  +A1.1 tokenizer `180,079,678` (1.4406); +Phase 4 `176,204,762` (1.4096);
+  +Phase 6 SSE `174,533,527` (1.3963); +Phase 7 article layout `170,063,733`
+  (1.3605); +Phase 8 learned residual `169,642,087` (1.3571); **+Phase 9 LR
+  re-tune `169,282,339` (1.3543)**. This is milestone G0 (exact 10⁹-byte
+  reconstruction) and G1.
 - **Mechanisms are adopted only by complete, measured cost:** word/bigram
   experts (−653,805 B on enwik8) and orders 0/5/12/16 (−118,676 B on enwik8).
   Structural hoisting is adopted for ≥ enwik7 (−15,130 B on enwik8) but
@@ -34,9 +33,10 @@
 - **Hutter score accounting is sealed:** the three legal submission forms are
   unit-tested constructors, and no mechanism's adoption decision uses an
   estimated byte cost.
-- **The submission path works.** The scored stub (366,744 B) is both `comp9a`
-  and `decomp9`; a packed self-extracting `archive9` reconstructs byte-identically
-  with no external inputs.
+- **The submission path works.** The scored stub (399,616 B,
+`--profile submission --no-default-features --features accepted`) is both `comp9a`
+and `decomp9`; a packed self-extracting `archive9` reconstructs byte-identically
+with no external inputs.
 - **Optimization Phase A is running.** A17 (previous-line/column expert) and the
   A20 learning-rate variant (`tune 7`) are adopted; A2 (alphabet permutation) and
   A3 (information inheritance) are rejected, each with a negative control that
@@ -86,6 +86,26 @@
   test comparing the integer runtime against a dequantized float replication of
   the trainer caught a real bias-scaling bug that had made the shipped network
   5–17 MB *worse* than the parent. See [`PHASE8_PLAN.md`](PHASE8_PLAN.md).
+
+- **Phase 9 (global search) is complete, and its headline result is that the
+  mixer learning rate is a function of the predictor and of scale.** The `tune`
+  byte became a two-axis hyperparameter vector (mixer LR in the low nibble, APM
+  adaptation shifts in the high nibble) behind a receipted search layer —
+  frf-fuzz mutation, a DSFB observer, Pareto reporting, and a Gemel memory scoped
+  by corpus digest that never re-pays for a known configuration. Campaigns were
+  exhaustive on enwik7 (256 points), coordinate on enwik8 (46), and gated by full
+  `eval` on enwik9. **ADOPTED: mixer LR 24 → 16, enwik9 −359,748 B at zero
+  executable cost** (LR 20 was −158,058; every rung down bought more, so the next
+  rung was gated rather than extrapolated). **REJECTED at scale: the APM
+  adaptation-shift axis** — worth ≈12 KB on the mean at enwik7 and within 653 B at
+  enwik8, it is **+90,996 B at the best LR on enwik9**, and is compiled out. The
+  phase nets −224 B of executable. Three throughput proposals were measured and
+  rejected rather than argued about: AVX2 is **1.19–1.51× slower** on the dominant
+  random-table loop ([`SIMD_DECISION.md`](SIMD_DECISION.md)); parallel blocking
+  costs **+6.2% to +16.3%** ratio for 3.4–9.1× speed
+  ([`PARALLELISM_DECISION.md`](PARALLELISM_DECISION.md)); rayon threads are adopted
+  for the research plane only (3.0× on four concurrent tunes, byte-identical,
+  ~16 B if ever linked). See [`PHASE9_PLAN.md`](PHASE9_PLAN.md).
 
 ## What is *not* true yet
 
@@ -176,10 +196,9 @@ The first decisive question is not whether Zentropy reaches 100 MB. It is:
    saving after that floor**, rather than merely rediscovering what the predictor
    already captured?
 
-Today the floor is 169.6 MB (archive) / ~170.0 MB complete `S` and the
-distinctly-Zentropy machinery has not yet been deployed. The gap to the pending
-frontier (`fx2-cmix-transformer`, 100.42 MB including compressor) is ~70.0 MB; to
-the accepted record (`fx2-cmix`, 110.79 MB) it is ~59.2 MB. It is not close, and
+Today the floor is 169.3 MB (archive) / ~169.7 MB complete `S`. The gap to the pending
+frontier (`fx2-cmix-transformer`, 100.42 MB including compressor) is ~68.9 MB; to
+the accepted record (`fx2-cmix`, 110.79 MB) it is ~58.5 MB. It is not close, and
 the project does not pretend otherwise.
 
 ## Superseded earlier ordering
@@ -194,7 +213,7 @@ item 2/7: a cheap probe, not an optimisation campaign.
   mechanism is gated on that, not on our hardware.
 - **Memory.** The model already uses ~450 MB for enwik8; enwik9 needs a
   careful allocation budget under 10 GB.
-- **Binary size.** The stub is 399,824 B. Phases 6–8 added ≈33 KB of dispatch and
+- **Binary size.** The stub is 399,616 B. Phases 6–9 added ≈33 KB of dispatch and
   mechanism code; Phase 11 must gate the rejected methods out of the submission
   build. The accepted mechanisms' own marginal costs are small (SSE 256 B,
   reorder 24,208 B, learned 7,848 B).

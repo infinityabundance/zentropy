@@ -12,14 +12,25 @@
 //! zentropy bench     <in> [--out <archive>] [--receipt <jsonl>]
 //! zentropy ablate    <in>
 //! zentropy hoist     <in>
-//! zentropy eval      <in> --candidate <method> [--parent <method>] --binary-cost <n> [--receipt <f>]
+//! zentropy eval      <in> --candidate <m> [--parent <m>] --binary-cost <n> [--tune <t>] [--parent-archive-bytes <n>] [--receipt <f>]
 //! zentropy sweep     <in> [--method <method>] [--receipt <f>]
+//! zentropy prune     <in> [--method <method>] [--remove i,j]
 //! zentropy pack-sfx  <stub> <archive> <out>
 //! zentropy corrupt-court
 //! zentropy negative-court
 //! zentropy gate
 //! zentropy meminfo    [file] [--max-ram <size>]
 //! zentropy selftest
+//! ```
+//!
+//! Phase 9 adds the search subcommands, all research-plane and gated out of the
+//! submission stub by the `submission` feature:
+//!
+//! ```text
+//! zentropy sweep-tune <in> [--method M] [--schedule coord|full|fuzz|guided] [--trials N] [--tunes 0,1,…] [--jobs N] [--receipt <f>] [--memory <log>]…
+//! zentropy frontier   <receipt.jsonl> [--method M]
+//! zentropy observe    <receipt.jsonl> [--method M]
+//! zentropy pblocks    <in> [--blocks N] [--jobs M] [--tune T] [--no-full]
 //! ```
 
 use std::env;
@@ -41,6 +52,10 @@ fn main() -> ExitCode {
         usage();
         return ExitCode::from(2);
     }
+    // OOM protection: the research driver arms the runtime memory floor, so a
+    // multi-hour run aborts cleanly if the machine tightens underneath it rather
+    // than pushing the user's session into swap. The judged stub never arms it.
+    memory::enable_runtime_guard();
     let result = match args[1].as_str() {
         "hash" => cmd_hash(&args[2..]),
         "tokenize" => cmd_tokenize(&args[2..]),
@@ -61,6 +76,14 @@ fn main() -> ExitCode {
         "reorder-info" => cmd_reorder_info(&args[2..]),
         "reorder-out" => cmd_reorder_out(&args[2..]),
         "train-residual" => cmd_train_residual(&args[2..]),
+        #[cfg(not(feature = "submission"))]
+        "sweep-tune" => cmd_sweep_tune(&args[2..]),
+        #[cfg(not(feature = "submission"))]
+        "frontier" => cmd_frontier(&args[2..]),
+        #[cfg(not(feature = "submission"))]
+        "observe" => cmd_observe(&args[2..]),
+        #[cfg(not(feature = "submission"))]
+        "pblocks" => cmd_pblocks(&args[2..]),
         "selftest" => cmd_selftest(),
         "help" | "-h" | "--help" => {
             usage();
@@ -82,14 +105,22 @@ fn usage() {
         "zentropy {version}\n\
          \n\
          USAGE:\n  \
-         zentropy hash       <file>\n  \
-         zentropy tokenize   <file> [--kinds]\n  \
-         zentropy compress   <in> <archive>\n  \
-         zentropy decompress <archive> <out>\n  \
-         zentropy verify     <original> <archive>\n  \
-         zentropy bench      <in> [--out <archive>]\n  \
-         zentropy gate\n  \
-         zentropy selftest\n",
+         zentropy hash        <file>\n  \
+         zentropy tokenize    <file> [--kinds]\n  \
+         zentropy compress    <in> <archive>\n  \
+         zentropy decompress  <archive> <out>\n  \
+         zentropy verify      <original> <archive>\n  \
+         zentropy bench       <in> [--out <archive>] [--receipt <f>]\n  \
+         zentropy eval        <in> --candidate <m> [--parent <m>] --binary-cost <n> [--tune <t>] [--parent-archive-bytes <n>] [--receipt <f>]\n  \
+         zentropy sweep       <in> [--method <m>] [--receipt <f>]\n  \
+         zentropy prune       <in> [--method <m>] [--remove i,j]\n  \
+         zentropy pack-sfx    <stub> <archive> <out>\n  \
+         zentropy meminfo     [file] [--max-ram <size>]\n  \
+         zentropy corrupt-court | negative-court | selftest | gate\n  \
+         zentropy sweep-tune  <in> [--method <m>] [--schedule coord|full|fuzz|guided] [--trials <n>] [--tunes <list>] [--jobs <n>] [--receipt <f>] [--memory <log>]\n  \
+         zentropy frontier    <receipt.jsonl> [--method <m>]\n  \
+         zentropy observe     <receipt.jsonl> [--method <m>]\n  \
+         zentropy pblocks     <in> [--blocks <n>] [--jobs <n>] [--tune <t>] [--no-full]\n",
         version = zentropy::VERSION
     );
 }
@@ -107,14 +138,22 @@ fn max_ram_override(args: &[String]) -> Option<u64> {
 }
 
 /// Refuse to start a memory-heavy operation that would exceed the budget.
+///
+/// The research driver shares the workstation with an editor, so it uses the
+/// reserve-aware budget: it never claims [`memory::RESERVE_BYTES`]. The judged
+/// stub uses the unreserved budget instead. It also arms the runtime floor, so a
+/// long run aborts rather than swapping the machine to death.
 fn guard_encode(n: u64, max_ram: Option<u64>) -> Result<(), String> {
-    memory::check(memory::projected_encode(n, 2), memory::budget(max_ram))
+    memory::check(
+        memory::projected_encode(n, 2),
+        memory::research_budget(max_ram),
+    )
 }
 
 fn guard_decode(archive_len: u64, n: u64, max_ram: Option<u64>) -> Result<(), String> {
     memory::check(
         memory::projected_decode(archive_len, n),
-        memory::budget(max_ram),
+        memory::research_budget(max_ram),
     )
 }
 
@@ -642,6 +681,595 @@ fn cmd_train_residual(_args: &[String]) -> Result<(), String> {
     Err("train-residual: built without the `learned` feature".into())
 }
 
+/// Phase 9: measure one `tune` point for a method — encode, hash, receipt.
+///
+/// Research-plane: `exact` is `false` because a screening encode is not a
+/// round-trip claim. The winner is gated by `eval`, which does reconstruct the
+/// corpus byte-for-byte before anything is adopted.
+#[cfg(not(feature = "submission"))]
+#[allow(clippy::too_many_arguments)]
+fn measure_tune(
+    data: &[u8],
+    method: Method,
+    t: u8,
+    corpus_path: &str,
+    sha: &str,
+    receipt: Option<&str>,
+) -> Result<zentropy::search::Trial, String> {
+    let (tr, arch) = encode_trial(data, method, t);
+    write_tune_receipt(method, t, &tr, &arch, corpus_path, sha, receipt)?;
+    Ok(tr)
+}
+
+/// Encode one tune and build its trial. Pure: no I/O, no shared state, so it is
+/// safe to run many of these concurrently (`--jobs`).
+#[cfg(not(feature = "submission"))]
+fn encode_trial(data: &[u8], method: Method, t: u8) -> (zentropy::search::Trial, Vec<u8>) {
+    let t0 = Instant::now();
+    let arch = archive::encode_tuned(data, method, t);
+    let wall = t0.elapsed().as_secs_f64();
+    let tr = zentropy::search::Trial {
+        tune: t,
+        archive_bytes: arch.len() as u64,
+        wall_ms: (wall * 1000.0) as u64,
+        exact: false,
+    };
+    (tr, arch)
+}
+
+/// Receipt one measured trial. Kept separate from [`encode_trial`] so that a
+/// parallel campaign writes receipts **serially and in tune order**, which keeps
+/// the log deterministic and stops interleaved appends from corrupting lines.
+#[cfg(not(feature = "submission"))]
+#[allow(clippy::too_many_arguments)]
+fn write_tune_receipt(
+    method: Method,
+    t: u8,
+    tr: &zentropy::search::Trial,
+    arch: &[u8],
+    corpus_path: &str,
+    sha: &str,
+    receipt: Option<&str>,
+) -> Result<(), String> {
+    let Some(rp) = receipt else { return Ok(()) };
+    let mut r = RunReceipt::default();
+    r.id = format!("search/{}/{t}", method.name());
+    r.hypothesis = format!(
+        "tune={t} improves archive over the accepted tune for {}",
+        method.name()
+    );
+    r.parent = method.name().into();
+    r.revision = revision();
+    r.compiler = format!("rustc {}", rustc_version());
+    r.corpus = corpus_path.to_string();
+    r.input_sha256 = sha.to_string();
+    r.archive_sha256 = hex(&sha256(arch));
+    r.exact = false;
+    r.compressor_bytes = 0;
+    r.archive_bytes = tr.archive_bytes;
+    r.wall_seconds = tr.wall_ms as f64 / 1000.0;
+    r.peak_rss_bytes = peak_rss();
+    r.environment = format!("{} {}", std::env::consts::OS, std::env::consts::ARCH);
+    r.attribution = "search/tune".into();
+    r.decision = "MEASURED".into();
+    r.notes = "runtime knob (header byte); screening encode, winner gated by `eval`".into();
+    r.extra.push(("method".into(), method.name().into()));
+    r.extra.push(("tune".into(), t.to_string()));
+    let k = zentropy::search::Knobs::from_tune(t);
+    r.extra.push(("lr_idx".into(), k.lr_idx.to_string()));
+    r.extra.push(("apm_sel".into(), k.apm_sel.to_string()));
+    let (r1, r2, r3) = zentropy::search::apm_rates(t);
+    r.extra.push((
+        "mixer_lr".into(),
+        zentropy::context::MIXER_LRS[k.lr_idx as usize].to_string(),
+    ));
+    r.extra
+        .push(("apm_rates".into(), format!("{r1},{r2},{r3}")));
+    append_jsonl(rp, &r)
+}
+
+/// Phase 9: search the runtime hyperparameter space (`tune`) for a method. The
+/// knob is carried in the archive header, so the decoder is unchanged and search
+/// has no decode authority. Trials are recorded as receipts; the Gemel memory
+/// (the receipt log) is consulted first so a known configuration is never paid
+/// for twice.
+#[cfg(not(feature = "submission"))]
+fn cmd_sweep_tune(args: &[String]) -> Result<(), String> {
+    let path = args.first().ok_or("sweep-tune: need <in>")?;
+    let get = |k: &str| -> Option<String> {
+        args.iter()
+            .position(|a| a == k)
+            .and_then(|i| args.get(i + 1))
+            .cloned()
+    };
+    let method = get("--method")
+        .and_then(|s| Method::from_name(&s))
+        .unwrap_or(archive::ACCEPTED_METHOD);
+    let receipt = get("--receipt");
+    let memory_paths: Vec<String> = args
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| a.as_str() == "--memory")
+        .filter_map(|(i, _)| args.get(i + 1).cloned())
+        .collect();
+    let schedule = get("--schedule").unwrap_or_else(|| "full".into());
+    let fuzz_n: usize = get("--trials").and_then(|v| v.parse().ok()).unwrap_or(64);
+    // Research-plane parallelism (rayon): how many trials to encode concurrently.
+    // Each concurrent trial owns a full model, so this multiplies peak RAM and
+    // the startup guard below is charged accordingly.
+    let jobs: usize = get("--jobs")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1)
+        .max(1);
+    // An explicit point list shards a campaign across processes: each shard owns a
+    // disjoint set of tunes and its own receipt, and the Gemel memory keeps the
+    // shards consistent when their logs are pooled. `--tunes` overrides
+    // `--schedule`.
+    let explicit: Option<Vec<u8>> = match get("--tunes") {
+        Some(s) => {
+            let mut v: Vec<u8> = Vec::new();
+            for part in s.split(',') {
+                let p = part.trim();
+                if p.is_empty() {
+                    continue;
+                }
+                let t: u8 = p
+                    .parse()
+                    .map_err(|_| format!("sweep-tune: --tunes entry '{p}' is not a tune byte"))?;
+                v.push(t);
+            }
+            v.sort_unstable();
+            v.dedup();
+            Some(v)
+        }
+        None => None,
+    };
+
+    let data = read(path)?;
+    // `jobs` concurrent trials each hold a model, so the projection scales with
+    // them instead of describing a single pass.
+    memory::check(
+        memory::projected_encode(data.len() as u64, 2).saturating_mul(jobs as u64),
+        memory::research_budget(max_ram_override(args)),
+    )?;
+    let sha = hex(&sha256(&data));
+
+    // Gemel memory: every receipt log named here (the append target first, then
+    // any `--memory` archives) contributes the configurations already measured
+    // for this method *on this corpus*. Filtering by the corpus digest is what
+    // makes the memory sound: a tune tried on enwik7 says nothing about enwik9,
+    // and skipping it on that basis would silently drop a real candidate.
+    let mut memory_lines: Vec<String> = Vec::new();
+    let read_log = |p: &str| -> Vec<String> {
+        std::fs::read_to_string(p)
+            .map(|s| s.lines().map(|l| l.to_string()).collect())
+            .unwrap_or_default()
+    };
+    if let Some(r) = &receipt {
+        memory_lines.extend(read_log(r));
+    }
+    for m in &memory_paths {
+        memory_lines.extend(read_log(m));
+    }
+    let mut tried: std::collections::HashSet<u8> =
+        zentropy::search::already_tried_for(&memory_lines, method.name(), Some(&sha))
+            .into_iter()
+            .collect();
+
+    // Every trial known for this corpus (from memory), plus everything this
+    // campaign measures. The observer and the schedules see one trial set.
+    let mut all = zentropy::search::trials_from_lines_for(&memory_lines, method.name(), Some(&sha));
+    let known = all.len();
+
+    // Measure one point unless the Gemel memory already knows it; this is the
+    // single path every schedule goes through, so no trial can be paid for twice
+    // and every trial is receipted identically.
+    let run = |t: u8,
+               tried: &mut std::collections::HashSet<u8>,
+               all: &mut Vec<zentropy::search::Trial>|
+     -> Result<(), String> {
+        if tried.contains(&t) {
+            return Ok(());
+        }
+        let tr = measure_tune(&data, method, t, path, &sha, receipt.as_deref())?;
+        tried.insert(t);
+        all.push(tr);
+        Ok(())
+    };
+    let min_archive = |all: &[zentropy::search::Trial], t: u8| -> Option<u64> {
+        all.iter()
+            .filter(|x| x.tune == t)
+            .map(|x| x.archive_bytes)
+            .min()
+    };
+
+    // Evaluate a *fixed* point list, `jobs` trials at a time. The encodes are
+    // independent, so they run in parallel; receipts are then written serially in
+    // tune order, which keeps the log byte-identical to a serial campaign.
+    // Batching (rather than a free-for-all) bounds peak RAM to `jobs` models.
+    let run_batch = |plan: &[u8],
+                     tried: &mut std::collections::HashSet<u8>,
+                     all: &mut Vec<zentropy::search::Trial>|
+     -> Result<(), String> {
+        for chunk in plan.chunks(jobs) {
+            let todo: Vec<u8> = chunk
+                .iter()
+                .copied()
+                .filter(|t| !tried.contains(t))
+                .collect();
+            if todo.is_empty() {
+                continue;
+            }
+            #[cfg(feature = "parallel")]
+            let mut measured: Vec<(u8, zentropy::search::Trial, Vec<u8>)> = {
+                use rayon::prelude::*;
+                todo.par_iter()
+                    .map(|&t| {
+                        let (tr, a) = encode_trial(&data, method, t);
+                        (t, tr, a)
+                    })
+                    .collect()
+            };
+            #[cfg(not(feature = "parallel"))]
+            let mut measured: Vec<(u8, zentropy::search::Trial, Vec<u8>)> = todo
+                .iter()
+                .map(|&t| {
+                    let (tr, a) = encode_trial(&data, method, t);
+                    (t, tr, a)
+                })
+                .collect();
+            measured.sort_by_key(|(t, _, _)| *t);
+            for (t, tr, arch) in measured {
+                write_tune_receipt(method, t, &tr, &arch, path, &sha, receipt.as_deref())?;
+                tried.insert(t);
+                all.push(tr);
+            }
+        }
+        Ok(())
+    };
+
+    // The starting point is the accepted tune.
+    let start = zentropy::search::Knobs::from_tune(archive::ACCEPTED_TUNE);
+
+    match explicit {
+        Some(list) => {
+            run_batch(&list, &mut tried, &mut all)?;
+        }
+        None => match schedule.as_str() {
+            "full" => {
+                let plan: Vec<u8> = (0u16..256).map(|t| t as u8).collect();
+                run_batch(&plan, &mut tried, &mut all)?;
+            }
+            "coord" => {
+                use zentropy::search::AXES;
+                let mut plan: Vec<u8> = Vec::new();
+                for a in AXES {
+                    for lvl in 0..16u8 {
+                        plan.push(start.set(a, lvl).tune());
+                    }
+                }
+                run_batch(&plan, &mut tried, &mut all)?;
+            }
+            "fuzz" => {
+                let mut k = start;
+                let mut seed = 0x5EED_C0FF_EE12_3456u64;
+                let mut plan: Vec<u8> = Vec::new();
+                for _ in 0..fuzz_n {
+                    plan.push(k.tune());
+                    let (nk, ns) = zentropy::search::mutate(k, seed);
+                    k = nk;
+                    seed = ns;
+                }
+                run_batch(&plan, &mut tried, &mut all)?;
+            }
+            // The guided campaign is the phase's synthesis. The DSFB observer chooses
+            // the next points (coordinate descent to a per-axis optimum), then the
+            // frf-fuzz operator escapes that optimum with a deterministic, seeded
+            // hill-climb that halts after `patience` consecutive non-improvements. The
+            // Gemel memory is consulted throughout, so resuming costs nothing.
+            "guided" => {
+                use zentropy::search::AXES;
+                let mut best = start;
+                for _round in 0..4 {
+                    let mut improved = false;
+                    for a in AXES {
+                        for lvl in 0..16u8 {
+                            run(best.set(a, lvl).tune(), &mut tried, &mut all)?;
+                        }
+                        let mut best_lvl = best.level(a);
+                        let mut best_bytes = u64::MAX;
+                        for lvl in 0..16u8 {
+                            if let Some(b) = min_archive(&all, best.set(a, lvl).tune()) {
+                                if b < best_bytes {
+                                    best_bytes = b;
+                                    best_lvl = lvl;
+                                }
+                            }
+                        }
+                        if best_lvl != best.level(a) {
+                            best = best.set(a, best_lvl);
+                            improved = true;
+                        }
+                    }
+                    if !improved {
+                        break;
+                    }
+                }
+                let patience = fuzz_n.clamp(1, 16);
+                let mut seed = 0x5EED_C0FF_EE12_3456u64;
+                let mut stale = 0usize;
+                while stale < patience {
+                    let (cand, ns) = zentropy::search::mutate(best, seed);
+                    seed = ns;
+                    run(cand.tune(), &mut tried, &mut all)?;
+                    let cur = min_archive(&all, best.tune()).unwrap_or(u64::MAX);
+                    let new = min_archive(&all, cand.tune()).unwrap_or(u64::MAX);
+                    if new < cur {
+                        best = cand;
+                        stale = 0;
+                    } else {
+                        stale += 1;
+                    }
+                }
+            }
+            other => return Err(format!("sweep-tune: unknown schedule {other}")),
+        },
+    }
+
+    let new_trials = all.len() - known;
+    let o = zentropy::search::observe(&all);
+    let best = zentropy::search::best_per_tune(&all);
+    println!(
+        "method={} corpus_sha={} trials={} (new {})",
+        method.name(),
+        &sha[..16],
+        all.len(),
+        new_trials
+    );
+    println!("best tune={} archive={} bytes", o.best_tune, o.best_archive);
+    println!(
+        "observer: lr_idx={} apm_sel={} coordinate_consistent={} lr_spread={:.0} apm_spread={:.0}",
+        o.best_lr_idx, o.best_apm_sel, o.coordinate_consistent, o.lr_spread, o.apm_spread
+    );
+    println!("best 5:");
+    for t in best.iter().take(5) {
+        let k = zentropy::search::Knobs::from_tune(t.tune);
+        println!(
+            "  tune={:>3} lr_idx={:>2} apm_sel={:>2} archive={}",
+            t.tune, k.lr_idx, k.apm_sel, t.archive_bytes
+        );
+    }
+    Ok(())
+}
+
+/// Parallel-blocking probe (research). What would splitting the corpus into N
+/// independently-coded blocks cost in *ratio*, and buy in wall-clock?
+///
+/// This is deliberately not a format change: each block is encoded as a
+/// standalone archive with the accepted method, so the summed byte count is the
+/// size a blocked format would store (plus a small container header). Every block
+/// is decoded and the pieces are reassembled and compared against the input, so
+/// the ratio cost reported here is exact rather than estimated. Promoting this to
+/// the scored format is a separate decision that needs the number this prints.
+#[cfg(not(feature = "submission"))]
+fn cmd_pblocks(args: &[String]) -> Result<(), String> {
+    let path = args.first().ok_or("pblocks: need <in>")?;
+    let get = |k: &str| -> Option<String> {
+        args.iter()
+            .position(|a| a == k)
+            .and_then(|i| args.get(i + 1))
+            .cloned()
+    };
+    let blocks: usize = get("--blocks")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(8)
+        .max(1);
+    let jobs: usize = get("--jobs")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1)
+        .max(1);
+    let tune: u8 = get("--tune")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(archive::ACCEPTED_TUNE);
+    let method = get("--method")
+        .and_then(|s| Method::from_name(&s))
+        .unwrap_or(archive::ACCEPTED_METHOD);
+    let skip_full = args.iter().any(|a| a == "--no-full");
+
+    let data = read(path)?;
+    let n = data.len();
+    let block_len = n.div_ceil(blocks);
+    // Per-block models are smaller than one full-corpus model, but `jobs` of
+    // them are live at once, so the guard is charged for that many.
+    memory::check(
+        memory::projected_encode(block_len as u64, 2).saturating_mul(jobs as u64),
+        memory::research_budget(max_ram_override(args)),
+    )?;
+
+    let ranges: Vec<(usize, usize)> = (0..blocks)
+        .map(|b| {
+            let s = b * block_len;
+            (s, (s + block_len).min(n))
+        })
+        .filter(|(s, e)| e > s)
+        .collect();
+    eprintln!(
+        "pblocks: {} bytes, {} block(s), jobs={}, tune={tune}, method={}",
+        n,
+        ranges.len(),
+        jobs,
+        method.name()
+    );
+
+    // Reference: the single sequential pass.
+    let mut full_bytes: Option<u64> = None;
+    let mut full_s = 0.0f64;
+    if !skip_full {
+        let t = Instant::now();
+        let full = archive::encode_tuned(&data, method, tune);
+        full_s = t.elapsed().as_secs_f64();
+        full_bytes = Some(full.len() as u64);
+    }
+
+    let t = Instant::now();
+    let mut parts: Vec<Vec<u8>> = Vec::with_capacity(ranges.len());
+    for chunk in ranges.chunks(jobs) {
+        #[cfg(feature = "parallel")]
+        let mut out: Vec<Vec<u8>> = {
+            use rayon::prelude::*;
+            chunk
+                .par_iter()
+                .map(|&(s, e)| archive::encode_tuned(&data[s..e], method, tune))
+                .collect()
+        };
+        #[cfg(not(feature = "parallel"))]
+        let mut out: Vec<Vec<u8>> = chunk
+            .iter()
+            .map(|&(s, e)| archive::encode_tuned(&data[s..e], method, tune))
+            .collect();
+        parts.append(&mut out);
+    }
+    let blocked_s = t.elapsed().as_secs_f64();
+
+    // Exactness: decode every block, reassemble, compare.
+    let mut rebuilt: Vec<u8> = Vec::with_capacity(n);
+    let mut all_exact = true;
+    for (i, p) in parts.iter().enumerate() {
+        let (s, e) = ranges[i];
+        match archive::decode(p) {
+            Some(d) if d == data[s..e] => rebuilt.extend_from_slice(&d),
+            _ => {
+                all_exact = false;
+                break;
+            }
+        }
+    }
+    let exact = all_exact && rebuilt == data;
+
+    let blocked_bytes: u64 = parts.iter().map(|p| p.len() as u64).sum();
+    println!(
+        "input_bytes={n} blocks={} jobs={jobs} tune={tune}",
+        ranges.len()
+    );
+    for (i, p) in parts.iter().enumerate() {
+        let (s, e) = ranges[i];
+        println!(
+            "  block {:>3}  input {:>10}  archive {:>10}",
+            i,
+            e - s,
+            p.len()
+        );
+    }
+    println!("blocked_total_bytes = {blocked_bytes}  wall = {blocked_s:.3}s");
+    if let Some(fb) = full_bytes {
+        let delta = blocked_bytes as i64 - fb as i64;
+        println!("single_pass_bytes   = {fb}  wall = {full_s:.3}s");
+        println!(
+            "ratio_cost          = {delta} bytes ({:+.4}%)",
+            (delta as f64) * 100.0 / (fb as f64)
+        );
+        println!(
+            "wall_speedup        = {:.2}x   (jobs={jobs}, blocks={})",
+            full_s / blocked_s,
+            ranges.len()
+        );
+    }
+    println!("exact = {exact}");
+    if !exact {
+        return Err("pblocks: a block did not round-trip".into());
+    }
+    Ok(())
+}
+
+/// Phase 9: read a receipt log and print the Pareto frontier of search trials.
+#[cfg(not(feature = "submission"))]
+fn cmd_frontier(args: &[String]) -> Result<(), String> {
+    let path = args.first().ok_or("frontier: need <receipt.jsonl>")?;
+    let method = args
+        .iter()
+        .position(|a| a == "--method")
+        .and_then(|i| args.get(i + 1))
+        .cloned()
+        .unwrap_or_else(|| archive::ACCEPTED_METHOD.name().to_string());
+    let lines: Vec<String> = std::fs::read_to_string(path)
+        .map_err(|e| format!("frontier: {e}"))?
+        .lines()
+        .map(|l| l.to_string())
+        .collect();
+    let trials = zentropy::search::trials_from_lines(&lines, &method);
+    if trials.is_empty() {
+        println!("frontier: no search trials for method={method}");
+        return Ok(());
+    }
+    let o = zentropy::search::observe(&trials);
+    let best = zentropy::search::best_per_tune(&trials);
+    println!(
+        "method={method} trials={} best_tune={} best_archive={}",
+        o.n, o.best_tune, o.best_archive
+    );
+    println!("frontier (all tunes attaining the best archive):");
+    for t in zentropy::search::pareto(&trials) {
+        let k = zentropy::search::Knobs::from_tune(t.tune);
+        println!(
+            "  tune={:>3} lr_idx={:>2} apm_sel={:>2} archive={}",
+            t.tune, k.lr_idx, k.apm_sel, t.archive_bytes
+        );
+    }
+    println!("top 8 by archive:");
+    for t in best.iter().take(8) {
+        let k = zentropy::search::Knobs::from_tune(t.tune);
+        println!(
+            "  tune={:>3} lr_idx={:>2} apm_sel={:>2} archive={}",
+            t.tune, k.lr_idx, k.apm_sel, t.archive_bytes
+        );
+    }
+    Ok(())
+}
+
+/// Phase 9: the DSFB observer over a receipt log.
+#[cfg(not(feature = "submission"))]
+fn cmd_observe(args: &[String]) -> Result<(), String> {
+    let path = args.first().ok_or("observe: need <receipt.jsonl>")?;
+    let method = args
+        .iter()
+        .position(|a| a == "--method")
+        .and_then(|i| args.get(i + 1))
+        .cloned()
+        .unwrap_or_else(|| archive::ACCEPTED_METHOD.name().to_string());
+    let lines: Vec<String> = std::fs::read_to_string(path)
+        .map_err(|e| format!("observe: {e}"))?
+        .lines()
+        .map(|l| l.to_string())
+        .collect();
+    let trials = zentropy::search::trials_from_lines(&lines, &method);
+    if trials.is_empty() {
+        println!("observe: no search trials for method={method}");
+        return Ok(());
+    }
+    let o = zentropy::search::observe(&trials);
+    println!(
+        "trials={} best_tune={} best_archive={}",
+        o.n, o.best_tune, o.best_archive
+    );
+    println!(
+        "coordinate optimum: lr_idx={} apm_sel={} consistent={}",
+        o.best_lr_idx, o.best_apm_sel, o.coordinate_consistent
+    );
+    println!("lr level means (lower is better):");
+    for i in 0..16 {
+        if o.lr_mean[i].is_finite() {
+            println!("  lr_idx={:>2} mean={:.0}", i, o.lr_mean[i]);
+        }
+    }
+    println!("apm level means:");
+    for i in 0..16 {
+        if o.apm_mean[i].is_finite() {
+            println!("  apm_sel={:>2} mean={:.0}", i, o.apm_mean[i]);
+        }
+    }
+    Ok(())
+}
+
 /// Build a self-extracting `archive9` = stub + marker + length + archive.
 /// Report the real byte split so `S` is measured, never assumed.
 fn cmd_pack_sfx(args: &[String]) -> Result<(), String> {
@@ -829,26 +1457,54 @@ fn cmd_eval(args: &[String]) -> Result<(), String> {
     let tune: u8 = get("--tune")
         .and_then(|v| v.parse().ok())
         .unwrap_or(archive::ACCEPTED_TUNE);
+    // Reusing an already-measured parent is *not* estimating. The parent is the
+    // accepted configuration, and its archive on this corpus is normally already
+    // established by an accepted-baseline receipt. Re-encoding it and re-decoding
+    // it costs two of the gate's four full passes — the dominant cost of a gate —
+    // and proves nothing that the baseline receipt does not already prove, since
+    // the encoder is deterministic. Supplying `--parent-archive-bytes <n>` skips
+    // those two passes; the *candidate* is still encoded and decoded in this run,
+    // and the receipt records where the parent number came from.
+    let parent_known: Option<u64> = match get("--parent-archive-bytes") {
+        Some(s) => Some(
+            s.trim()
+                .parse::<u64>()
+                .map_err(|_| format!("eval: --parent-archive-bytes '{s}' is not a byte count"))?,
+        ),
+        None => None,
+    };
 
     let data = read(path)?;
     guard_encode(data.len() as u64, max_ram_override(args))?;
 
-    let t0 = Instant::now();
-    let parent_arch = archive::encode_tuned(&data, parent, parent_tune);
-    let parent_s = t0.elapsed();
+    let (parent_bytes, parent_s, parent_ok, parent_src) = match parent_known {
+        Some(n) => (
+            n,
+            std::time::Duration::ZERO,
+            true,
+            "supplied:receipted-baseline",
+        ),
+        None => {
+            let t0 = Instant::now();
+            let pa = archive::encode_tuned(&data, parent, parent_tune);
+            let dt = t0.elapsed();
+            let ok = archive::decode(&pa).as_deref() == Some(&data[..]);
+            (pa.len() as u64, dt, ok, "measured:this-run")
+        }
+    };
+
     let t1 = Instant::now();
     let cand_arch = archive::encode_tuned(&data, candidate, tune);
     let cand_s = t1.elapsed();
 
-    let parent_ok = archive::decode(&parent_arch).as_deref() == Some(&data[..]);
-    // Decode the candidate once: the exactness court and the receipt's
-    // decoded digest both need the result, and on enwik9 a second decode costs
-    // ~20 minutes.
+    // Decode the candidate once: the exactness court and the receipt's decoded
+    // digest both need the result, and on enwik9 a second decode costs ~30
+    // minutes.
     let cand_dec = archive::decode(&cand_arch);
     let cand_ok = cand_dec.as_deref() == Some(&data[..]);
 
     let n = data.len() as f64;
-    let archive_delta = cand_arch.len() as i64 - parent_arch.len() as i64;
+    let archive_delta = cand_arch.len() as i64 - parent_bytes as i64;
     let delta_s = archive_delta + bin_cost as i64;
     let decision = if !cand_ok {
         "REJECTED (roundtrip)"
@@ -860,12 +1516,13 @@ fn cmd_eval(args: &[String]) -> Result<(), String> {
 
     println!("input_bytes: {}", data.len());
     println!(
-        "parent    {:<26} {:>12} bytes  {:.4} bpc  {:.3}s  exact={}",
+        "parent    {:<26} {:>12} bytes  {:.4} bpc  {:.3}s  exact={}  source={}",
         parent.name(),
-        parent_arch.len(),
-        (parent_arch.len() as f64 * 8.0) / n,
+        parent_bytes,
+        (parent_bytes as f64 * 8.0) / n,
         parent_s.as_secs_f64(),
-        parent_ok
+        parent_ok,
+        parent_src
     );
     println!(
         "candidate {:<26} {:>12} bytes  {:.4} bpc  {:.3}s  exact={}",
@@ -920,12 +1577,17 @@ fn cmd_eval(args: &[String]) -> Result<(), String> {
             "archive_delta={archive_delta} binary_cost_measured={bin_cost} delta_S={delta_s}"
         );
         r.extra.push(("phase".into(), "optimization-a".into()));
+        r.extra.push(("tune".into(), tune.to_string()));
+        r.extra
+            .push(("parent_tune".into(), parent_tune.to_string()));
+        r.extra
+            .push(("parent_source".into(), parent_src.to_string()));
         r.extra.push((
             "bits_per_byte".into(),
             format!("{:.6}", (cand_arch.len() as f64 * 8.0) / n),
         ));
         r.extra
-            .push(("parent_archive_bytes".into(), parent_arch.len().to_string()));
+            .push(("parent_archive_bytes".into(), parent_bytes.to_string()));
         r.extra.push(("parent_exact".into(), parent_ok.to_string()));
         append_jsonl(&rp, &r)?;
     }
@@ -1098,10 +1760,13 @@ fn cmd_negative_court() -> Result<(), String> {
 }
 
 fn cmd_meminfo(args: &[String]) -> Result<(), String> {
-    let b = memory::budget(max_ram_override(args));
+    // The research budget is what this driver would actually apply; the judged
+    // budget is what the submission stub applies. Printing both makes the
+    // difference explicit (the reserve the driver keeps for the workstation).
+    let b = memory::research_budget(max_ram_override(args));
     println!("{}", memory::summary());
     println!(
-        "budget_bytes={} ({:.2} GiB)",
+        "research_budget_bytes={} ({:.2} GiB)",
         b,
         b as f64 / (1024.0 * 1024.0 * 1024.0)
     );

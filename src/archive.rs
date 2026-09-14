@@ -1431,9 +1431,22 @@ fn maybe_unreorder(_method: Method, data: Vec<u8>) -> Vec<u8> {
 /// 169,642,087 (1.3571 bpc vs 1.3605), DeltaS -421,646 at a measured 7,848 B
 /// executable cost (weights embedded); the permuted-weight control is +2,201,020.
 pub const ACCEPTED_METHOD: Method = Method::Residual;
-/// A20: mixer learning rate 24 was adopted on enwik7 screening and confirmed on
-/// enwik8 (−76,483 B at zero executable cost).
-pub const ACCEPTED_TUNE: u8 = 7;
+/// Phase 9: the optimal mixer learning rate is a function of the *predictor*, and
+/// Phases 6–8 changed the predictor. A20 tuned LR 24 against the Phase-4 model on
+/// the smaller rungs; re-searched on the authority corpus with the mature model,
+/// every step down the ladder wins by more:
+///
+/// ```text
+/// tune 7  LR 24   169,642,087   (the previously accepted value)
+/// tune 6  LR 20   169,484,029   -158,058
+/// tune 5  LR 16   169,282,339   -359,748   <- adopted
+/// ```
+///
+/// Each figure is a full `eval` gate on enwik9 with exact reconstruction. The
+/// knob costs **zero** executable bytes: the ladder already existed and the chosen
+/// point has the APM axis off, so it decodes identically with that rejected axis
+/// compiled out.
+pub const ACCEPTED_TUNE: u8 = 5;
 
 /// Compress `input` into an archive payload using the accepted configuration.
 pub fn encode(input: &[u8]) -> Vec<u8> {
@@ -1495,7 +1508,13 @@ pub fn encode_tuned(input: &[u8], method: Method, tune: u8) -> Vec<u8> {
     let mut cm = Cm::new(&cfg, n);
     let mut enc = RangeEncoder::with_capacity(n / 2 + 64);
 
-    for &byte in data.iter() {
+    for (i, &byte) in data.iter().enumerate() {
+        // Protect the machine: a long run re-checks available memory as it codes.
+        // The guard is armed only by the research driver, so this is a no-op on
+        // the judged path (one relaxed atomic load per megabyte).
+        if i & (crate::memory::RUNTIME_CHECK_INTERVAL - 1) == 0 {
+            crate::memory::enforce_runtime_floor();
+        }
         let mut mask = 0x80u32;
         while mask != 0 {
             let bit = if (byte as u32) & mask != 0 { 1 } else { 0 };
@@ -1545,7 +1564,10 @@ pub fn encode_specs(
     cfg.specs = specs.to_vec();
     let mut cm = Cm::new(&cfg, n);
     let mut enc = RangeEncoder::with_capacity(n / 2 + 64);
-    for &byte in data.iter() {
+    for (i, &byte) in data.iter().enumerate() {
+        if i & (crate::memory::RUNTIME_CHECK_INTERVAL - 1) == 0 {
+            crate::memory::enforce_runtime_floor();
+        }
         let mut mask = 0x80u32;
         while mask != 0 {
             let bit = if (byte as u32) & mask != 0 { 1 } else { 0 };
@@ -1702,7 +1724,11 @@ pub fn decode(archive: &[u8]) -> Option<Vec<u8>> {
     let mut cm = Cm::new(&cfg, n);
     let mut dec = RangeDecoder::new(payload);
     let mut decoded = Vec::with_capacity(n);
-    for _ in 0..n {
+    for i in 0..n {
+        // Decode is as long as encode, so it carries the same runtime floor.
+        if i & (crate::memory::RUNTIME_CHECK_INTERVAL - 1) == 0 {
+            crate::memory::enforce_runtime_floor();
+        }
         let mut byte = 0u32;
         for _ in 0..8 {
             let p = cm.predict();
@@ -1819,10 +1845,18 @@ mod tests {
 
     #[test]
     fn tuning_variants_roundtrip() {
+        // The Phase-9 search space is the whole `tune` byte. Every point must
+        // decode exactly, which is what makes search harmless to the decoder:
+        // the knob is a header byte both sides apply identically.
         let data = b"the quick brown fox jumps over the lazy dog".repeat(200);
-        for tune in 0..8u8 {
-            let arch = encode_tuned(&data, Method::StructHoist, tune);
+        for tune in 0u16..256 {
+            let arch = encode_tuned(&data, Method::StructHoist, tune as u8);
             assert_eq!(decode(&arch).unwrap(), data, "tune={tune}");
+        }
+        // The accepted configuration too, at a spread of tunes.
+        for tune in [0u8, 7, 16, 63, 128, 200, 255] {
+            let arch = encode_tuned(&data, ACCEPTED_METHOD, tune);
+            assert_eq!(decode(&arch).unwrap(), data, "accepted tune={tune}");
         }
     }
 

@@ -43,6 +43,12 @@ pub mod mixer;
 #[cfg(feature = "learned")]
 pub mod learned;
 pub mod score;
+// Phase 9: global search — the runtime hyperparameter space, the frf-fuzz
+// mutation operator, the DSFB observer and the Gemel-memory query helpers. This
+// is research-plane machinery: the scored path needs only
+// `context::APM_RATE_SETS`, so the module is gated out of the submission stub.
+#[cfg(not(feature = "submission"))]
+pub mod search;
 // Phase 7: the article-layout compiler (encoder-side orderings + the decoder
 // page-id sort). Compiled behind a feature so the rejected orderings do not
 // cost submission bytes.

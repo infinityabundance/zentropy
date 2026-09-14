@@ -55,27 +55,58 @@ enwik7 (first 10^7 bytes)  5985c81c39d927ae0e169625790ca4d9e7d1531270c8b09ad7317
 
 | Constraint | Value |
 |---|---|
-| Peak RAM | ≤ 10 GB |
+| Peak RAM | ≤ 10 GB **in total** (so threads multiply this, they do not divide it) |
 | Temporary disk | ≤ 100 GB |
-| Runtime | `< 70,000 / T` hours per program, `T` = machine Geekbench 5 single-core score |
+| Runtime | `< 70,000 / T` hours per program, `T` = that program's Geekbench 5 score |
 | GPU | **not permitted** during the judged run |
-| Cores | effectively single-core (the published machines' single-core `T` is used) |
+| Cores | not restricted; the published machines list **both** single-core and multi-core `T` |
 
-With the published test machines:
+The primary source is explicit about multi-core scores:
 
-| Machine | `T` (1 core) | Time limit |
-|---|---|---|
-| Intel i7-1165G7 2.79 GHz | ≈1427 | ≈49.05 h |
-| AMD Ryzen 7 3.6 GHz | 1310 | ≈53.44 h |
+> "Each program must run in less than 70'000/T hours on a machine using at most
+> 10GB RAM and 100GB HDD for temporary files, where T is the machine's Geekbench5
+> score. No GPU usage. In particular they must run on our current test machines,
+> which are as of 2021 (but may change without notice) a Lenovo 82HT Intel Core
+> i7-1165G7 2.79GHz (Windows) with T≈1427 (1 core) and T≈4667 (4 cores) and an AMD
+> Ryzen 7 3.6GHz (Linux) with T=1310 (1 core) and T=8228 (8 cores)"
 
-`zentropy`'s [`ResourceLimits`](../src/score/mod.rs) uses `T = 1310` (the
-slower machine) as the conservative default.
+| Machine | `T` (1 core) | Time (1 core) | `T` (all cores) | Time (all cores) |
+|---|---|---|---|---|
+| Intel i7-1165G7 2.79 GHz | ≈1427 | ≈49.1 h | ≈4667 (4) | ≈15.0 h |
+| AMD Ryzen 7 3.6 GHz | 1310 | ≈53.4 h | 8228 (8) | ≈8.5 h |
+
+`zentropy`'s [`ResourceLimits`](../src/score/mod.rs) uses `T = 1310` (the slower
+machine, single core) as its default.
+
+**Multi-core is contemplated, but it is not free.** The budget is wall-clock
+`70,000/T`. Across the two readings the *total work* allowed is roughly constant
+(≈53 core-hours single-core vs ≈68 core-hours on 8 cores), so parallelism buys
+about **1.3×** more work, not 8× — it mostly shortens wall-clock at fixed work.
+A multi-threaded submission is therefore safest judged against the **all-core**
+`T`, which is the *stricter* wall-clock reading (8.5 h on the AMD, not 53 h).
+
+For scale: Zentropy's current enwik9 encode+decode is ≈1.1 h single-core, i.e.
+well inside every reading. **Runtime is not the binding constraint; ratio is.**
 
 ## 4. Portability and self-containment
 
 - Windows or Linux, x86 32- or 64-bit executables.
 - Must run without input from other sources: no files, network, dictionaries,
   or additional installations. Standard libraries for file I/O are allowed.
+- **SIMD is unaddressed by the rules, but portability is not.** The x86-64
+  baseline does not include AVX2, and the rules say the test machines "may change
+  without notice". An AVX2-only binary risks not running at all on the judge's
+  machine, so any SIMD must be **runtime-dispatched** (`is_x86_feature_detected!`)
+  with a scalar fallback that produces byte-identical output.
+- **Threads are unaddressed and the multi-core `T` values imply they are
+  anticipated.** Constraints that bind instead: RAM is ≤ 10 GB *total* (threads
+  multiply it), the wall-clock budget above, and determinism.
+- **Third-party crates are not forbidden by the rules** (they are statically
+  linked, so the runtime stays self-contained). Two project-level constraints do
+  apply: the scored path carries no dependencies, because a linked runtime costs
+  real `S` bytes and widens the licence inventory; and a *source* submission must
+  build on the judge's machine without network access, so vendoring matters.
+  Research-plane code may use them freely.
 - In lieu of executables, a zip of source + makefile may be submitted (C++,
   Python, Assembler accepted; other languages considered if easily built and
   verified).
@@ -146,8 +177,10 @@ We do not build a numerically winning result that risks disqualification.
 | Q1 | Is an executable stub whose bytes are appended to the archive counted once or twice? | Count it in `len(comp9)` **and** `len(archive9)` exactly as the chosen submission form dictates; prefer the form that minimises `S`. |
 | Q2 | May the compressor and decompressor share a single binary? | Yes, and it reduces the `2×` factor to `1×`; prefer shared code where scoring favours it. |
 | Q3 | Are externally trained model weights "outside information"? | They are permitted only if they are *inside* the submitted bytes and charged to `S`; nothing may be fetched at judged time. |
-| Q4 | Does `T` use single-core or multi-core Geekbench 5? | Assume single-core (conservative). |
+| Q4 | Does `T` use single-core or multi-core Geekbench 5? | **Resolved by the primary source**: the rules publish both (Intel 1427/4667, AMD 1310/8228). If the submission uses multiple cores, assume the **all-core** `T` — the stricter wall-clock reading. |
 | Q5 | May temporary files be created and deleted during the judged run? | Yes, up to 100 GB peak; they must not carry information not representable in the submission. |
+| Q6 | May the judged program use multiple threads? | Yes; nothing forbids it and the multi-core `T` values imply it is anticipated. Bind instead on total RAM ≤ 10 GB, the wall-clock budget, and bit-exact determinism across machines. |
+| Q7 | May the judged program use AVX2/AVX-512? | Yes, but only behind **runtime CPU detection** with a scalar fallback: the target machines may change without notice and the x86-64 baseline lacks AVX2. |
 
 ## 9. Compliance checklist (per submission)
 

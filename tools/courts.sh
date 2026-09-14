@@ -61,6 +61,46 @@ if [ -f "$CORPUS_DIR/enwik6" ]; then
     court "submission packaging court" sh "$ROOT/tools/package_sfx.sh" "$CORPUS_DIR/enwik6" "$TMP"
 fi
 
+# 8. Search-campaign court (Phase 9). A guided campaign must be deterministic and
+#    must consult the Gemel memory: re-running it may not re-pay for a trial it
+#    has already measured. The knob lives in the archive header, so the search
+#    can never change the decoder — the whole-space round-trip test (unit court)
+#    covers that half of the claim.
+if [ -f "$CORPUS_DIR/enwik6" ]; then
+    head -c 150000 "$CORPUS_DIR/enwik6" > "$TMP/mini"
+    search_court() {
+        rm -f "$TMP/search.jsonl"
+        if ! "$Z" sweep-tune "$TMP/mini" --schedule guided --trials 8 \
+            --receipt "$TMP/search.jsonl" > "$TMP/run1" 2>&1; then
+            return 1
+        fi
+        # The first campaign must actually measure points (not "(new 0)").
+        if grep -q "(new 0)" "$TMP/run1"; then
+            echo "first campaign measured nothing"
+            return 1
+        fi
+        if ! "$Z" sweep-tune "$TMP/mini" --schedule guided --trials 8 \
+            --receipt "$TMP/search.jsonl" > "$TMP/run2" 2>&1; then
+            return 1
+        fi
+        # Second campaign: the Gemel memory already knows every point.
+        if ! grep -q "(new 0)" "$TMP/run2"; then
+            echo "memory did not prevent re-paying for known trials"
+            cat "$TMP/run2"
+            return 1
+        fi
+        # The observer's verdict must be identical across the two runs.
+        "$Z" observe "$TMP/search.jsonl" > "$TMP/obs1" 2>&1 || return 1
+        "$Z" observe "$TMP/search.jsonl" > "$TMP/obs2" 2>&1 || return 1
+        if ! cmp -s "$TMP/obs1" "$TMP/obs2"; then
+            echo "observer is not deterministic"
+            return 1
+        fi
+        "$Z" frontier "$TMP/search.jsonl" > /dev/null 2>&1
+    }
+    court "search campaign court (memory + determinism)" search_court
+fi
+
 echo ""
 echo "courts: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

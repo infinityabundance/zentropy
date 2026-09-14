@@ -19,11 +19,66 @@
 //! and never exceeds 8 GiB, so a run cannot drive the machine into swap or OOM
 //! by mere inattention. The estimator is deliberately conservative: a false
 //! refusal is cheap, an OOM kill is not.
+//!
+//! Three layers, because a startup check alone is not protection:
+//!
+//! 1. **Startup, judged-safe** ([`budget`]) — `min(3/4 * available, 8 GiB)`. The
+//!    submission stub uses this: a judged run owns its machine, so it must not
+//!    reserve headroom it is entitled to.
+//! 2. **Startup, workstation-safe** ([`research_budget`]) — the same, minus
+//!    [`RESERVE_BYTES`]; the research driver shares the machine with an editor,
+//!    so it refuses to claim the reserve.
+//! 3. **Runtime floor** ([`enforce_runtime_floor`]) — a long run re-checks
+//!    available memory as it codes and aborts if the machine tightens underneath
+//!    it. This is what stops a two-hour job from swapping a user's session to
+//!    death. It is **opt-in** ([`enable_runtime_guard`]) so the judged decoder
+//!    can never abort a legitimate reconstruction.
+//!
+//! A hard kernel-enforced ceiling (`ulimit -v`) is applied by the long-run
+//! wrappers in `tools/`; see `tools/p9_gate.sh`.
+
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Hard ceiling on the default budget, in bytes (8 GiB). Chosen below the
 /// Hutter 10 GB envelope so a judged run is always within limits, and low
 /// enough that a shared workstation keeps headroom.
 pub const DEFAULT_MAX_BUDGET: u64 = 8 * 1024 * 1024 * 1024;
+
+/// Headroom the research plane leaves for the rest of the workstation.
+///
+/// A research run shares the machine with an editor, a browser and a desktop, so
+/// unlike a judged run it must not claim everything that is available. Four GiB
+/// is enough for a heavy editor session; below this the run refuses to start.
+pub const RESERVE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+
+/// Available memory below which a *running* research job aborts.
+///
+/// The distinction from [`RESERVE_BYTES`] matters: the reserve stops a run from
+/// *starting* when the machine is already tight, while this floor stops a run
+/// that was fine at startup from thrashing the machine an hour later.
+pub const RUN_FLOOR_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// Bytes coded between runtime memory checks. Cheap enough to be free (one
+/// relaxed atomic load per megabyte) and frequent enough to react in seconds.
+pub const RUNTIME_CHECK_INTERVAL: usize = 1 << 20;
+
+/// Whether the runtime floor is armed. Off by default: the submission stub must
+/// never abort a legitimate reconstruction because the judge's machine is busy.
+static RUNTIME_GUARD: AtomicBool = AtomicBool::new(false);
+
+/// Arm the runtime memory floor. The research driver calls this once at startup;
+/// the submission stub never does.
+pub fn enable_runtime_guard() {
+    RUNTIME_GUARD.store(true, Ordering::Relaxed);
+}
+
+/// The running floor, honouring `ZENTROPY_RUN_FLOOR_BYTES`.
+pub fn run_floor() -> u64 {
+    std::env::var("ZENTROPY_RUN_FLOOR_BYTES")
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .unwrap_or(RUN_FLOOR_BYTES)
+}
 
 /// Available system memory in bytes, if it can be determined.
 ///
@@ -53,6 +108,9 @@ pub fn available_bytes() -> Option<u64> {
 ///
 /// Precedence: explicit `override_bytes`, then `ZENTROPY_MAX_RAM_BYTES`, then
 /// `min(3/4 * available, DEFAULT_MAX_BUDGET)`.
+///
+/// This is the **judged-safe** policy: a submission run owns its machine, so it
+/// does not reserve headroom. The research driver uses [`research_budget`].
 pub fn budget(override_bytes: Option<u64>) -> u64 {
     if let Some(b) = override_bytes {
         return b;
@@ -64,6 +122,29 @@ pub fn budget(override_bytes: Option<u64>) -> u64 {
     }
     match available_bytes() {
         Some(avail) => (avail / 4 * 3).min(DEFAULT_MAX_BUDGET),
+        None => DEFAULT_MAX_BUDGET,
+    }
+}
+
+/// The memory budget for a **research** run: identical to [`budget`] except that
+/// it never claims [`RESERVE_BYTES`], so a shared workstation keeps its headroom.
+///
+/// When available memory has fallen to the reserve, the budget is zero and every
+/// memory-heavy command refuses to start — the intended fail-closed behaviour.
+pub fn research_budget(override_bytes: Option<u64>) -> u64 {
+    if let Some(b) = override_bytes {
+        return b;
+    }
+    if let Ok(s) = std::env::var("ZENTROPY_MAX_RAM_BYTES") {
+        if let Ok(v) = s.trim().parse::<u64>() {
+            return v;
+        }
+    }
+    match available_bytes() {
+        Some(avail) => avail
+            .saturating_sub(RESERVE_BYTES)
+            .min(avail / 4 * 3)
+            .min(DEFAULT_MAX_BUDGET),
         None => DEFAULT_MAX_BUDGET,
     }
 }
@@ -141,15 +222,54 @@ pub fn fits(projected: u64, budget: u64) -> bool {
     projected <= budget
 }
 
+/// True while the machine still has the running floor available.
+pub fn runtime_ok() -> bool {
+    match available_bytes() {
+        Some(a) => a >= run_floor(),
+        None => true,
+    }
+}
+
+/// Called from the coding loops every [`RUNTIME_CHECK_INTERVAL`] bytes.
+///
+/// The guard is a no-op unless [`enable_runtime_guard`] was called, so it costs
+/// one relaxed atomic load and a predictable branch per megabyte on the research
+/// path and nothing on the judged path. When it does fire it **aborts**: the
+/// point is to stop a long run before the kernel's OOM killer starts choosing
+/// victims, and the victim is otherwise likely to be the user's editor rather
+/// than the compressor.
+#[inline]
+pub fn enforce_runtime_floor() {
+    if !RUNTIME_GUARD.load(Ordering::Relaxed) {
+        return;
+    }
+    let floor = run_floor();
+    if let Some(a) = available_bytes() {
+        if a < floor {
+            panic!(
+                "memory floor breached: {:.2} GiB available, floor {:.2} GiB. \
+                 Aborting this run to protect the machine. Free memory, or lower the \
+                 model with --max-ram / ZENTROPY_MAX_RAM_BYTES, then retry.",
+                a as f64 / (1024.0 * 1024.0 * 1024.0),
+                floor as f64 / (1024.0 * 1024.0 * 1024.0),
+            );
+        }
+    }
+}
+
 /// A one-line human summary of the current memory situation.
 pub fn summary() -> String {
+    let gib = 1024.0 * 1024.0 * 1024.0;
     let avail = available_bytes()
-        .map(|a| format!("{:.2} GiB available", a as f64 / (1024.0 * 1024.0 * 1024.0)))
+        .map(|a| format!("{:.2} GiB available", a as f64 / gib))
         .unwrap_or_else(|| "availability unknown".to_string());
-    let b = budget(None);
     format!(
-        "{avail}; budget {:.2} GiB (env ZENTROPY_MAX_RAM_BYTES overrides)",
-        b as f64 / (1024.0 * 1024.0 * 1024.0)
+        "{avail}; research budget {:.2} GiB, judged budget {:.2} GiB, write reserve {:.2} GiB, \
+         run floor {:.2} GiB (env ZENTROPY_MAX_RAM_BYTES / ZENTROPY_RUN_FLOOR_BYTES override)",
+        research_budget(None) as f64 / gib,
+        budget(None) as f64 / gib,
+        RESERVE_BYTES as f64 / gib,
+        run_floor() as f64 / gib,
     )
 }
 
@@ -173,6 +293,47 @@ mod tests {
         assert_eq!(b, 1234);
         // Default is never above the hard ceiling.
         assert!(budget(None) <= DEFAULT_MAX_BUDGET);
+        assert!(research_budget(None) <= DEFAULT_MAX_BUDGET);
+        // The research budget is never *more* than the judged budget: it gives
+        // the rest of the workstation its reserve.
+        assert!(research_budget(None) <= budget(None));
+    }
+
+    #[test]
+    fn research_budget_keeps_the_reserve() {
+        // With plenty available both policies hit the ceiling...
+        let plenty = DEFAULT_MAX_BUDGET * 4 + RESERVE_BYTES;
+        let judged = (plenty / 4 * 3).min(DEFAULT_MAX_BUDGET);
+        let research = plenty
+            .saturating_sub(RESERVE_BYTES)
+            .min(plenty / 4 * 3)
+            .min(DEFAULT_MAX_BUDGET);
+        assert_eq!(judged, DEFAULT_MAX_BUDGET);
+        assert_eq!(research, DEFAULT_MAX_BUDGET);
+        // ...but when the machine is tight the reserve is the difference.
+        let tight = RESERVE_BYTES + 2 * 1024 * 1024 * 1024;
+        let judged = (tight / 4 * 3).min(DEFAULT_MAX_BUDGET);
+        let research = tight
+            .saturating_sub(RESERVE_BYTES)
+            .min(tight / 4 * 3)
+            .min(DEFAULT_MAX_BUDGET);
+        assert!(research < judged, "research={research} judged={judged}");
+        assert_eq!(research, 2 * 1024 * 1024 * 1024);
+        // Below the reserve the budget is zero: fail closed, do not start.
+        let none = (RESERVE_BYTES / 2)
+            .saturating_sub(RESERVE_BYTES)
+            .min(RESERVE_BYTES / 2 / 4 * 3)
+            .min(DEFAULT_MAX_BUDGET);
+        assert_eq!(none, 0);
+    }
+
+    #[test]
+    fn runtime_guard_is_off_until_enabled() {
+        // The guard must never fire on the judged path, so it is opt-in. The
+        // call is a no-op here and must not panic even if memory is tight.
+        enforce_runtime_floor();
+        assert!(run_floor() > 0);
+        assert_eq!(RUNTIME_CHECK_INTERVAL, 1 << 20);
     }
 
     #[test]

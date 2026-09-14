@@ -998,6 +998,11 @@ pub struct ModelConfig {
     pub mixer_lr: i32,
     pub apm1_ctx: usize,
     pub apm2_ctx: usize,
+    /// Phase 9: APM adaptation shifts, selected by the high nibble of `tune`.
+    /// `(7, 7, 7)` reproduces the pre-Phase-9 behaviour exactly.
+    pub apm1_rate: u32,
+    pub apm2_rate: u32,
+    pub apm3_rate: u32,
     /// A3 information-inheritance mode for first-occupancy slots.
     pub info: InfoMode,
 }
@@ -1100,6 +1105,9 @@ impl ModelConfig {
             mixer_lr: 12,
             apm1_ctx: 4096,
             apm2_ctx: 65536,
+            apm1_rate: 7,
+            apm2_rate: 7,
+            apm3_rate: 7,
             info: InfoMode::None,
         }
     }
@@ -1373,15 +1381,22 @@ impl ModelConfig {
         self
     }
 
-    /// A20: map a tuning variant to a mixer learning rate. Variant 0 is the
-    /// frozen parent behaviour (lr = 12); higher variants explore the update-law
-    /// family without changing the executable, since the variant is carried in
-    /// the archive header and applied identically by the decoder.
+    /// A20/Phase 9: map a tuning byte to a runtime hyperparameter set. The low
+    /// nibble selects the mixer learning rate (A20's ladder) and the high nibble
+    /// selects the three APM adaptation shifts, so `tune < 16` reproduces the
+    /// pre-Phase-9 behaviour exactly and the whole 0..=255 space is a searchable
+    /// hyperparameter set carried in one header byte at zero binary cost.
     pub fn with_tune(mut self, tune: u8) -> Self {
-        const LRS: [i32; 16] = [
-            12, 4, 6, 8, 10, 16, 20, 24, 32, 40, 48, 64, 96, 128, 192, 256,
-        ];
-        self.mixer_lr = LRS[(tune & 15) as usize];
+        self.mixer_lr = MIXER_LRS[(tune & 15) as usize];
+        // The high nibble selects the APM adaptation shifts, but that axis is
+        // REJECTED at enwik9 and compiled out by default (see `APM_RATE_SETS`).
+        #[cfg(feature = "apm-tune")]
+        {
+            let (r1, r2, r3) = APM_RATE_SETS[(tune >> 4) as usize];
+            self.apm1_rate = r1;
+            self.apm2_rate = r2;
+            self.apm3_rate = r3;
+        }
         self
     }
 
@@ -1429,6 +1444,65 @@ impl ModelConfig {
         m
     }
 }
+
+/// A20/Phase 9: the mixer learning-rate ladder indexed by the low nibble of the
+/// `tune` byte. Exposed so search receipts can record the decoded rate.
+pub const MIXER_LRS: [i32; 16] = [
+    12, 4, 6, 8, 10, 16, 20, 24, 32, 40, 48, 64, 96, 128, 192, 256,
+];
+
+/// The APM adaptation shift the scored build uses.
+///
+/// With the Phase-9 `apm-tune` axis compiled out — the default, and the verdict
+/// at enwik9 — this is the fixed pre-Phase-9 constant `7`, so [`Apm::new`] sees
+/// a compile-time constant and no variable-rate plumbing survives into the
+/// submission stub.
+#[cfg(feature = "apm-tune")]
+#[inline]
+fn apm_rate(r: u32) -> u32 {
+    r
+}
+
+#[cfg(not(feature = "apm-tune"))]
+#[inline]
+fn apm_rate(_r: u32) -> u32 {
+    7
+}
+
+/// Phase 9: APM adaptation-shift sets selected by the high nibble of the `tune`
+/// byte. Index 0 is `(7, 7, 7)` — the pre-Phase-9 behaviour, preserved exactly —
+/// so `tune < 16` reproduces the frozen parent bit-for-bit.
+///
+/// **REJECTED at enwik9.** The axis has a strong dose-response at enwik7 (faster
+/// adaptation is worth ≈12 KB on the mean) and flips sign at enwik8; measured at
+/// the authority corpus, the best APM point at the best mixer LR is
+/// **169,575,025** against **169,484,029** for APM-off, i.e. 90,996 B worse. The
+/// axis therefore earns nothing and is compiled out of the scored build
+/// (`--features apm-tune` reproduces the screening); the default build fixes all
+/// three shifts at 7.
+///
+/// The table lives here, in the coding layer, and not in [`crate::search`]: the
+/// decoder must select the same rates, so the constant is part of the
+/// representation, while the search machinery around it is research-plane.
+#[cfg(feature = "apm-tune")]
+pub const APM_RATE_SETS: [(u32, u32, u32); 16] = [
+    (7, 7, 7),
+    (6, 6, 6),
+    (5, 5, 5),
+    (8, 8, 8),
+    (6, 6, 5),
+    (6, 5, 6),
+    (5, 6, 6),
+    (6, 6, 7),
+    (6, 7, 6),
+    (7, 6, 6),
+    (5, 5, 6),
+    (5, 6, 5),
+    (6, 5, 5),
+    (4, 5, 5),
+    (5, 4, 5),
+    (5, 5, 4),
+];
 
 /// The composite predictor: experts -> mixer -> calibration.
 pub struct Predictor {
@@ -1567,13 +1641,16 @@ impl Predictor {
             rep: vec![0; cfg.rep_offsets],
             rep_conf: vec![0; cfg.rep_offsets],
             mixer: Mixer::new(n_inputs, 4096),
-            apm1: Apm::new(cfg.apm1_ctx, 7),
-            apm2: Apm::new(cfg.apm2_ctx, 7),
+            // The APM adaptation shifts are a compile-time constant unless the
+            // rejected `apm-tune` axis is compiled in, so the default scored
+            // build carries no variable-rate plumbing.
+            apm1: Apm::new(cfg.apm1_ctx, apm_rate(cfg.apm1_rate)),
+            apm2: Apm::new(cfg.apm2_ctx, apm_rate(cfg.apm2_rate)),
             apm3: {
                 #[cfg(feature = "sse-3")]
                 {
                     if cfg.apm3_ctx > 0 {
-                        Some(Apm::new(cfg.apm3_ctx, 7))
+                        Some(Apm::new(cfg.apm3_ctx, apm_rate(cfg.apm3_rate)))
                     } else {
                         None
                     }

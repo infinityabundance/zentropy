@@ -16,8 +16,12 @@ NAME=$(basename "$IN")
 mkdir -p "$OUTDIR"
 
 cd "$ROOT"
-echo "building submission stub (profile=submission)..." >&2
-cargo build --quiet --profile submission --bin zentropy-sfx
+echo "building submission stub (profile=submission, features=accepted)..." >&2
+# `--features accepted` is the scored configuration and nothing else: it excludes
+# research-plane machinery (the search layer, rayon) so those bytes cannot leak
+# into `S`. Using the named bundle rather than the default keeps the exclusion
+# honest and drift-free.
+cargo build --quiet --profile submission --no-default-features --features accepted --bin zentropy-sfx
 
 STUB="$ROOT/target/submission/zentropy-sfx"
 BHM="$OUTDIR/$NAME.bhm"
