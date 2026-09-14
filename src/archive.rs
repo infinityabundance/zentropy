@@ -87,6 +87,10 @@ enum TokenKind {
     /// Phase 10.5: no header — each entry is defined where it is first used.
     #[cfg_attr(not(feature = "first-use"), allow(dead_code))]
     FirstUse,
+    /// Phase 10.2: whole-word tokens plus subword units for uncovered words,
+    /// with the merge table re-derived from the stored vocabulary.
+    #[cfg_attr(not(feature = "subword"), allow(dead_code))]
+    Subword,
     /// Phase 10.4: the same vocabulary with **move-to-front** ids, maintained by
     /// both sides from the id sequence alone (no side stream).
     #[cfg_attr(not(feature = "id-order"), allow(dead_code))]
@@ -305,6 +309,10 @@ pub enum Method {
     /// untouched; the change is where a definition lives, not what it is.
     #[cfg_attr(not(feature = "first-use"), allow(dead_code))]
     ResidualFirstUse = 93,
+    /// Phase 10.2: the accepted composite with subword composition for the words
+    /// the whole-word vocabulary does not cover.
+    #[cfg_attr(not(feature = "subword"), allow(dead_code))]
+    ResidualSubword = 94,
 }
 
 impl Method {
@@ -404,6 +412,7 @@ impl Method {
             Method::ResidualPriceFilter => "residual-price-filter",
             Method::ResidualAffix => "residual-affix",
             Method::ResidualFirstUse => "residual-first-use",
+            Method::ResidualSubword => "residual-subword",
         }
     }
 
@@ -503,12 +512,13 @@ impl Method {
             "residual-price-filter" => Method::ResidualPriceFilter,
             "residual-affix" => Method::ResidualAffix,
             "residual-first-use" => Method::ResidualFirstUse,
+            "residual-subword" => Method::ResidualSubword,
             _ => return None,
         })
     }
 
     /// All methods, for exhaustive exactness testing.
-    pub const ALL: [Method; 94] = [
+    pub const ALL: [Method; 95] = [
         Method::RawCm,
         Method::RawCmNoWord,
         Method::StructHoist,
@@ -603,6 +613,7 @@ impl Method {
         Method::ResidualPriceFilter,
         Method::ResidualAffix,
         Method::ResidualFirstUse,
+        Method::ResidualSubword,
     ];
 
     /// Methods that extend the **accepted Phase-4 composite parent** unchanged:
@@ -657,6 +668,7 @@ impl Method {
                 | Method::ResidualPriceFilter
                 | Method::ResidualAffix
                 | Method::ResidualFirstUse
+                | Method::ResidualSubword
         )
     }
 
@@ -840,6 +852,11 @@ impl Method {
             #[cfg(feature = "first-use")]
             if matches!(self, Method::ResidualFirstUse) {
                 return TokenKind::FirstUse;
+            }
+            // Phase 10.2: subword composition.
+            #[cfg(feature = "subword")]
+            if matches!(self, Method::ResidualSubword) {
+                return TokenKind::Subword;
             }
             if self.on_phase4_parent() {
                 return TokenKind::Reverse;
@@ -1057,6 +1074,7 @@ impl Method {
             Method::ResidualPriceFilter => Some(Order::Full),
             Method::ResidualAffix => Some(Order::Full),
             Method::ResidualFirstUse => Some(Order::Full),
+            Method::ResidualSubword => Some(Order::Full),
             _ => None,
         }
     }
@@ -1244,6 +1262,7 @@ impl Method {
             Method::ResidualPriceFilter => base.with_residual(false),
             Method::ResidualAffix => base.with_residual(false),
             Method::ResidualFirstUse => base.with_residual(false),
+            Method::ResidualSubword => base.with_residual(false),
             Method::ResidualCtl => base.with_residual(true),
             _ => base,
         };
@@ -1418,6 +1437,10 @@ fn maybe_token(method: Method, data: Vec<u8>, tune: u8) -> Vec<u8> {
             let vocab = crate::transform::build_word_vocab(&data, true);
             crate::transform::word_token_encode_firstuse(&data, &vocab)
         }
+        TokenKind::Subword => {
+            let vocab = crate::transform::build_word_vocab(&data, true);
+            crate::transform::word_token_encode_subword(&data, &vocab)
+        }
         TokenKind::Mtf => {
             crate::transform::word_token_encode_mode(&data, true, crate::transform::IdMode::Mtf)
         }
@@ -1444,6 +1467,7 @@ fn maybe_untoken(method: Method, data: Vec<u8>) -> Vec<u8> {
         TokenKind::Front => crate::transform::word_token_front_decode(&data),
         TokenKind::Affix => crate::transform::word_token_affix_decode(&data),
         TokenKind::FirstUse => crate::transform::word_token_decode_firstuse(&data),
+        TokenKind::Subword => crate::transform::word_token_decode_subword(&data),
         TokenKind::Mtf => {
             crate::transform::word_token_decode_mode(&data, crate::transform::IdMode::Mtf)
         }
@@ -2101,6 +2125,7 @@ pub fn decode(archive: &[u8]) -> Option<Vec<u8>> {
         91 => Method::ResidualPriceFilter,
         92 => Method::ResidualAffix,
         93 => Method::ResidualFirstUse,
+        94 => Method::ResidualSubword,
         _ => return None,
     };
     let mut len_bytes = [0u8; 8];

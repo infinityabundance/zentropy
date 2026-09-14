@@ -300,28 +300,53 @@ REJECTED, and the margin is essentially the same as 10.1b's repriced vocabulary 
 worse than nothing — the third independent confirmation that this predictor does not
 want a richer lexical representation.
 
-### 10.x Phase 10 interim: the representation is not the bottleneck
+### 10.2 Subword composition (BPE) — **REJECTED**, the largest margin in the phase
 
-Four measured stages, four rejections, all exact, all with an identified mechanism:
+`Method::ResidualSubword`. Uncovered words are composed from subword units derived
+from the **stored vocabulary**, so the merge table costs zero side bytes (the
+decoder re-derives it from the header it already reads). Unit tokens are 3 bytes
+(`0x00 0xFF idx`), and id 255 is reserved as the unit escape, capping the whole-word
+vocabulary at 254 entries.
 
-| stage | enwik6 | enwik7 | mechanism |
+Full `eval`, exact on both rungs:
+
+| corpus | parent | `residual-subword` | Δ |
+|---|---|---|---|
+| enwik6 | 267,333 | 291,695 | **+24,362** (+9.1%) |
+| enwik7 | 2,370,164 | 2,572,312 | **+202,148** (+8.5%) |
+
+REJECTED. The mechanism is identifiable and it is the one four earlier results
+pointed at: a 3-byte unit token must beat what the *model* charges for the letters it
+replaces, and at ~1.4–2.0 bits/byte that is roughly 6–9 bits for a four-letter unit
+— while the token spends a fresh symbol space (0x00 0xFF idx) that starts with high
+entropy and dilutes the contexts the model had learned. Shortening a byte string is
+not the same as making the model's job easier.
+
+### 10.x Phase 10 closure: the representation is not the bottleneck
+
+Six measured stages, six rejections, all byte-exact, each with an identified
+mechanism:
+
+| stage | enwik6 | enwik7 | mechanism of loss |
 |---|---|---|---|
 | 10.4 rank ids (MTF) | +16,928 | +213,623 | destroys absolute token identity |
 | 10.1b priced re-rank | +2,165 | +25,870 | counterfactual priced in the wrong model |
 | 10.6a priced filter | +2,754 | +33,501 | same, aimed at the strongest screening signal |
 | 10.3 affix on the composite | +3,205 | +35,815 | richer lexical representation dilutes |
+| 10.5 first-use definitions | +3,023 | +33,372 | the compact header is cheaper than in-context definitions |
+| 10.2 subword/BPE | +24,362 | +202,148 | 3-byte units cannot beat the model's own letter coding |
 
-Three of the four are *directly contrary* to a screening signal that looked large
-and grew with scale. The honest reading is that Phase 10's thesis — that the
-remaining bytes are in how spans are **represented** — is not supported by
-measurement for this predictor, and that the phase's value has been to establish
-that with numbers rather than to collect mechanisms.
+Three of the six were *directly contrary* to a screening signal that looked large
+and grew with scale, and one of those (10.1b) was honestly believed to be the
+largest remaining opportunity by an order of magnitude before it was measured.
 
-What that redirects effort to is where the measurements *are* positive: the model's
-**resource envelope** (Phase 11 — `for_size` caps tables at 2^24 against a 10 GB
-allowance, and archive bytes fall monotonically as they grow) and the predictor
-itself. Stages 10.2 (subword/BPE) and 10.5 (first-use productions) remain
-unimplemented; the evidence above makes 10.2 the least promising item in the plan
-(A26 already showed coverage past 255 costs 776,196 B via dilution, and BPE ids
-beyond 254 would occupy the same three-byte encoding), and 10.5 is bounded at a few
-hundred bytes of dictionary locality.
+The conclusion is not that these ideas were stupid; it is that **this predictor does
+not want a different lexical representation**. What it wants is demonstrated by the
+one Phase-10 measurement that came out positive — the T2 table-size sweep in
+[`RESOURCE_CLOSURE.md`](RESOURCE_CLOSURE.md), where more *capacity* for the model it
+already has fell monotonically in archive bytes. Phase 10's value is that this is now
+established with numbers, controls, and six reproducible rejections behind
+`--features id-order|vocab-price|affix-token|first-use|subword` (all outside
+`accepted`), rather than argued from intuition.
+
+135 tests pass with the Phase-10 features, 126 by default.

@@ -98,6 +98,9 @@ id-order = ["word-token"]
 # Phase 10 (research): first-use inline dictionary definitions instead of a
 # dictionary header. Expected to land near the noise floor; see PHASE10_PLAN.md.
 first-use = ["word-token"]
+# Phase 10 (research): subword composition -- whole-word tokens plus BPE units
+# derived from the stored vocabulary (so the decoder needs no side information).
+subword = ["word-token"]
 # Phase 10 (research): instrument the range coder with its own accumulated ideal
 # code length, so a representation can be priced by what the model actually
 # charges for it (`zentropy vocab-price`). Research-plane and outside `accepted`:

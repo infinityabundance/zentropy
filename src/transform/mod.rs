@@ -649,6 +649,238 @@ pub fn word_token_decode_firstuse(data: &[u8]) -> Vec<u8> {
     out
 }
 
+// --- Phase 10.2 (A26/10.2): subword composition ----------------------------
+//
+// The shipped tokenizer replaces a *whole word* with a 2-byte token when the word
+// is in the vocabulary, and spells everything else out. Roughly half of all word
+// occurrences are spelled out, so the uncovered half is a large surface.
+//
+// This variant composes uncovered words from **subword units** derived from the
+// stored vocabulary itself. That is the design decision that makes it affordable:
+// the decoder receives the vocabulary in the header, so it can re-derive the exact
+// same merge table with no side information and **zero** stored bytes. What is not
+// free is the unit tokens themselves — 3 bytes each (`0x00 0xFF idx`) — so a unit
+// must beat the model's own price for the letters it replaces. That is a real bar
+// for a context-mixing coder running near 1.4 bits/byte, and it is why this is the
+// one Phase-10 stage whose outcome is genuinely not predictable from the others.
+//
+// Format (id 255 is reserved as the unit escape, so the whole-word vocabulary is
+// capped at 254 entries — the same trade the first-use form makes, stated rather
+// than hidden):
+//
+//   0x00 0x00          literal NUL
+//   0x00 id    (1..254) whole-word token id
+//   0x00 0xFF idx       subword unit idx (0..units-1)
+//   other byte          copied verbatim
+
+/// Whole-word ids are capped here so `0xFF` can escape to the unit space.
+pub const SUBWORD_MAX_TOKENS: usize = 254;
+const SUB_ESC: u8 = 0xFF;
+
+/// Derive byte-pair merges from the vocabulary alone, deterministically.
+///
+/// Counts are per *word*, not per occurrence, because the decoder cannot know how
+/// often a word occurred — it only has the word list. Ties are broken by the
+/// lowest symbol pair via an ordered map, so no hash iteration order can leak into
+/// the result. Stops early when no pair occurs twice.
+pub fn bpe_derive_merges(vocab: &[Vec<u8>], max_units: usize) -> Vec<(u16, u16)> {
+    use std::collections::BTreeMap;
+    let mut seqs: Vec<Vec<u16>> = vocab
+        .iter()
+        .map(|w| w.iter().map(|&b| b as u16).collect())
+        .collect();
+    let mut merges: Vec<(u16, u16)> = Vec::new();
+    for step in 0..max_units {
+        let mut counts: BTreeMap<(u16, u16), u64> = BTreeMap::new();
+        for s in &seqs {
+            for w in s.windows(2) {
+                *counts.entry((w[0], w[1])).or_insert(0) += 1;
+            }
+        }
+        let mut best: Option<((u16, u16), u64)> = None;
+        for (&pair, &count) in &counts {
+            if best.map_or(true, |(_, bc)| count > bc) {
+                best = Some((pair, count));
+            }
+        }
+        let Some(((a, b), count)) = best else { break };
+        if count < 2 {
+            break;
+        }
+        let new = 256 + step as u16;
+        merges.push((a, b));
+        for s in seqs.iter_mut() {
+            let mut out = Vec::with_capacity(s.len());
+            let mut k = 0;
+            while k < s.len() {
+                if k + 1 < s.len() && s[k] == a && s[k + 1] == b {
+                    out.push(new);
+                    k += 2;
+                } else {
+                    out.push(s[k]);
+                    k += 1;
+                }
+            }
+            *s = out;
+        }
+    }
+    merges
+}
+
+/// Spell a merged symbol back out. `sym < 256` is a byte; otherwise it is merge
+/// `sym - 256`, which the decoder can expand from the same table.
+pub fn bpe_spell(sym: u16, merges: &[(u16, u16)]) -> Vec<u8> {
+    match sym.checked_sub(256).and_then(|i| merges.get(i as usize)) {
+        None => vec![sym as u8],
+        Some(&(a, b)) => {
+            let mut v = bpe_spell(a, merges);
+            v.extend(bpe_spell(b, merges));
+            v
+        }
+    }
+}
+
+/// Apply the merge table to a word, in learned order (standard BPE).
+pub fn bpe_pieces(word: &[u8], merges: &[(u16, u16)]) -> Vec<u16> {
+    let mut syms: Vec<u16> = word.iter().map(|&b| b as u16).collect();
+    for (i, &(a, b)) in merges.iter().enumerate() {
+        if syms.len() < 2 {
+            break;
+        }
+        let new = 256 + i as u16;
+        let mut out = Vec::with_capacity(syms.len());
+        let mut k = 0;
+        while k < syms.len() {
+            if k + 1 < syms.len() && syms[k] == a && syms[k + 1] == b {
+                out.push(new);
+                k += 2;
+            } else {
+                out.push(syms[k]);
+                k += 1;
+            }
+        }
+        syms = out;
+    }
+    syms
+}
+
+/// Encode with whole-word tokens for the vocabulary and subword units for the rest.
+pub fn word_token_encode_subword(input: &[u8], vocab: &[Vec<u8>]) -> Vec<u8> {
+    use std::collections::HashMap;
+    let vocab: Vec<&Vec<u8>> = vocab.iter().take(SUBWORD_MAX_TOKENS).collect();
+    let owned: Vec<Vec<u8>> = vocab.iter().map(|w| (*w).clone()).collect();
+    let merges = bpe_derive_merges(&owned, SUBWORD_MAX_TOKENS);
+    let mut ids: HashMap<&[u8], u8> = HashMap::with_capacity(owned.len());
+    let mut out = Vec::with_capacity(input.len());
+    // The vocabulary header. It is not optional: the decoder both expands ids with
+    // it *and* re-derives the merge table from it, so it is the only channel by
+    // which the subword units are communicated — which is exactly why they cost
+    // no side bytes.
+    out.push(owned.len() as u8);
+    for w in &owned {
+        out.push(w.len() as u8);
+        out.extend_from_slice(w);
+    }
+    for (k, w) in owned.iter().enumerate() {
+        ids.insert(w.as_slice(), (k + 1) as u8);
+    }
+    let mut i = 0;
+    while i < input.len() {
+        let b = input[i];
+        if is_word_byte(b) {
+            let mut j = i;
+            while j < input.len() && is_word_byte(input[j]) {
+                j += 1;
+            }
+            match ids.get(&input[i..j]) {
+                Some(&id) => {
+                    out.push(TOK_ESC);
+                    out.push(id);
+                }
+                None => {
+                    for piece in bpe_pieces(&input[i..j], &merges) {
+                        if piece < 256 {
+                            out.push(piece as u8);
+                        } else {
+                            out.push(TOK_ESC);
+                            out.push(SUB_ESC);
+                            out.push((piece - 256) as u8);
+                        }
+                    }
+                }
+            }
+            i = j;
+        } else if b == TOK_ESC {
+            out.push(TOK_ESC);
+            out.push(0);
+            i += 1;
+        } else {
+            out.push(b);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Exact inverse of [`word_token_encode_subword`]. Total on malformed input.
+pub fn word_token_decode_subword(data: &[u8]) -> Vec<u8> {
+    if data.is_empty() {
+        return Vec::new();
+    }
+    let count = data[0] as usize;
+    let mut i = 1usize;
+    let mut dict: Vec<&[u8]> = Vec::with_capacity(count);
+    for _ in 0..count {
+        if i >= data.len() {
+            break;
+        }
+        let l = data[i] as usize;
+        i += 1;
+        if i + l > data.len() {
+            break;
+        }
+        dict.push(&data[i..i + l]);
+        i += l;
+    }
+    // The decoder re-derives the merge table from the vocabulary it just read.
+    let owned: Vec<Vec<u8>> = dict.iter().map(|w| w.to_vec()).collect();
+    let merges = bpe_derive_merges(&owned, SUBWORD_MAX_TOKENS);
+    let mut out = Vec::new();
+    while i < data.len() {
+        let b = data[i];
+        if b == TOK_ESC {
+            if i + 1 >= data.len() {
+                break;
+            }
+            let id = data[i + 1] as usize;
+            if id == 0 {
+                out.push(0);
+                i += 2;
+            } else if id == SUB_ESC as usize {
+                if i + 2 >= data.len() {
+                    break;
+                }
+                let idx = data[i + 2] as usize;
+                if let Some(&(a, bb)) = merges.get(idx) {
+                    let mut v = bpe_spell(a, &merges);
+                    v.extend(bpe_spell(bb, &merges));
+                    out.extend_from_slice(&v);
+                }
+                i += 3;
+            } else {
+                if id <= dict.len() {
+                    out.extend_from_slice(dict[id - 1]);
+                }
+                i += 2;
+            }
+        } else {
+            out.push(b);
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Encode `input` against a **given** vocabulary, with a set of words **blocked**
 /// from substitution.
 ///
@@ -1687,6 +1919,49 @@ mod tests {
         let text = b"w1x w1x w2x w2x";
         let enc = word_token_encode_firstuse(text, &long);
         assert_eq!(word_token_decode_firstuse(&enc), text);
+    }
+
+    /// Phase 10.2: subword composition must round-trip, must actually *use* units
+    /// (a variant that never emitted one would still round-trip and would test
+    /// nothing), and must stay inside the format — unit indices below the merge
+    /// count, ids below the whole-word cap.
+    #[test]
+    fn subword_composition_roundtrips_and_uses_units() {
+        let text = b"compress compress compression compression compressors compressible \
+                     compressing";
+        let vocab = build_word_vocab(text, true);
+        let owned: Vec<Vec<u8>> = vocab.clone();
+        let merges = bpe_derive_merges(&owned, SUBWORD_MAX_TOKENS);
+        assert!(!merges.is_empty(), "no merges derived from the vocabulary");
+        // Every merge's spelling must be recoverable from the table alone.
+        for (i, &(a, b)) in merges.iter().enumerate() {
+            let sym = 256 + i as u16;
+            let mut want = bpe_spell(a, &merges);
+            want.extend(bpe_spell(b, &merges));
+            assert_eq!(bpe_spell(sym, &merges), want);
+        }
+
+        let enc = word_token_encode_subword(text, &vocab);
+        assert_eq!(word_token_decode_subword(&enc), text, "subword not exact");
+        // A unit token is `0x00 0xFF idx`; at least one must appear, or the
+        // representation never engaged.
+        let mut units = 0usize;
+        let mut i = 0;
+        while i + 2 < enc.len() {
+            if enc[i] == TOK_ESC && enc[i + 1] == SUB_ESC {
+                assert!(
+                    (enc[i + 2] as usize) < merges.len(),
+                    "unit index out of range"
+                );
+                units += 1;
+                i += 3;
+            } else if enc[i] == TOK_ESC {
+                i += 2;
+            } else {
+                i += 1;
+            }
+        }
+        assert!(units > 0, "no subword units were emitted");
     }
 
     /// Phase 10: encoding against an explicit vocabulary must round-trip through

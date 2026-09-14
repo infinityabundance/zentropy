@@ -1818,6 +1818,21 @@ fn cmd_eval(args: &[String]) -> Result<(), String> {
     let cand_arch = archive::encode_tuned(&data, candidate, tune);
     let cand_s = t1.elapsed();
 
+    // Report the size as soon as it exists. On enwik9 the encode is ~50 minutes
+    // and the decode another ~40, so withholding the one decision-relevant number
+    // until both finish turns a long gate into a blind wait. This is the number a
+    // reader is waiting for, and it is already final: the decoder reproduces the
+    // archive exactly or the run is rejected on the next line.
+    {
+        let delta = cand_arch.len() as i64 - parent_bytes as i64;
+        eprintln!(
+            "eval: candidate archive = {} bytes  ({:+.0} vs parent{}), exactness decode follows",
+            cand_arch.len(),
+            delta,
+            if delta < 0 { " — SMALLER" } else { "" }
+        );
+    }
+
     // Decode the candidate once: the exactness court and the receipt's decoded
     // digest both need the result, and on enwik9 a second decode costs ~30
     // minutes.
