@@ -145,8 +145,8 @@ Honest status as of the current revision. `MEASURED` means the number exists in
 | 7 | Article-layout compiler (semantic/structural/residual/predictor orders) | **COMPLETE** — the encoder reorders `<page>` blocks by category set, template set, then title; the decoder restores the original order by a free sort on the embedded ascending page id. Adopted at enwik9: **−4,469,794 B** (174,533,527 → 170,063,733, 1.3605 bpc) for a measured 24,208 B. Content-similarity and greedy orders REJECTED; identity control exactly 0, shuffle control +25,519 (see PHASE7_PLAN.md) |
 | 8 | Learned residual corrector (model-size Pareto campaign) | **COMPLETE** — a 120-byte quantized integer MLP consumes the classical mixer/APM outputs and emits a logit correction; offline-trained, embedded, charged. Adopted at enwik9: **−421,646 B** (170,063,733 → 169,642,087, 1.3571 bpc) for a measured 7,848 B; permuted-weight control +2,201,020. Net-gain gate passes (see PHASE8_PLAN.md) |
 | 9 | Global search (DSFB observer, frf-fuzz mutation, Gemel memory) | **COMPLETE** — a deterministic, receipted search layer over the `tune` header byte (search has no decode authority). Campaigns: exhaustive on enwik7 (256 points), coordinate on enwik8 (46), gated by full `eval` on enwik9. The APM adaptation-shift axis is **REJECTED** at enwik9 (+90,996 B at the best LR) and compiled out; the search re-tuned the mixer learning rate 24 → 16 for **−359,748 B at zero binary cost**. The phase nets **−224 B** of executable. See §7.9 |
-| 10 | Equivalence-preserving representation optimizer | PROPOSED |
-| 11 | Resource closure (RAM/CPU/disk/binary size/determinism) | **PARTIAL** — OOM guard (startup budget with a 4 GiB reserve, runtime memory floor, hard `RLIMIT_AS` + serialisation in `tools/run_guarded.sh`) and a deterministic integer model in place; scored stub (**399,888 B**) not yet size-optimised. The scored half of the guard (`mem-guard`) is a measured **~5.5–5.8 KB** of that; see [`MEMORY_GUARD.md`](MEMORY_GUARD.md) |
+| 10 | Equivalence-preserving representation optimizer | PROPOSED — see [`PHASE10_PLAN.md`](PHASE10_PLAN.md) |
+| 11 | Resource closure (RAM/CPU/disk/binary size/determinism) | **IN PROGRESS** — OOM guard complete and **measured**: the scored half (`mem-guard`, the startup refusal) costs a real **~5.5–5.8 KB** of the 399,888 B stub; the research half (`mem-floor`) is gated out and now **pauses** rather than aborting a long run ([`MEMORY_GUARD.md`](MEMORY_GUARD.md)). The RAM↔ratio trade is the live item: `for_size` caps tables at 2^24 (576 MB for enwik9) against a 10 GB envelope, and archive bytes fall monotonically as they grow ([`RESOURCE_CLOSURE.md`](RESOURCE_CLOSURE.md)). The T1 layout alternative is **REJECTED** ([`LAYOUT_DECISION.md`](LAYOUT_DECISION.md)) |
 | 12 | Submission closure (SFX, source, doc, receipts, licence, checklist) | **PARTIAL** — SFX stub + container + packaging court work; not yet a submission |
 
 ## 7. Measured results
@@ -334,6 +334,41 @@ existed and the winning point has the APM axis off.
 The APM axis is the phase's clean negative: worth ≈12 KB on the *mean* at enwik7
 and within 653 B at enwik8, it is **91 KB of harm** at enwik9. A near-tie at a
 smaller rung is not a rejection, which is exactly why the authority gate exists.
+
+The rejected axis left the high nibble of `tune` free. T2 now uses it to carry a
+**table-size scale** (`tune = (scale << 4) | lr_idx`), which is a model-geometry
+knob rather than a coding one, and is decoder-derivable by construction because
+both sides read the archive's own `tune` byte. `tune < 16` is bit-identical to the
+pre-T2 behaviour, and `tune-table` + `apm-tune` is a `compile_error!` since they
+claim the same nibble. Status: **measured, gates in flight, not adopted** — see
+[`RESOURCE_CLOSURE.md`](RESOURCE_CLOSURE.md).
+
+### 7.10 Throughput: two mechanisms measured and rejected
+
+> The full records are [`THROUGHPUT_ANALYSIS.md`](THROUGHPUT_ANALYSIS.md) (the
+> diagnosis), [`SIMD_DECISION.md`](SIMD_DECISION.md),
+> [`PARALLELISM_DECISION.md`](PARALLELISM_DECISION.md) and
+> [`LAYOUT_DECISION.md`](LAYOUT_DECISION.md).
+
+Coding runs at ~2.4 µs/byte (~1000 cycles/bit), which reads like an emergency. It
+is not one: ~1.5 core-hours per enwik9 pass against a ~53 core-hour allowance, so
+**throughput cannot buy score**. What it does cost is research iterations, and the
+levers that actually paid were the research-plane ones (rayon across candidates
+3.0×; `--parent-archive-bytes` halves a gate; concurrency itself).
+
+| mechanism | authority measurement | decision |
+|---|---|---|
+| AVX2 intrinsics in the predictor | 1.19–1.51× **slower** on the dominant loop; 1.10× only on the real mixer types | **REJECTED** |
+| parallel blocking in the archive | 3.4–9.1× faster for **+6.2% to +16.3%** ratio | **REJECTED for the archive** |
+| bucket-local (nibble) table layout | affordable subset **0.97×** for +7,071 B; ceiling 1.29×/1.39× for +66,674/+597,425 B | **REJECTED** |
+| rayon across candidate tunes | **3.0×**, archives byte-identical | **ADOPTED** (research plane) |
+| `--bits` working-set sweep | 1293 → 2500 ns/byte as the model grows 39 → 374 MB, probe count unchanged | diagnosis confirmed |
+
+The `--bits` sweep is the one that settles the argument: at `bits = 24` enwik9 is
+already on the **flat** part of the working-set curve, so there is no cheap
+locality win left, and the layout that *would* reduce lines touched cannot be
+afforded in ratio. The sweep's side effect was the opposite finding of real value:
+bigger tables buy archive bytes, which is T2 in §7.9.
 
 Three proposals were measured and rejected rather than argued about; both records
 are in-tree so the questions are not re-litigated from intuition:

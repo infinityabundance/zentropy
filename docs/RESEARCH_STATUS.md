@@ -6,7 +6,8 @@
 
 ## What is true right now
 
-- **Exactness holds.** 119 unit/property tests plus 8 scripted courts pass. The
+- **Exactness holds.** 126 unit/property tests (127 with `tune-table`) plus 8
+  scripted courts pass. The
   Wikipedia IR (`ZIR-0`) round-trips arbitrary and malformed input exactly. The
   archive decoder rejects corruption without panicking or allocating without
   bound. A deterministic incompressible stream does not compress.
@@ -37,15 +38,19 @@
 `--profile submission --no-default-features --features accepted`) is both `comp9a`
 and `decomp9`; a packed self-extracting `archive9` reconstructs byte-identically
 with no external inputs.
-- **Optimization Phase A is running.** A17 (previous-line/column expert) and the
-  A20 learning-rate variant (`tune 7`) are adopted; A2 (alphabet permutation) and
-  A3 (information inheritance) are rejected, each with a negative control that
-  demonstrates the mechanism is real but the heuristic is wrong. A1.2 case
+- **Optimization Phase A is largely closed.** A17 (previous-line/column expert)
+  is adopted; A2 (alphabet permutation) and A3 (information inheritance) are
+  rejected, each with a negative control that demonstrates the mechanism is real
+  but the heuristic is wrong — as is the T1 table-layout experiment, whose
+  *ceiling* still cost 2.9% of the archive. A1.2 case
   factorization is **rejected in full**: merging lexical identity wins on
   enwik6/7 and reverses on enwik8, and marking alone wins on enwik7/enwik8 then
   reverses by +427,246 B on enwik9. A1.1/A26 dynamic word tokenization is
   **ADOPTED** (`column-word-token-reverse`): −1,723,929 B archive at enwik9 for a
-  charged 21,848 B of executable. **Phase 4 is complete**: the long-distance and
+  charged 21,848 B of executable. The A20 learning-rate variant was adopted at
+  `tune 7` (LR 24) and then **superseded by Phase 9**, which re-tuned it to
+  `tune 5` (LR 16) against the mature model for a further −359,748 B. **Phase 4 is
+  complete**: the long-distance and
   sparse match tiers and the matched-literal expert are adopted (enwik9
   −3,869,340 fully accounted), while repeat-offset state, distance-conditioned
   floors, stemming, word-class, phrase/affix dictionaries and front-coding were
@@ -107,9 +112,50 @@ with no external inputs.
   for the research plane only (3.0× on four concurrent tunes, byte-identical,
   ~16 B if ever linked). See [`PHASE9_PLAN.md`](PHASE9_PLAN.md).
 
+- **Throughput is diagnosed and the interesting fix is measured.** Coding runs at
+  ~2.4 µs/byte (~1000 cycles/bit). A `--bits` sweep — same probe count, only the
+  working set changes — moves throughput 1293 → 2500 ns/byte as the model grows
+  39 → 374 MB, which confirms the cause is working-set **latency**, and shows
+  enwik9 already sits on the flat part of that curve. The bucket-local table layout
+  that would reduce lines-touched therefore cannot pay: affordability requires
+  `2^(bits-4) ≥ 17 × #contexts`, which at `bits = 24` holds only for orders 0–1,
+  and the measured result is **0.97× (slower) for +7,071 B**; the ceiling, with
+  every order paying the 16× hash loss, is **1.29×/1.39× for +66,674/+597,425 B**.
+  **REJECTED.** The reason this is not a crisis: an enwik9 pass is ~1.5 core-hours
+  against a ~53 core-hour allowance, so throughput cannot buy score — it buys
+  iteration speed, which rayon and `--parent-archive-bytes` already supply. See
+  [`THROUGHPUT_ANALYSIS.md`](THROUGHPUT_ANALYSIS.md) and
+  [`LAYOUT_DECISION.md`](LAYOUT_DECISION.md).
+
+- **OOM protection is complete and measured.** Three layers: a judged-safe startup
+  budget (`mem-guard`, the scored half, a real **~5.5–5.8 KB** of the stub), a
+  workstation budget with a 4 GiB reserve, and a runtime floor that now **pauses**
+  a run rather than discarding it — legitimate because coding is deterministic and
+  time-independent. Two incidents on 2026-09-14 threw away five concurrent enwik9
+  gates at 87% each; the second proved the dips were sustained, which is what ruled
+  out "debounce harder" and selected "pause instead of deciding". Both trace to the
+  workstation (`xmllint` at 46.7 GB, `SwapFree` 1.95 GB of 131.5 GB), not to
+  Zentropy. See [`MEMORY_GUARD.md`](MEMORY_GUARD.md).
+
+- **Phase 11 is in progress and has found a live lever.** `for_size` caps context
+  tables at 2^24 — 576 MB for enwik9 against a **10 GB** envelope — with no
+  recorded measurement behind the cap. Archive bytes fall monotonically as the
+  tables grow (enwik8, 2^22 → 2^26: **−431,806 B, −2.03%**) while the curve
+  flattens and memory climbs, so the interesting window is `bits` 24–26. The knob
+  (`tune-table`) rides the high nibble of `tune`, which the rejected APM axis left
+  free, and is decoder-derivable by construction. **Status: measured, enwik9 gates
+  in flight, not adopted.** See [`RESOURCE_CLOSURE.md`](RESOURCE_CLOSURE.md).
+
+- **Phase 10 is planned.** The representation optimizer — per-span choice among
+  literal / token / subword / affix / delta / rule, under a cost oracle repriced by
+  the real coder — with exactness and complete-cost accounting as the two hard
+  constraints. See [`PHASE10_PLAN.md`](PHASE10_PLAN.md).
+
 ## What is *not* true yet
 
-- The floor is roughly **5× larger than the record**. Phases 3–8 are the climb.
+- The floor is **1.53× larger than the record**: 169,282,339 against `fx2-cmix`'s
+  110,793,128, a gap of 58,489,211 B (~58.5 MB). Phases 3–9 were the climb from
+  182,949,204.
 - The context-mixing stack now has a real calibration stage, a PPM expert and a
   learned residual corrector, but still no ICM/ISSE bit histories and no
   structural/bidirectional contexts. The corrector is tiny (120 B / 4 hidden

@@ -92,6 +92,20 @@ Peak RSS adds the corpus (1 GB), the transformed stream (0.86 GB) and the archiv
 (≈170 MB), so scale 2 lands near 4 GB and scale 3 near 5.5 GB — both inside 10 GB.
 The gate receipts record `peak_rss_bytes`; the claim is only as good as that number.
 
+### 4.1 Accounting caveat on the in-flight gates
+
+The T2 gates were launched with `--binary-cost 0`. That was correct for Phase 9,
+whose knob rode a header byte that already existed and cost nothing, but it is **not
+correct here**: `with_tune`'s scaling loop is real code, so the gate's `ΔS`
+**under-counts by the executable cost** and must be read as an *upper bound* on the
+gain until an otherwise-identical `accepted` vs `accepted, tune-table` submission
+build is measured (A31 — measured, never estimated). The expected magnitude is tens
+or hundreds of bytes against a win expected in the hundreds of kilobytes, so this
+does not threaten the verdict, but it is recorded rather than glossed: a receipt
+that says `ΔS` without saying which costs are in it is a half-truth. The same
+caution applies to the peak-RSS claim in §4 — `peak_rss_bytes` from the receipt is
+the authority, not the projection.
+
 ## 5. Interaction with the mixer learning rate (must be re-checked)
 
 Phase 9 established that **the optimal mixer LR is a function of the predictor**:
