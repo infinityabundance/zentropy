@@ -584,3 +584,69 @@ dispatch is the ~20 small predicates the transform pipeline calls with a runtime
 `method` (each a `matches!` over 95 variants). Removing those needs the pipeline
 to stop being method-generic; the measurement above says the prize is small
 relative to that risk, so it stays open rather than being attempted blind.
+
+## 11. The residual corrector's weights were stale (Phase 12 research)
+
+§7's open note said it: *"the learned residual corrector's weights were trained on
+an LR-24 trajectory"* — and by the end of Phase 11 they had been trained against a
+predictor that no longer existed, twice over (LR 24 → 16, scale 0 → 3, and then
+the adaptation ladder).
+
+Phase 8's Pareto campaign found `hidden = 4` (a 120-byte model) to be the knee
+**in-sample on enwik7**. So retraining is cheap: 27 seconds on enwik7, 5.5 minutes
+on enwik8, against one full `eval` gate to decide it.
+
+### 11.1 Two corpora, and a counter-intuitive result
+
+| weights trained on | archive on enwik8 | Δ vs the shipped weights |
+|---|---|---|
+| shipped (trained against the old predictor) | 20,190,312 | — |
+| **enwik7** | **20,127,514** | **−62,798** |
+| enwik8 | 20,149,033 | −41,279 |
+
+This is the first time in the project that **training on the smaller, earlier
+corpus beat training on the larger one**, and the mechanism is visible in the
+trainer: the learning-rate schedule is `lr / (1 + steps / 2e6)`, so over enwik8's
+706 M steps the rate decays to ~1/350 of its start and the weights freeze long
+before the stream ends — the run spends most of its time *not learning*. Shorter
+training therefore ends at a better point. The follow-up is a schedule fix, not a
+bigger model (see [`PHASE13_PLAN.md`](PHASE13_PLAN.md) §13.3).
+
+### 11.2 The enwik9 gate
+
+Retrained weights (enwik7), gated at `tune 53`:
+
+| | archive | Δ |
+|---|---|---|
+| parent (rates adopted, shipped weights) | 161,418,616 | — |
+| **retrained corrector** | **160,754,189** | **−664,427** |
+
+Receipt: `evidence/runs/weights_retrain.jsonl`. The weight file stays **120
+bytes**, so the mechanism's executable cost is unchanged; the win is entirely in
+the archive. A pure *training* artefact, not a new mechanism — which is the
+clearest illustration of the project's own rule that a mechanism's value is a
+property of the model it is coupled to, not of its code.
+
+### 11.3 The mixer learning rate moved again — Phase 9's rule, third time
+
+With the rates and the retrained corrector in place the predictor had moved once
+more, so the LR ladder was re-descended rather than assumed. Against the receipted
+161,418,616, **at the retrained weights**:
+
+| tune | LR | archive | Δ |
+|---|---|---|---|
+| 48 | 12 | 160,232,405 | −1,186,211 |
+| 52 | 10 | *gated to close the bracket* | — |
+| 51 | 8 | **160,015,425** | **−1,403,191** |
+| 50 | 6 | 160,292,663 | −1,125,953 |
+| 49 | 4 | 161,324,386 | −94,230 |
+| 53 | 16 | 160,754,189 | −664,427 |
+
+For comparison, at the **shipped** weights LR 16 gives 161,418,616 and LR 10 gives
+160,809,990 — so the retrained corrector is worth more than *any* LR move at the
+old weights, and the two combine.
+
+LR 10 sits between the tested 8 and 12, so it is gated like every other point
+rather than assumed. **This is the third time the LR optimum has moved**, and every
+time it moved it was because the predictor had changed. The knob is cheap to
+re-measure and expensive to assume.
