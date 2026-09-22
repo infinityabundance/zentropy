@@ -51,7 +51,7 @@ path = "src/bin/zentropy_sfx.rs"
 # infrastructure that is useful when developing (`parallel`, `progress`,
 # `mem-floor`). Rejected or experimental mechanisms are compiled in explicitly with
 # `--features` so they reproduce but do not cost submission bytes.
-default = ["accepted", "parallel", "progress", "mem-floor", "learned-train"]
+default = ["accepted", "parallel", "progress", "mem-floor", "learned-train", "procedural", "opportunity"]
 # The scored configuration: exactly the adopted mechanisms. The submission
 # packaging builds with `--no-default-features --features accepted` so that
 # research-plane machinery (the search layer, rayon) cannot leak into the stub.
@@ -216,6 +216,13 @@ learned-train = ["learned"]
 # otherwise-identical binary used to measure its executable cost. This is the
 # scored half of the OOM guard — the runtime floor is `mem-floor`, above.
 mem-guard = []
+# Phase 14: codelength attribution. Research-plane: the accumulator and the
+# report are outside `accepted`, so the scored stub carries none of it.
+opportunity = ["vocab-price"]
+# Phase 14: the bounded procedural DSL, its exact serializer, target-directed
+# search and the typed residual algebra. Research-plane until a constructed
+# representation is measured to beat the accepted one on the authority corpus.
+procedural = []
 # `submission` gates out research-only machinery from the decoder stub. The
 # scored build enables it (`--features accepted,submission`): it compiles out the
 # 95-arm research model constructor (see `Method::config_for`), whose only

@@ -76,6 +76,8 @@ fn main() -> ExitCode {
         "prune" => cmd_prune(&args[2..]),
         "reorder-info" => cmd_reorder_info(&args[2..]),
         "reorder-out" => cmd_reorder_out(&args[2..]),
+        #[cfg(feature = "opportunity")]
+        "opportunity" => cmd_opportunity(&args[2..]),
         "train-residual" => cmd_train_residual(&args[2..]),
         #[cfg(not(feature = "submission"))]
         "sweep-tune" => cmd_sweep_tune(&args[2..]),
@@ -130,6 +132,7 @@ fn usage() {
          zentropy pblocks     <in> [--blocks <n>] [--jobs <n>] [--tune <t>] [--no-full]\n  \
          zentropy layout      <in> [--nibble <orders>] [--bits <n>] [--reps <n>] [--method <m>] [--tune <t>]\n  \
          zentropy rate-sweep  <in> [--scope order|all] [--deltas -2,-1,1,2] [--method <m>] [--tune <t>]\n  \
+         zentropy opportunity <corpus> [--raw] [--oracle] [--top <n>] [--json]          (feature opportunity)\n  \
          zentropy vocab-price <in> [--top <n>] [--method <m>] [--tune <t>]   (feature vocab-price)\n",
         version = zentropy::VERSION
     );
@@ -1149,6 +1152,28 @@ fn cmd_reorder_out(args: &[String]) -> Result<(), String> {
 #[cfg(not(feature = "reorder"))]
 fn cmd_reorder_out(_args: &[String]) -> Result<(), String> {
     Err("reorder-out: built without the `reorder` feature".into())
+}
+
+/// Phase 14.1: `zentropy opportunity <corpus>` — where the codelength lives.
+///
+/// Research-plane (`opportunity`), because the attribution accumulator is `f64`
+/// and must never reach a scored artifact. The report is only evidence when its
+/// parts sum to its total, which `run` enforces by returning an error rather
+/// than an unattributable report.
+#[cfg(feature = "opportunity")]
+fn cmd_opportunity(args: &[String]) -> Result<(), String> {
+    let path = args.first().ok_or("opportunity: need <corpus>")?;
+    let report = zentropy::opportunity::run(path, &args[1..])?;
+    print!("{}", report.render());
+    if !report.is_attributable() {
+        return Err("opportunity: report is not attributable".into());
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "opportunity"))]
+fn cmd_opportunity(_args: &[String]) -> Result<(), String> {
+    Err("opportunity: built without the `opportunity` feature".into())
 }
 
 /// Phase 8 research: train the learned residual corrector on a corpus prefix and

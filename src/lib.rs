@@ -43,6 +43,25 @@ pub mod mixer;
 #[cfg(feature = "learned")]
 pub mod learned;
 pub mod score;
+// Phase 14: the causal structural-state interface (SignalBus). Every field is a
+// pure function of bytes already coded, so it is legal on the decoded path.
+//
+// **Gated to the research plane for now**: nothing in the accepted pipeline reads
+// it yet, so compiling it into the scored stub would be a claim about the binary
+// that only the symbol table could confirm. When a consumer that pays for itself
+// reads it, it moves into `accepted` and its marginal cost is measured like any
+// other mechanism.
+#[cfg(any(feature = "procedural", feature = "opportunity"))]
+pub mod signal;
+// Phase 14: the bounded procedural DSL — programs, exact serialization,
+// target-directed search and typed residuals. Research-plane until a
+// constructed representation beats the accepted one on the authority corpus.
+#[cfg(feature = "procedural")]
+pub mod procedural;
+// Phase 14: where the codelength actually lives. Research-plane (its
+// accumulator is `f64`), and it asserts that every coded byte is attributed.
+#[cfg(feature = "opportunity")]
+pub mod opportunity;
 // Research-plane progress reporting for long coding passes. Deliberately outside
 // the `accepted` feature bundle: the scored stub carries none of it.
 #[cfg(feature = "progress")]

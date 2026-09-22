@@ -39,6 +39,17 @@ pub struct RangeEncoder {
     /// cannot cost `S` a byte.
     #[cfg(feature = "vocab-price")]
     cost: f64,
+    /// Phase 14.1: the same ideal cost, partitioned by a caller-supplied class
+    /// index. Empty unless a caller installs one; each coded decision is charged
+    /// to `class` after the caller declares it with [`RangeEncoder::set_class`].
+    /// This is a *bookkeeping* accumulator: it never changes a coded bit, so the
+    /// coder's output is bit-identical with and without it. Research-only for the
+    /// same reason as `cost` — an `f64` must never reach a scored artifact.
+    #[cfg(feature = "vocab-price")]
+    class_cost: Vec<f64>,
+    /// Phase 14.1: the class the next coded decision is charged to.
+    #[cfg(feature = "vocab-price")]
+    class: usize,
 }
 
 impl Default for RangeEncoder {
@@ -55,6 +66,10 @@ impl RangeEncoder {
             out: Vec::new(),
             #[cfg(feature = "vocab-price")]
             cost: 0.0,
+            #[cfg(feature = "vocab-price")]
+            class_cost: Vec::new(),
+            #[cfg(feature = "vocab-price")]
+            class: 0,
         }
     }
 
@@ -65,6 +80,10 @@ impl RangeEncoder {
             out: Vec::with_capacity(n),
             #[cfg(feature = "vocab-price")]
             cost: 0.0,
+            #[cfg(feature = "vocab-price")]
+            class_cost: Vec::new(),
+            #[cfg(feature = "vocab-price")]
+            class: 0,
         }
     }
 
@@ -81,6 +100,37 @@ impl RangeEncoder {
         self.cost
     }
 
+    /// Phase 14.1: start partitioning every subsequent coded decision across `n`
+    /// classes. Idempotent; calling it again resets the accumulators.
+    #[cfg(feature = "vocab-price")]
+    pub fn set_class_count(&mut self, n: usize) {
+        self.class_cost = vec![0.0; n];
+        self.class = 0;
+    }
+
+    /// Phase 14.1: charge the next coded decision to class `i`. Out-of-range
+    /// indices are ignored by the accumulator rather than panicking, so a
+    /// mislabelled class cannot abort a measurement pass.
+    #[cfg(feature = "vocab-price")]
+    #[inline]
+    pub fn set_class(&mut self, i: usize) {
+        self.class = i;
+    }
+
+    /// Phase 14.1: ideal code length charged to class `i`, in bits.
+    #[cfg(feature = "vocab-price")]
+    #[inline]
+    pub fn class_cost(&self, i: usize) -> f64 {
+        self.class_cost.get(i).copied().unwrap_or(0.0)
+    }
+
+    /// Phase 14.1: the whole per-class partition, in bits.
+    #[cfg(feature = "vocab-price")]
+    #[inline]
+    pub fn class_costs(&self) -> &[f64] {
+        &self.class_cost
+    }
+
     /// Code one bit with `p = P(bit = 1)` in `[1, 4095]`.
     ///
     /// Passing `p = 0` or `p = 4096` is a programming error: it would make the
@@ -95,7 +145,13 @@ impl RangeEncoder {
             // Ideal length of this binary decision: -log2 of the probability the
             // model assigned to the outcome that actually occurred.
             let pi = if bit != 0 { p } else { PROB_SCALE - p };
-            self.cost += -(pi as f64 / PROB_SCALE as f64).log2();
+            let d = -(pi as f64 / PROB_SCALE as f64).log2();
+            self.cost += d;
+            // Phase 14.1: the same quantity, also charged to the caller's class.
+            // `get_mut` keeps a default (uninstalled) accumulator free.
+            if let Some(slot) = self.class_cost.get_mut(self.class) {
+                *slot += d;
+            }
         }
         let range = self.x2 - self.x1;
         let xmid = self.x1 + ((range >> PROB_BITS) * p);
