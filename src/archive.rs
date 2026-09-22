@@ -1364,10 +1364,16 @@ impl Method {
         };
         // Phase 14.34: the temporal residual corrector, applied on top of the
         // accepted chain (including the memoryless corrector set just above).
+        //
+        // ADOPTED at enwik9 (ΔS = -156,076 B, exact, receipted), so the accepted
+        // method itself now carries it: `residual` IS the temporal-corrected
+        // composite. The `ph14-temporal` candidate and its control remain for the
+        // record -- the candidate is now the same configuration as `residual`.
         #[cfg(feature = "temporal")]
         let base = match self {
             Method::Ph14Temporal => base.with_temporal(false),
             Method::Ph14TemporalCtl => base.with_temporal(true),
+            Method::Residual | Method::ResidualCtl => base.with_temporal(false),
             _ => base,
         };
         // Phase 11: the measured adaptation ladder, applied once for every
@@ -1424,6 +1430,17 @@ impl Method {
             // The downgrade target: the accepted configuration without the layout.
             Method::Sse3 => base,
             _ => base.with_residual(false),
+        };
+        // Phase 14.34: the temporal corrector is part of the adopted chain, so the
+        // scored constructor must build it too -- court 9 asserts this function and
+        // the research `config` produce byte-identical archives, and a mechanism
+        // present in one but not the other would break exactly that. The `Sse3`
+        // downgrade target is left alone: it deliberately drops the accepted
+        // mechanisms down to the plain geometry.
+        #[cfg(feature = "temporal")]
+        let base = match self {
+            Method::Sse3 => base,
+            _ => base.with_temporal(false),
         };
         base.with_rates(&crate::context::ACCEPTED_RATES)
             .with_info(InfoMode::None)

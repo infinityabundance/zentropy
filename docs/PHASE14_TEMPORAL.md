@@ -76,34 +76,35 @@ transformed stream (6,861,620,352 trainer steps, 3,144 s):
     candidate ph14-temporal   159,849,941 B   1.2788 bpc   exact=true
     archive_delta = -165,484 B
 
-**ADOPTED at the authority rung.** The fully charged marginal is
+**ADOPTED.** The mechanism is now in the accepted chain (`temporal` is in
+`accepted-core`; `with_temporal(false)` is set for `Method::Residual` in `config`
+and for the accepted chain in `config_for`). Measured on the shipped artifacts:
 
-    ΔS = Δarchive + Δcompressor = −165,484 + 4,704 = **−160,780 B**
+    archive  160,015,425 -> 159,849,941      Δarchive  = -165,484   (enwik9, exact)
+    program      125,056 ->     129,152      Δprogram  =   +4,096   (musl accepted,submission)
+    S        160,265,537 -> 160,108,245      ΔS        = -157,292
 
-where the compressor term is the A31 two-build measurement of the mechanism's own
-marginal executable bytes (`tools/measure_binary_cost.sh temporal`: 4,704 B, which
-already includes the 360-byte embedded weight file). The mechanism is the first of
-Phase 14 to win at enwik9, and the win grows monotonically with scale: enwik6
-−1,950, enwik7 −1,675, enwik8 −10,827, enwik9 −165,484.
+`S = 2 x program + archive` is how this project charges the scored artifact, so one
+executable byte costs two bytes of `S`; `-165,484 + 2 x 4,096 = -157,292`. The
+program figure is the actual static-pie musl stub the submission ships (confirmed
+against the receipted 125,056 B in `docs/SUBMISSION_CHECKLIST.md`), not the
+host-native A31 cross-check (`measure_binary_cost.sh temporal` reports 4,704 B), and
+court 9 proves the stub's archive is byte-identical to the research driver's.
 
-The feature split that makes this measurable is deliberate: the temporal corrector
-has its own `temporal` feature (implying `learned`) rather than riding on `phase14`,
-because `phase14` also carries the rejected ctxmap/deep-PPM/hier mixer machinery and
-measuring the group would have attributed their bytes to this mechanism. `temporal`
-is in `default` (so the research gates work) but **not yet in `accepted`**, so the
-scored stub is still byte-identical today and the 4,704 B is what adopting it would
-cost.
+Caveat kept visible: the 159,849,941 archive was produced by the research driver,
+which court 9 proves is the *same configuration* as the stub; the shipped stub's own
+full-enwik9 run is still the outstanding Phase-12 authority receipt (90 minutes).
 
-Adoption itself is the next receipted step, not claimed here: moving the mechanism
-into the accepted chain means adding `temporal` to `accepted`, enabling
-`with_temporal(false)` in both `config` and `config_for` (so court 9's byte-identity
-still holds), re-gating the new baseline, and re-descending the mixer LR — Phase 9's
-standing rule after any change to the predictor.
+The win grows monotonically with scale: enwik6 -1,950, enwik7 -1,675, enwik8
+-10,827, enwik9 -165,484. Note that the 354-byte weight file is trained per corpus,
+so the *shipped* `temporal.bin` is the enwik9 artifact and is near-neutral on the
+smaller rungs -- that is the intended deployment (one binary, one corpus), not a
+regression, and the ladder receipts for enwik6/7/8 predate the adoption.
 
-**Verdict: ADOPTED at enwik9, pending the compressor's own binary cost.** The
-decisive quantity is not the archive delta alone, because the weights are charged:
+**Verdict: ADOPTED at enwik9.** The decisive quantity is not the archive delta alone,
+because the weights are charged and the program is charged twice:
 
-    enwik9, h=8:  Δarchive + model_bytes = −165,484 + 354 = −165,130 B, before binary cost.
+    enwik9, h=8:  ΔS = Δarchive + 2 × Δprogram = −165,484 + 2 × 4,096 = −157,292 B.
 
 That is the largest single-mechanism marginal of the phase, and unlike the four
 negatives it **grows** with scale.
@@ -187,15 +188,21 @@ that rung's weights. Every number above was produced with its own rung's weights
 ## Next, in order
 
 1. ~~Gate on enwik9~~ **done**: −165,484 B, `exact=true`, receipted.
-2. ~~Measure the binary cost~~ **done**: 4,704 B marginal, so ΔS = −160,780 B.
-3. **Adopt**: add `temporal` to `accepted`, enable `with_temporal(false)` in both
-   `config` and `config_for`, re-gate the new accepted baseline (enwik8 for speed,
-   then enwik9), and re-descend the mixer LR per Phase 9's standing rule.
-4. Run the confirming quantization experiment from the enwik8 reversal above.
-5. §14.35's weight-quantization sweep (Q8→Q4, entropy-coded) and the explicit
+2. ~~Measure the binary cost~~ **done**: 4,096 B on the shipped musl stub
+   (125,056 → 129,152), so ΔS = −165,484 + 2 × 4,096 = **−157,292 B**.
+3. ~~Adopt~~ **done**: `temporal` is in `accepted-core` and `with_temporal(false)` is
+   set for the accepted chain in both constructors; all 10 courts pass, including
+   court 9's submission/research byte-identity.
+4. **Outstanding**: the shipped stub's own full-enwik9 authority run (the Phase-12
+   open item), and the mixer-LR re-descend that Phase 9's standing rule requires
+   after any change to the predictor. The corrector is applied *after* the mixer and
+   APM, so it does not feed back into their adaptation and the LR optimum is not
+   expected to move — but "not expected" is not "measured".
+5. Run the confirming quantization experiment from the enwik8 reversal above.
+6. §14.35's weight-quantization sweep (Q8→Q4, entropy-coded) and the explicit
    size-aware objective. The width sweep already shows *why* they matter; they are
    not implemented.
-6. Only then grow the model — with §14.35's size term in place, so a wider net's
+7. Only then grow the model — with §14.35's size term in place, so a wider net's
    weight bill is priced into the objective rather than discovered afterwards.
 
 `S` remains authority, and the authority row above is a produced, decoded artifact.
