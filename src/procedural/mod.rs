@@ -155,7 +155,9 @@ pub mod execute;
 pub mod program;
 pub mod rank;
 pub mod residual;
+pub mod search;
 pub mod serialize;
+pub mod state;
 pub mod types;
 
 pub use execute::{execute, ExecContext};
