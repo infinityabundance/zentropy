@@ -8,6 +8,11 @@
 //!
 //! Nothing here is novel. Novelty is not the goal; measurable `ΔS < 0` is.
 
+// Phase 14.33: a two-level (family → top) mixer, measured against the flat
+// mixer at equal input count and comparable memory before any adoption.
+#[cfg(feature = "phase14")]
+pub mod hier;
+
 /// Logistic squash: map a stretched value in `[-2047, 2047]` to a 12-bit
 /// probability in `[0, 4095]`. Uses the standard PAQ piecewise table.
 #[inline]

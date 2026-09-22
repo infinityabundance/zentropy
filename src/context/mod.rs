@@ -13,6 +13,11 @@
 //! structures: they are cheap to reason about, cheap in binary size, and give
 //! every richer mechanism a fair baseline to beat.
 
+// Phase 14.30: a set-associative hashed context-map primitive, measured
+// against the direct experts at equal memory before any adoption.
+#[cfg(feature = "phase14")]
+pub mod ctxmap;
+
 use crate::mixer::{Apm, Mixer, StretchTable};
 
 /// Fixed-point multiplier used to decorrelate context and partial byte.

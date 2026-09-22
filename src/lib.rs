@@ -43,6 +43,10 @@ pub mod mixer;
 #[cfg(feature = "learned")]
 pub mod learned;
 pub mod score;
+// Phase 14.32: PPM-family experts that expose a full distribution. Screening
+// tools, gated with the rest of the Phase 14 group.
+#[cfg(feature = "phase14")]
+pub mod ppm;
 // Phase 14: the causal structural-state interface (SignalBus). Every field is a
 // pure function of bytes already coded, so it is legal on the decoded path.
 //

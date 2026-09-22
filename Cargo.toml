@@ -51,7 +51,7 @@ path = "src/bin/zentropy_sfx.rs"
 # infrastructure that is useful when developing (`parallel`, `progress`,
 # `mem-floor`). Rejected or experimental mechanisms are compiled in explicitly with
 # `--features` so they reproduce but do not cost submission bytes.
-default = ["accepted", "parallel", "progress", "mem-floor", "learned-train", "procedural", "opportunity"]
+default = ["accepted", "parallel", "progress", "mem-floor", "learned-train", "procedural", "opportunity", "phase14"]
 # The scored configuration: exactly the adopted mechanisms. The submission
 # packaging builds with `--no-default-features --features accepted` so that
 # research-plane machinery (the search layer, rayon) cannot leak into the stub.
@@ -223,6 +223,11 @@ opportunity = ["vocab-price"]
 # search and the typed residual algebra. Research-plane until a constructed
 # representation is measured to beat the accepted one on the authority corpus.
 procedural = []
+# Phase 14 screening tools: a context-map primitive, a deep PPM distribution
+# provider and a two-level mixer. Each exists to be measured against the
+# incumbent at equal memory before anything is wired into the pipeline, so the
+# whole group is gated together and outside `accepted`.
+phase14 = []
 # `submission` gates out research-only machinery from the decoder stub. The
 # scored build enables it (`--features accepted,submission`): it compiles out the
 # 95-arm research model constructor (see `Method::config_for`), whose only
