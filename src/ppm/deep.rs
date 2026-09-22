@@ -64,6 +64,38 @@
 //! expert beside the deep ladder at equal memory, and the capacity knee, and
 //! asserts only reproducibility and bounds — never a winner.
 //!
+//! ## Selective escape: measured, and rejected
+//!
+//! The depth regression above has one recorded cause — retained high-order
+//! *singleton* contexts, whose unearned escape mass costs more than the context
+//! is worth — so the obvious follow-up is a minimum-count rule: admit a context
+//! to the backoff chain only when its evidence clears a threshold ([`Selectivity`],
+//! measured by [`selective_sweep`] with [`Selectivity::OFF`] as the control row).
+//! It was measured on the 128 KiB dev slice at the incumbent's memory
+//! (138,945,024 B, so all rows occupy the same 138,936,320 B of tables), best
+//! ladder `0,1,2,3,4,6,8`:
+//!
+//! | rule | dist b/B |
+//! |------|----------|
+//! | OFF (control, incumbent PPM-C) | **2.6746** |
+//! | `min_total = 2` | 2.7156 |
+//! | `min_total = 3` | 2.7553 |
+//! | `min_total = 4` | 2.7934 |
+//! | `min_total = 6` | 2.8603 |
+//! | `min_distinct = 2` | 2.9934 |
+//! | `min_distinct = 3` | 3.1662 |
+//! | `min_distinct = 4` | 3.2795 |
+//!
+//! Every threshold **loses**, monotonically, so this is a negative and not a
+//! tuning problem: dropping sub-threshold contexts discards the sharp,
+//! correct predictions that low-evidence contexts carry (and keying on
+//! `distinct` is worse still, because it deletes exactly the deterministic
+//! single-continuation contexts). The deepest ladder `..25` (2.6844 under OFF)
+//! moves the same way (2.7158 / 2.7522 / 2.7894 / 2.8559), so singleton pruning
+//! does **not** rescue depth either: the recorded cause explains the *shape* of
+//! the regression but the cure removes signal, not just noise. The incumbent
+//! escape policy stands.
+//!
 //! ## Arithmetic
 //!
 //! The model is integer throughout: counts, escape masses and the normalised
@@ -96,6 +128,75 @@ const COUNT_CAP: u32 = 0x00FF_FFFF;
 
 /// Mask over the low 24 bits of a packed `(symbol << 24) | count` slot.
 const COUNT_MASK: u32 = 0x00FF_FFFF;
+
+// ---------------------------------------------------------------------------
+// Selective escape: a minimum-evidence rule
+// ---------------------------------------------------------------------------
+
+/// A *selective* PPM-C escape policy: a context participates in the backoff chain
+/// only when its accumulated evidence clears a threshold.
+///
+/// The incumbent policy ([`Selectivity::OFF`]) admits every present context,
+/// however thin its evidence. That is precisely the mechanism the module's own
+/// measurement blames for depth's failure: a high-order context seen exactly once
+/// has `total == 1, distinct == 1`, so it hands its one symbol half the remaining
+/// mass and charges the *other half* as escape mass it has not earned. Refusing
+/// that is a *minimum-count rule*: a sub-threshold context is skipped entirely,
+/// so it neither predicts nor charges an escape, and the mass it would have
+/// consumed flows to the next lower order instead.
+///
+/// `total` (number of live observations of the context) and `distinct` (number of
+/// distinct continuations) are the two readings of "support", and each has its
+/// own field so the sweep can separate them. The rule is integer-only and a pure
+/// function of the stored counts, so encoder and decoder apply it identically;
+/// it does not touch table geometry, so memory is bit-identical to the incumbent
+/// at the same construction budget.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Selectivity {
+    /// Minimum live observation count (`total`) an admitted context must have.
+    /// `1` admits every present context, i.e. the incumbent policy.
+    pub min_total: u32,
+    /// Minimum distinct continuations (`distinct`) an admitted context must have.
+    /// `1` admits every present context, i.e. the incumbent policy.
+    pub min_distinct: u16,
+}
+
+impl Selectivity {
+    /// The incumbent PPM-C escape policy: no context is excluded.
+    pub const OFF: Selectivity = Selectivity {
+        min_total: 1,
+        min_distinct: 1,
+    };
+
+    /// A rule keyed only on the observation count ("`total >= min_total`").
+    pub const fn on_total(min_total: u32) -> Self {
+        Selectivity {
+            min_total,
+            min_distinct: 1,
+        }
+    }
+
+    /// A rule keyed only on the number of distinct continuations
+    /// ("`distinct >= min_distinct`").
+    pub const fn on_distinct(min_distinct: u16) -> Self {
+        Selectivity {
+            min_total: 1,
+            min_distinct,
+        }
+    }
+
+    /// Whether a context with this evidence participates in the chain.
+    #[inline]
+    pub const fn admits(self, total: u32, distinct: u16) -> bool {
+        total >= self.min_total && distinct >= self.min_distinct
+    }
+}
+
+impl Default for Selectivity {
+    fn default() -> Self {
+        Selectivity::OFF
+    }
+}
 
 // ---------------------------------------------------------------------------
 // The distribution
@@ -415,6 +516,9 @@ pub struct DeepPpm {
     clock: u32,
     memory_bytes: u64,
     budget_bytes: u64,
+    /// Selective-escape policy. [`Selectivity::OFF`] is the incumbent behaviour,
+    /// so the default construction is unchanged.
+    selectivity: Selectivity,
 }
 
 impl DeepPpm {
@@ -451,6 +555,7 @@ impl DeepPpm {
             clock: 0,
             memory_bytes: m,
             budget_bytes: m,
+            selectivity: Selectivity::OFF,
         }
     }
 
@@ -534,6 +639,19 @@ impl DeepPpm {
         model
     }
 
+    /// [`Self::with_budget`] plus an explicit escape policy. The budget split is
+    /// untouched, so the memory occupied is identical to the incumbent at the
+    /// same budget; only the backoff arithmetic differs.
+    pub fn with_budget_selective(
+        ladder: &[usize],
+        budget_bytes: u64,
+        selectivity: Selectivity,
+    ) -> Self {
+        let mut model = Self::with_budget(ladder, budget_bytes);
+        model.selectivity = selectivity;
+        model
+    }
+
     /// Exact bytes occupied by the tables. Constant for the model's lifetime.
     #[inline]
     pub fn memory_bytes(&self) -> u64 {
@@ -544,6 +662,21 @@ impl DeepPpm {
     #[inline]
     pub fn budget_bytes(&self) -> u64 {
         self.budget_bytes
+    }
+
+    /// The selective-escape policy in force. [`Selectivity::OFF`] is the
+    /// incumbent behaviour.
+    #[inline]
+    pub fn selectivity(&self) -> Selectivity {
+        self.selectivity
+    }
+
+    /// Install a selective-escape policy. It affects only [`Self::distribution`]:
+    /// the tables and their accumulated counts are identical under every policy,
+    /// so the memory geometry is unchanged and this is not a silent default
+    /// change.
+    pub fn set_selectivity(&mut self, selectivity: Selectivity) {
+        self.selectivity = selectivity;
     }
 
     /// Total deterministic evictions since construction.
@@ -584,6 +717,12 @@ impl DeepPpm {
     /// uniformly. The final pass makes the sum exactly [`DIST_SCALE`] and floors
     /// every byte at one unit, so an unseen symbol receives escape mass rather
     /// than a zero (a zero would be an infinite cost and an illegal coder input).
+    ///
+    /// With a [`Selectivity`] rule other than [`Selectivity::OFF`], a context whose
+    /// evidence does not clear the threshold is *skipped*: it contributes neither
+    /// symbol mass nor escape mass, and the remaining mass passes unchanged to the
+    /// next lower order. `OFF` admits every present context, so this method is the
+    /// incumbent bit for bit when the rule is off.
     pub fn distribution(&self, ctx: &[u8]) -> Distribution {
         let mut p = [0u32; 256];
         let mut rem: u64 = DIST_SCALE as u64;
@@ -598,6 +737,11 @@ impl DeepPpm {
             };
             let (total, distinct) = lv.totals(ei);
             if total == 0 || distinct == 0 {
+                continue;
+            }
+            if !self.selectivity.admits(total, distinct) {
+                // Sub-threshold evidence: excluded from the escape calculation
+                // entirely, so it cannot charge escape mass it has not earned.
                 continue;
             }
             let den = total as u64 + distinct as u64;
@@ -763,10 +907,25 @@ pub fn existing_ppm_stat(data: &[u8], order: usize) -> ExpertStat {
 }
 
 /// Ideal codelength of a deep ladder over `data`, at a fixed construction budget.
-/// Returns the distribution metric and the one-bit-per-decision reduction.
+/// Returns the distribution metric and the one-bit-per-decision reduction. Uses
+/// the incumbent escape policy ([`Selectivity::OFF`]); for a sweep, use
+/// [`deep_stat_selective`].
 pub fn deep_stat(data: &[u8], ladder: &[usize], budget_bytes: u64) -> (DeepStat, ExpertStat) {
+    deep_stat_selective(data, ladder, budget_bytes, Selectivity::OFF)
+}
+
+/// The same measurement under an explicit selective-escape policy. The budget and
+/// therefore the table geometry are unchanged across policies: only the backoff
+/// arithmetic differs, so two [`DeepStat`]s from the same `budget_bytes` are an
+/// equal-memory comparison.
+pub fn deep_stat_selective(
+    data: &[u8],
+    ladder: &[usize],
+    budget_bytes: u64,
+    selectivity: Selectivity,
+) -> (DeepStat, ExpertStat) {
     let max_order = ladder.iter().copied().max().unwrap_or(0);
-    let mut model = DeepPpm::with_budget(ladder, budget_bytes);
+    let mut model = DeepPpm::with_budget_selective(ladder, budget_bytes, selectivity);
     let mut buf: Vec<u8> = Vec::with_capacity(data.len());
     let mut dbits = 0f64;
     let mut bbits = 0f64;
@@ -854,6 +1013,87 @@ pub fn capacity_knee(scan: &[CapPoint]) -> Option<u64> {
         }
     }
     None
+}
+
+// ---------------------------------------------------------------------------
+// Selective-escape sweep: the variant against its own control, at equal memory
+// ---------------------------------------------------------------------------
+
+/// One point of a selective-escape sweep: the rule and the codelength it produced
+/// at a fixed construction budget.
+#[derive(Clone, PartialEq, Debug)]
+pub struct SelectivityPoint {
+    pub selectivity: Selectivity,
+    pub memory_bytes: u64,
+    pub evictions: u64,
+    pub dist_bits_per_byte: f64,
+    pub bit_bits_per_byte: f64,
+}
+
+/// Measure one ladder at one fixed budget under each escape policy, in order.
+///
+/// The caller is expected to put [`Selectivity::OFF`] first: that row *is* the
+/// control, and a rule that is not measured against the incumbent at the same
+/// memory in the same run is an anecdote, not evidence. Every point shares the
+/// same [`SelectivityPoint::memory_bytes`], because the policy does not touch the
+/// budget split.
+pub fn selective_sweep(
+    data: &[u8],
+    ladder: &[usize],
+    budget_bytes: u64,
+    rules: &[Selectivity],
+) -> Vec<SelectivityPoint> {
+    rules
+        .iter()
+        .map(|&sel| {
+            let (stat, _) = deep_stat_selective(data, ladder, budget_bytes, sel);
+            SelectivityPoint {
+                selectivity: sel,
+                memory_bytes: stat.memory_bytes,
+                evictions: stat.evictions,
+                dist_bits_per_byte: stat.dist_bits_per_byte,
+                bit_bits_per_byte: stat.bit_bits_per_byte,
+            }
+        })
+        .collect()
+}
+
+/// Reproducible table for a selective-escape sweep. The [`Selectivity::OFF`] row
+/// is marked `(control)` so a reader cannot mistake the variant for a standalone
+/// claim.
+#[allow(clippy::needless_range_loop)]
+pub fn render_selective_sweep(
+    ladder: &[usize],
+    slice_bytes: usize,
+    budget_bytes: u64,
+    points: &[SelectivityPoint],
+) -> String {
+    let mut s = String::new();
+    s.push_str("deep PPM selective-escape screen\n");
+    s.push_str("(ideal codelength is a DIAGNOSTIC; S is authority)\n");
+    let ladder: Vec<String> = ladder.iter().map(|o| o.to_string()).collect();
+    s.push_str(&format!(
+        "slice: {slice_bytes} bytes   ladder: {}   budget: {budget_bytes} B\n",
+        ladder.join(",")
+    ));
+    s.push_str("  min_total  min_distinct      mem(B)   evictions  dist b/B  bit-sum b/B\n");
+    for p in points {
+        let tag = if p.selectivity == Selectivity::OFF {
+            "  (control)"
+        } else {
+            ""
+        };
+        s.push_str(&format!(
+            "  {:>9}  {:>12}  {:>10}  {:>10}  {:>8.4}  {:>9.4}{tag}\n",
+            p.selectivity.min_total,
+            p.selectivity.min_distinct,
+            p.memory_bytes,
+            p.evictions,
+            p.dist_bits_per_byte,
+            p.bit_bits_per_byte,
+        ));
+    }
+    s
 }
 
 impl Comparison {
@@ -1118,5 +1358,142 @@ mod tests {
         assert!(report.contains("existing"));
         // Print the table when run with `-- --nocapture`.
         eprintln!("{report}");
+    }
+
+    #[test]
+    fn selective_escape_excludes_sub_threshold_contexts_only() {
+        let specs = [
+            LevelSpec {
+                order: 0,
+                bucket_bits: 0,
+                slots: 8,
+            },
+            LevelSpec {
+                order: 1,
+                bucket_bits: 0,
+                slots: 4,
+            },
+        ];
+        // Order 0 is observed broadly, so it clears every threshold under test;
+        // the order-1 context "A" is the subject.
+        let base = |hits: usize| {
+            let mut m = DeepPpm::with_levels(&specs);
+            for _ in 0..200 {
+                m.observe(b"", b'a');
+                m.observe(b"", b'b');
+            }
+            for _ in 0..hits {
+                m.observe(b"A", b'x');
+            }
+            m
+        };
+
+        // A context seen exactly once (`total == 1`) is excluded by `min_total ==
+        // 2`, so the mass it would have taken for its continuation goes to lower
+        // orders instead.
+        let mut once = base(1);
+        let once_off = once.distribution(b"A");
+        let mem = once.memory_bytes();
+        let evict = once.evictions();
+        once.set_selectivity(Selectivity::on_total(2));
+        let once_sel = once.distribution(b"A");
+        assert!(
+            once_off.probability(b'x') > once_sel.probability(b'x'),
+            "the singleton context was not excluded: {} vs {}",
+            once_off.probability(b'x'),
+            once_sel.probability(b'x')
+        );
+        // The policy is presentational: it changes the distribution, never the
+        // tables or their occupancy.
+        assert_eq!(once.memory_bytes(), mem);
+        assert_eq!(once.evictions(), evict);
+
+        // The same context seen twice (`total == 2`) clears the threshold and is
+        // left exactly as the incumbent computed it.
+        let mut twice = base(2);
+        let twice_off = twice.distribution(b"A");
+        twice.set_selectivity(Selectivity::on_total(2));
+        assert_eq!(twice.distribution(b"A"), twice_off);
+
+        // A distribution under a non-trivial rule is still a legal coder input.
+        assert_eq!(once_sel.sum(), DIST_SCALE as u64);
+        for b in 0u8..=255 {
+            assert!(once_sel.probability(b) >= 1, "byte {b} has zero mass");
+        }
+
+        // Deterministic: a second identical model agrees bit for bit.
+        let mut again = base(1);
+        again.set_selectivity(Selectivity::on_total(2));
+        assert_eq!(again.distribution(b"A"), once_sel);
+    }
+
+    #[test]
+    fn selective_escape_measured_against_control_at_equal_memory() {
+        // The screen the subphase asks for: a minimum-count rule against the
+        // incumbent at the *same* memory, in the same run, with the incumbent
+        // policy as the control row. It deliberately does not assert a winner.
+        let data = slice(128 * 1024);
+        let existing = existing_ppm_stat(&data, 4);
+        let budget = existing.memory_bytes;
+
+        // The ladder the prior measurement found best (max order 8).
+        let best = DeepPpm::ladder_through(8);
+        let by_total = [
+            Selectivity::OFF,
+            Selectivity::on_total(2),
+            Selectivity::on_total(3),
+            Selectivity::on_total(4),
+            Selectivity::on_total(6),
+        ];
+        let by_distinct = [
+            Selectivity::OFF,
+            Selectivity::on_distinct(2),
+            Selectivity::on_distinct(3),
+            Selectivity::on_distinct(4),
+        ];
+        let t_points = selective_sweep(&data, &best, budget, &by_total);
+        let d_points = selective_sweep(&data, &best, budget, &by_distinct);
+
+        // And the deep ladder the prior measurement found to regress, to test the
+        // stated cause directly: if retained singletons are what hurt depth, the
+        // rule should move *this* ladder more than the shallow one.
+        let deep_ladder = DeepPpm::ladder_through(25);
+        let deep_points = selective_sweep(&data, &deep_ladder, budget, &by_total);
+
+        eprintln!(
+            "{}existing order 4 at equal memory: {:.4} dist b/B\n",
+            render_selective_sweep(&best, data.len(), budget, &t_points),
+            existing.bits_per_byte
+        );
+        eprintln!(
+            "{}",
+            render_selective_sweep(&best, data.len(), budget, &d_points)
+        );
+        eprintln!(
+            "{}",
+            render_selective_sweep(&deep_ladder, data.len(), budget, &deep_points)
+        );
+
+        // The control row is the incumbent policy; the control also agrees with
+        // the plain `deep_stat` harness. Equal memory holds *within* a sweep (one
+        // ladder, one budget); a different ladder legitimately occupies a
+        // different amount, so it is not compared across ladders.
+        let (incumbent, _) = deep_stat(&data, &best, budget);
+        for sweep in [&t_points, &d_points, &deep_points] {
+            let mem = sweep[0].memory_bytes;
+            for p in sweep {
+                assert_eq!(p.memory_bytes, mem);
+            }
+        }
+        assert_eq!(t_points[0].selectivity, Selectivity::OFF);
+        assert_eq!(t_points[0].dist_bits_per_byte, incumbent.dist_bits_per_byte);
+        assert_eq!(d_points[0].dist_bits_per_byte, incumbent.dist_bits_per_byte);
+        for p in &t_points {
+            assert!(p.dist_bits_per_byte > 0.0 && p.dist_bits_per_byte <= 8.1);
+        }
+
+        // Reproducible: a second sweep of the same inputs agrees exactly.
+        let again = selective_sweep(&data, &best, budget, &by_total);
+        assert_eq!(again, t_points, "the sweep is not reproducible");
     }
 }
