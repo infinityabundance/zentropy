@@ -1291,13 +1291,28 @@ fn cmd_train_temporal(args: &[String]) -> Result<(), String> {
         .with_temporal_lr(lr);
     let mut cm = zentropy::context::Cm::new(&cfg, n);
     let t0 = Instant::now();
-    for &byte in stream.iter() {
+    // Liveness. A silent pass over a gigabyte takes tens of minutes and is
+    // indistinguishable from a hang, so report on a fixed byte interval. This is
+    // research-plane CLI output and costs the scored path nothing.
+    let step = (n / 20).max(1);
+    let mut next = step;
+    for (i, &byte) in stream.iter().enumerate() {
         let mut mask = 0x80u32;
         while mask != 0 {
             let bit = if (byte as u32) & mask != 0 { 1 } else { 0 };
             let _ = cm.predict();
             cm.update(bit);
             mask >>= 1;
+        }
+        if i + 1 >= next {
+            eprintln!(
+                "[train-temporal] {:>5.1}%  {}/{} bytes  {:.0}s",
+                100.0 * (i + 1) as f64 / n as f64,
+                i + 1,
+                n,
+                t0.elapsed().as_secs_f64()
+            );
+            next += step;
         }
     }
     let net = cm.take_temporal_net().ok_or("train-temporal: no trainer")?;
