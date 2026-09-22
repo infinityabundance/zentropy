@@ -281,6 +281,36 @@ pub struct ModelSpec {
     pub rate: u32,
 }
 
+/// Phase 14.30: specification of one context-map expert.
+///
+/// Unlike [`ModelSpec`], a context-map expert is not a direct probability table:
+/// it is a tagged, set-associative map with a per-slot count, so its adaptation
+/// law is a separate axis ([`ctxmap::Adapt`]). It is kept as its own roster
+/// rather than folded into `specs` because its key is derived at bit time from
+/// the byte context and the partial-byte node, not from a stored `ctx` word.
+#[cfg(feature = "phase14")]
+#[derive(Debug, Clone, Copy)]
+pub struct CtxMapSpec {
+    /// Byte-context order the specialist keys on.
+    pub order: u8,
+    /// Log2 set count.
+    pub bits: u32,
+    /// Ways per set (the collision budget).
+    pub assoc: u8,
+    /// Adaptation law.
+    pub mode: ctxmap::Adapt,
+}
+
+#[cfg(feature = "phase14")]
+impl CtxMapSpec {
+    /// Exact table bytes, `sets * assoc * SLOT_BYTES`, matching
+    /// [`ctxmap::ContextMap::memory_bytes`] so the configuration projection and
+    /// the live table cannot disagree.
+    pub fn memory_bytes(&self) -> u64 {
+        (1u64 << self.bits) * (self.assoc as u64) * ctxmap::SLOT_BYTES
+    }
+}
+
 /// Information-inheritance mode for first-occupancy table slots (A3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InfoMode {
@@ -1144,6 +1174,10 @@ pub struct ModelConfig {
     pub apm3_rate: u32,
     /// A3 information-inheritance mode for first-occupancy slots.
     pub info: InfoMode,
+    /// Phase 14.30: context-map experts, appended after the PPM expert. Empty in
+    /// every accepted configuration, so the scored roster is unchanged.
+    #[cfg(feature = "phase14")]
+    pub ctxmaps: Vec<CtxMapSpec>,
 }
 
 impl ModelConfig {
@@ -1205,15 +1239,7 @@ impl ModelConfig {
 
     /// The full default floor for a corpus of `n` bytes.
     pub fn for_size(n: u64) -> Self {
-        let bits = if n <= 2_000_000 {
-            18
-        } else if n <= 20_000_000 {
-            20
-        } else if n <= 200_000_000 {
-            22
-        } else {
-            24
-        };
+        let bits = table_bits(n);
         let match_bits = bits;
         let word_bits = bits.min(22);
         // The expert ladder. Higher orders use the same table size and rely on
@@ -1305,6 +1331,8 @@ impl ModelConfig {
             apm2_rate: 7,
             apm3_rate: 7,
             info: InfoMode::None,
+            #[cfg(feature = "phase14")]
+            ctxmaps: Vec::new(),
         }
     }
 
@@ -1339,6 +1367,61 @@ impl ModelConfig {
     /// Phase 6.8: enable the bounded PPM-C byte model at the given max order.
     pub fn with_ppm(mut self, order: usize) -> Self {
         self.ppm_order = order;
+        self
+    }
+
+    /// Phase 14.30: append one context-map specialist over an order-`order` byte
+    /// context: `2^bits` sets, `assoc` ways, under `mode`.
+    ///
+    /// The specialists are appended *after* every other expert, so an existing
+    /// configuration's mixer input indices are untouched and adding a specialist
+    /// only widens the mixer at the end.
+    #[cfg(feature = "phase14")]
+    pub fn with_ctxmap(mut self, order: u8, bits: u32, assoc: u8, mode: ctxmap::Adapt) -> Self {
+        self.ctxmaps.push(CtxMapSpec {
+            order,
+            bits,
+            assoc,
+            mode,
+        });
+        self
+    }
+
+    /// Phase 14.30 representation control: drop the direct byte experts whose
+    /// order is listed and append a context-map specialist for each, so the mixer
+    /// width is **unchanged** and only the estimator's representation differs.
+    ///
+    /// This is the test the standalone screening implies: if the tagged,
+    /// count-scaled estimator is a better *representation* of an order-N context,
+    /// swapping it in at equal width should show it, and if it is merely a
+    /// differently-shaped duplicate, the swap should be neutral or worse.
+    #[cfg(feature = "phase14")]
+    pub fn with_replaced_ctxmap(
+        mut self,
+        orders: &[usize],
+        bits: u32,
+        assoc: u8,
+        mode: ctxmap::Adapt,
+    ) -> Self {
+        let mut specs = Vec::with_capacity(self.specs.len());
+        let mut layouts = Vec::with_capacity(self.specs.len());
+        for (i, s) in self.specs.iter().enumerate() {
+            if matches!(s.kind, CtxKind::Order(o) if orders.contains(&o)) {
+                continue;
+            }
+            specs.push(*s);
+            layouts.push(self.layout_for(i));
+        }
+        self.specs = specs;
+        self.layouts = layouts;
+        for o in orders {
+            self.ctxmaps.push(CtxMapSpec {
+                order: *o as u8,
+                bits,
+                assoc,
+                mode,
+            });
+        }
         self
     }
 
@@ -1677,7 +1760,26 @@ impl ModelConfig {
         if self.ppm_order > 0 {
             m += PpmModel::estimated_bytes(self.ppm_order);
         }
+        #[cfg(feature = "phase14")]
+        for c in &self.ctxmaps {
+            m += c.memory_bytes();
+        }
         m
+    }
+}
+
+/// The table-size ladder [`ModelConfig::for_size`] selects, exposed so a research
+/// candidate can scale its own tables with the corpus by exactly the same rule
+/// rather than re-deriving it (and drifting from it).
+pub fn table_bits(n: u64) -> u32 {
+    if n <= 2_000_000 {
+        18
+    } else if n <= 20_000_000 {
+        20
+    } else if n <= 200_000_000 {
+        22
+    } else {
+        24
     }
 }
 
@@ -1889,6 +1991,15 @@ pub struct Predictor {
     state_map: StateMap,
     /// Phase 6.2/6.6: per-spec indirect state machines (None for other kinds).
     indirect: Vec<Option<IndirectState>>,
+    /// Phase 14.30: context-map specialists, appended after the PPM expert.
+    #[cfg(feature = "phase14")]
+    cmaps: Vec<ctxmap::ContextMap>,
+    #[cfg(feature = "phase14")]
+    cmap_specs: Vec<CtxMapSpec>,
+    /// The order-`N` byte-context hash for each context-map specialist, refreshed
+    /// once per byte alongside `ctx`/`sctx`.
+    #[cfg(feature = "phase14")]
+    cmap_ctx: Vec<u32>,
 }
 
 impl Predictor {
@@ -1926,8 +2037,29 @@ impl Predictor {
         let sspecs_len = sspecs.len();
         let specs_len = specs.len();
         let ppm_in = if cfg.ppm_order > 0 { 1 } else { 0 };
-        let n_inputs =
-            models.len() + sspecs_len + match_tiers(cfg).len() + cfg.rep_offsets + ppm_in;
+        // Phase 14.30: build the context-map specialists. `with_ctxmap` only ever
+        // receives specs from our own roster, so a rejected construction is a bug
+        // in the configuration rather than a hostile input; it still fails loudly
+        // instead of silently degrading.
+        #[cfg(feature = "phase14")]
+        let cmaps: Vec<ctxmap::ContextMap> = cfg
+            .ctxmaps
+            .iter()
+            .map(|s| {
+                ctxmap::ContextMap::new(s.bits, s.assoc as usize, s.mode, ctxmap::DEFAULT_FAST_RATE)
+                    .unwrap_or_else(|e| panic!("ctxmap spec {s:?}: {e}"))
+            })
+            .collect();
+        #[cfg(feature = "phase14")]
+        let cmap_len = cmaps.len();
+        #[cfg(not(feature = "phase14"))]
+        let cmap_len = 0usize;
+        let n_inputs = models.len()
+            + sspecs_len
+            + match_tiers(cfg).len()
+            + cfg.rep_offsets
+            + ppm_in
+            + cmap_len;
         // Phase 6.2/6.6: build the indirect state machine for each indirect spec.
         let indirect: Vec<Option<IndirectState>> = specs
             .iter()
@@ -1962,6 +2094,12 @@ impl Predictor {
             smodels,
             sspecs,
             sctx: vec![0; sspecs_len],
+            #[cfg(feature = "phase14")]
+            cmaps,
+            #[cfg(feature = "phase14")]
+            cmap_specs: cfg.ctxmaps.clone(),
+            #[cfg(feature = "phase14")]
+            cmap_ctx: vec![0; cfg.ctxmaps.len()],
             state_map: StateMap::new(),
             indirect,
             fnwords: {
@@ -2268,6 +2406,14 @@ impl Predictor {
         if let Some(ppm) = self.ppm.as_mut() {
             ppm.set_contexts(&self.buf);
         }
+        // Phase 14.30: the byte-context hash each context-map specialist keys on.
+        // The partial-byte node is folded in at predict time, so only the byte
+        // history is computed here, once per byte.
+        #[cfg(feature = "phase14")]
+        for k in 0..self.cmap_specs.len() {
+            let o = (self.cmap_specs[k].order as usize).min(n);
+            self.cmap_ctx[k] = hash_bytes(&self.buf[n - o..n]);
+        }
     }
 
     /// Called after each byte is appended: update word state and match model.
@@ -2402,6 +2548,16 @@ impl Predictor {
             let pr = ppm.predict(self.c0 as usize);
             self.inputs[rep_base + self.rep.len()] = self.st.stretch(pr);
         }
+        // Phase 14.30: the context-map specialists, after every other expert.
+        #[cfg(feature = "phase14")]
+        {
+            let cmap_base = rep_base + self.rep.len() + if self.ppm.is_some() { 1 } else { 0 };
+            for k in 0..self.cmaps.len() {
+                let key = ((self.cmap_ctx[k] as u64) << 9) | self.c0 as u64;
+                let p = self.cmaps[k].p(key);
+                self.inputs[cmap_base + k] = self.st.stretch(p as i32);
+            }
+        }
 
         let word_open = if self.word_cur != 0 { 1usize } else { 0 };
         let rep_active = if self.rep.iter().any(|&d| d > 0) {
@@ -2529,6 +2685,14 @@ impl Predictor {
         for mm in &mut self.match_models {
             mm.update(bit);
         }
+        // Phase 14.30: observe the bit in every context-map specialist, using the
+        // same (byte context, partial-byte node) key `predict` just read. This is
+        // before `c0` advances, so encoder and decoder derive the identical key.
+        #[cfg(feature = "phase14")]
+        for k in 0..self.cmaps.len() {
+            let key = ((self.cmap_ctx[k] as u64) << 9) | self.c0 as u64;
+            self.cmaps[k].update(key, bit);
+        }
 
         self.c0 = (self.c0 << 1) | bit;
         self.bitpos += 1;
@@ -2583,6 +2747,10 @@ impl Predictor {
         }
         for mm in &self.match_models {
             m += mm.memory_bytes();
+        }
+        #[cfg(feature = "phase14")]
+        for c in &self.cmaps {
+            m += c.memory_bytes();
         }
         m + self.buf.capacity() as u64
     }

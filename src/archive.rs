@@ -313,6 +313,23 @@ pub enum Method {
     /// the whole-word vocabulary does not cover.
     #[cfg_attr(not(feature = "subword"), allow(dead_code))]
     ResidualSubword = 94,
+    /// Phase 14.30: the accepted composite plus context-map specialists at orders
+    /// 3/4/6 whose stationary estimator beat the direct experts standalone. The
+    /// screening was ideal codelength; this variant is the in-pipeline test, which
+    /// is the only one that can decide anything.
+    #[cfg_attr(not(feature = "phase14"), allow(dead_code))]
+    Ph14CtxMap = 95,
+    /// Phase 14.30 width control: the accepted composite plus three *direct*
+    /// order experts (3/4/6) at the same table scale, so the archive effect of
+    /// merely widening the mixer by three inputs is separable from the
+    /// context-map mechanism itself.
+    #[cfg_attr(not(feature = "phase14"), allow(dead_code))]
+    Ph14CtxMapCtl = 96,
+    /// Phase 14.30 representation control: the direct orders 3/4/6 are *replaced*
+    /// by context-map specialists at the same mixer width, isolating the
+    /// estimator from the width.
+    #[cfg_attr(not(feature = "phase14"), allow(dead_code))]
+    Ph14CtxMapRep = 97,
 }
 
 impl Method {
@@ -413,6 +430,9 @@ impl Method {
             Method::ResidualAffix => "residual-affix",
             Method::ResidualFirstUse => "residual-first-use",
             Method::ResidualSubword => "residual-subword",
+            Method::Ph14CtxMap => "ph14-ctxmap",
+            Method::Ph14CtxMapCtl => "ph14-ctxmap-ctl",
+            Method::Ph14CtxMapRep => "ph14-ctxmap-rep",
         }
     }
 
@@ -513,12 +533,15 @@ impl Method {
             "residual-affix" => Method::ResidualAffix,
             "residual-first-use" => Method::ResidualFirstUse,
             "residual-subword" => Method::ResidualSubword,
+            "ph14-ctxmap" => Method::Ph14CtxMap,
+            "ph14-ctxmap-ctl" => Method::Ph14CtxMapCtl,
+            "ph14-ctxmap-rep" => Method::Ph14CtxMapRep,
             _ => return None,
         })
     }
 
     /// All methods, for exhaustive exactness testing.
-    pub const ALL: [Method; 95] = [
+    pub const ALL: [Method; 98] = [
         Method::RawCm,
         Method::RawCmNoWord,
         Method::StructHoist,
@@ -614,6 +637,9 @@ impl Method {
         Method::ResidualAffix,
         Method::ResidualFirstUse,
         Method::ResidualSubword,
+        Method::Ph14CtxMap,
+        Method::Ph14CtxMapCtl,
+        Method::Ph14CtxMapRep,
     ];
 
     /// Methods that extend the **accepted Phase-4 composite parent** unchanged:
@@ -1273,6 +1299,37 @@ impl Method {
             Method::ResidualFirstUse => base.with_residual(false),
             Method::ResidualSubword => base.with_residual(false),
             Method::ResidualCtl => base.with_residual(true),
+            _ => base,
+        };
+        // Phase 14.30: the context-map specialists. Each is given the same table
+        // scale the direct ladder uses, minus five bits, so that at associativity
+        // four a specialist holds `2^(bits-5)*4*12 = 1.5 * 2^bits` bytes against a
+        // direct expert's `2 * 2^bits` — approximately equal memory, slightly
+        // under, which is the honest comparison the screening used.
+        #[cfg(feature = "phase14")]
+        let base = match self {
+            Method::Ph14CtxMap => {
+                let b = crate::context::table_bits(n as u64).saturating_sub(5);
+                base.with_ctxmap(3, b, 4, crate::context::ctxmap::Adapt::Stationary)
+                    .with_ctxmap(4, b, 4, crate::context::ctxmap::Adapt::Stationary)
+                    .with_ctxmap(6, b, 4, crate::context::ctxmap::Adapt::Stationary)
+            }
+            _ => base,
+        };
+        // Phase 14.30 width control: the same three mixer inputs as direct order
+        // experts, at the ladder's own table scale, so the mechanism is isolated.
+        #[cfg(feature = "phase14")]
+        let base = match self {
+            Method::Ph14CtxMapCtl => base.with_orders(&[3, 4, 6]),
+            Method::Ph14CtxMapRep => {
+                let b = crate::context::table_bits(n as u64).saturating_sub(5);
+                base.with_replaced_ctxmap(
+                    &[3, 4, 6],
+                    b,
+                    4,
+                    crate::context::ctxmap::Adapt::Stationary,
+                )
+            }
             _ => base,
         };
         // Phase 11: the measured adaptation ladder, applied once for every
@@ -2243,6 +2300,9 @@ fn method_from_id(id: u8) -> Option<Method> {
         92 => Method::ResidualAffix,
         93 => Method::ResidualFirstUse,
         94 => Method::ResidualSubword,
+        95 => Method::Ph14CtxMap,
+        96 => Method::Ph14CtxMapCtl,
+        97 => Method::Ph14CtxMapRep,
         _ => return None,
     })
 }
