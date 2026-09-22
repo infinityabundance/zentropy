@@ -56,9 +56,10 @@ and charged to `S`. Each rung therefore has its own weights. Every row is a real
 
 | rung | candidate | Δarchive | control (permuted weights) | weights charged |
 |---|---|---|---|---|
-| enwik6 | `ph14-temporal` | **−1,950** | +89 | 706 B |
-| enwik7 | `ph14-temporal` | **−1,675** | +1,037 | 706 B |
-| enwik8 | `ph14-temporal` | **−5,385** | (see note) | 706 B |
+| enwik6 | `ph14-temporal` (h=16) | **−1,950** | +89 | 706 B |
+| enwik7 | `ph14-temporal` (h=16) | **−1,675** | +1,037 | 706 B |
+| enwik8 | `ph14-temporal` (h=16) | **−5,385** | (not run) | 706 B |
+| enwik8 | `ph14-temporal` (h=8) | **−10,827** | (not run) | 354 B |
 
 The control *loses* on both rungs where it was run, which is the point: the gain is
 the learned sequence signal, not the extra code path or the model's mere presence.
@@ -66,11 +67,51 @@ the learned sequence signal, not the extra code path or the model's mere presenc
 **Verdict so far: ADOPT-at-enwik8, pending the authority gate.** The decisive
 quantity is not the archive delta alone (the weights are charged):
 
-    enwik8:  Δarchive + model_bytes = −5,385 + 706 = −4,679 B, before binary cost.
+    enwik8, h=8:  Δarchive + model_bytes = −10,827 + 354 = −10,473 B, before binary cost.
 
 That is the largest single-mechanism marginal of the phase, and unlike the four
-negatives it does **not** shrink with scale — enwik6 −1,950, enwik7 −1,675,
-enwik8 −5,385.
+negatives it does **not** shrink with scale.
+
+## The width sweep, and why the *quantized* model is the one to judge
+
+`tools/p14_temporal_width_sweep.sh` sweeps the hidden width in-sample on enwik7,
+every row a real encode+decode. Charged (`Δarchive + model_bytes`):
+
+| hidden | model bytes | Δarchive (enwik7) | charged |
+|---|---|---|---|
+| **8** | 354 | −1,538 | **−1,184** |
+| 16 | 706 | −1,675 | −969 |
+| 32 | 1,410 | −1,562 | −152 |
+| 64 | 2,818 | −1,552 | +1,266 |
+| 128 | 5,634 | −1,642 | +3,992 |
+
+The archive gain is essentially **flat** across a 16× width increase (−1,538 to
+−1,675, a 137 B spread) while the model bytes grow linearly, so the fully charged
+optimum is the smallest net. This is §14.35's rule made concrete: a model that
+cannot pay for its own persisted bytes does not exist.
+
+### The enwik8 reversal, and its explanation
+
+At enwik8 the width effect **reverses and amplifies**: h=8 gives −10,827 against
+h=16's −5,385, a 5,442 B difference — while the two trainers report *almost identical
+loss* (mean 0.234531 vs 0.234544 bits/bit, recent 0.243891 vs 0.243898). Training
+loss therefore does not explain the archive, which is the whole reason §14.35 insists
+on evaluating the **quantized model**, not the float checkpoint.
+
+The mechanism is consistent with quantization error accumulating across hidden
+units: inference sums `w2[j] · h[j]` over `nh` units, and each unit contributes its
+own `w1`/`w2` rounding error, so a wider net's *quantized* correction can drift
+further from the float trainer's intent even though its training loss is the same.
+The `embedded_int_net_matches_dequantized_float` test bounds that error at 8 stretch
+units for *random* features, not on the data distribution where the correction is
+load-bearing.
+
+This is stated as a **hypothesis** with a coherent mechanism, not as a proof. The
+confirming experiment — retrain h=16 on enwik8 and measure mean |float − int|
+correction on the enwik8 stream directly — is cheap and remains to be run. What is
+*measured* is the pair of numbers themselves, both `exact=true`, and the choice of
+h=8 for the authority gate is defensible on the charged metric at **both** enwik7
+and enwik8 independently.
 
 ### The out-of-sample trap, recorded
 
@@ -101,9 +142,14 @@ that rung's weights. Every number above was produced with its own rung's weights
 
 ## Next, in order
 
-1. Measure the temporal code's binary cost with the two-build protocol.
-2. Gate on enwik9 (`--candidate ph14-temporal --tune 51 --parent-archive-bytes 160015425`).
-3. Implement §14.35's quantized-weight sweep (Q8→Q4) and the size-aware objective.
-4. Only then grow the model.
+1. Gate on enwik9 at h=8 (`--candidate ph14-temporal --tune 51 --parent-archive-bytes 160015425`),
+   with a receipt. This is the authority and the only row that can adopt the mechanism.
+2. Measure the temporal code's binary cost with the two-build protocol — required
+   before `S`, since the code is `phase14`-gated and the stub is byte-identical today.
+3. Run the confirming quantization experiment from the enwik8 reversal above.
+4. §14.35's weight-quantization sweep (Q8→Q4, entropy-coded) and the explicit
+   size-aware objective. The width sweep already shows *why* they matter; they are
+   not implemented.
+5. Only then grow the model.
 
 `S` remains authority. enwik8 is evidence, not the verdict.
