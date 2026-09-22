@@ -1178,6 +1178,23 @@ pub struct ModelConfig {
     /// every accepted configuration, so the scored roster is unchanged.
     #[cfg(feature = "phase14")]
     pub ctxmaps: Vec<CtxMapSpec>,
+    /// Phase 14.34-14.36: apply the embedded **temporal** residual corrector,
+    /// which consumes causal sequence state on top of the classical/residual
+    /// path. Off in every existing configuration, so the accepted archive is
+    /// unchanged. Gated with `learned` because the type family lives there.
+    #[cfg(all(feature = "phase14", feature = "learned"))]
+    pub temporal: bool,
+    /// Phase 14.34 control: apply the temporal corrector with permuted weights
+    /// (identical size and code, no learned signal).
+    #[cfg(all(feature = "phase14", feature = "learned"))]
+    pub temporal_ctl: bool,
+    /// Phase 14.34 training (research): hidden width; >0 builds the offline
+    /// temporal trainer.
+    #[cfg(all(feature = "phase14", feature = "learned"))]
+    pub temporal_hidden: usize,
+    /// Phase 14.34 training (research): SGD learning rate.
+    #[cfg(all(feature = "phase14", feature = "learned"))]
+    pub temporal_lr: f32,
 }
 
 impl ModelConfig {
@@ -1333,6 +1350,14 @@ impl ModelConfig {
             info: InfoMode::None,
             #[cfg(feature = "phase14")]
             ctxmaps: Vec::new(),
+            #[cfg(all(feature = "phase14", feature = "learned"))]
+            temporal: false,
+            #[cfg(all(feature = "phase14", feature = "learned"))]
+            temporal_ctl: false,
+            #[cfg(all(feature = "phase14", feature = "learned"))]
+            temporal_hidden: 0,
+            #[cfg(all(feature = "phase14", feature = "learned"))]
+            temporal_lr: 0.02,
         }
     }
 
@@ -1444,6 +1469,30 @@ impl ModelConfig {
     #[cfg(feature = "learned-train")]
     pub fn with_residual_lr(mut self, lr: f32) -> Self {
         self.residual_lr = lr;
+        self
+    }
+
+    /// Phase 14.34: apply the embedded temporal residual corrector. `ctl` selects
+    /// the permuted-weight control (identical size and code, no learned signal).
+    #[cfg(all(feature = "phase14", feature = "learned"))]
+    pub fn with_temporal(mut self, ctl: bool) -> Self {
+        self.temporal = true;
+        self.temporal_ctl = ctl;
+        self
+    }
+
+    /// Phase 14.34 (research): train a temporal corrector of the given hidden
+    /// width.
+    #[cfg(all(feature = "phase14", feature = "learned-train"))]
+    pub fn with_temporal_train(mut self, hidden: usize) -> Self {
+        self.temporal_hidden = hidden;
+        self
+    }
+
+    /// Phase 14.34 (research): the temporal trainer learning rate.
+    #[cfg(all(feature = "phase14", feature = "learned-train"))]
+    pub fn with_temporal_lr(mut self, lr: f32) -> Self {
+        self.temporal_lr = lr;
         self
     }
 
@@ -2000,6 +2049,38 @@ pub struct Predictor {
     /// once per byte alongside `ctx`/`sctx`.
     #[cfg(feature = "phase14")]
     cmap_ctx: Vec<u32>,
+    /// Phase 14.34-14.36: the frozen temporal corrector (integer inference).
+    #[cfg(all(feature = "phase14", feature = "learned"))]
+    temporal: Option<crate::learned::temporal::Temporal>,
+    /// Phase 14.34 (research): the offline temporal trainer shadow.
+    #[cfg(all(feature = "phase14", feature = "learned-train"))]
+    temporal_trainer: Option<crate::learned::temporal::TemporalTrainer>,
+    /// Phase 14.34 (research): the last temporal feature vector and stretched
+    /// prior, kept so the trainer can step on them.
+    #[cfg(all(feature = "phase14", feature = "learned-train"))]
+    t_feats: crate::learned::temporal::TemporalFeats,
+    #[cfg(all(feature = "phase14", feature = "learned-train"))]
+    t_s_pr: i32,
+    /// Phase 14.34: causal sequence state feeding the temporal feature vector. It
+    /// advances identically on the encoder and decoder paths.
+    #[cfg(all(feature = "phase14", feature = "learned"))]
+    t_last_bit: i32,
+    #[cfg(all(feature = "phase14", feature = "learned"))]
+    t_bit_run: i32,
+    #[cfg(all(feature = "phase14", feature = "learned"))]
+    t_have_bit: bool,
+    #[cfg(all(feature = "phase14", feature = "learned"))]
+    t_match_run: i32,
+    #[cfg(all(feature = "phase14", feature = "learned"))]
+    t_match_ema: i32,
+    #[cfg(all(feature = "phase14", feature = "learned"))]
+    t_prev_pb_ok: i32,
+    #[cfg(all(feature = "phase14", feature = "learned"))]
+    t_prev_corr: i32,
+    #[cfg(all(feature = "phase14", feature = "learned"))]
+    t_prev_s: i32,
+    #[cfg(all(feature = "phase14", feature = "learned"))]
+    t_byte_run: i32,
 }
 
 impl Predictor {
@@ -2100,6 +2181,51 @@ impl Predictor {
             cmap_specs: cfg.ctxmaps.clone(),
             #[cfg(feature = "phase14")]
             cmap_ctx: vec![0; cfg.ctxmaps.len()],
+            #[cfg(all(feature = "phase14", feature = "learned"))]
+            temporal: {
+                if cfg.temporal {
+                    crate::learned::temporal::load().map(|n| {
+                        if cfg.temporal_ctl {
+                            n.shuffled()
+                        } else {
+                            n
+                        }
+                    })
+                } else {
+                    None
+                }
+            },
+            #[cfg(all(feature = "phase14", feature = "learned-train"))]
+            temporal_trainer: if cfg.temporal_hidden > 0 {
+                Some(crate::learned::temporal::TemporalTrainer::new(
+                    cfg.temporal_hidden,
+                    cfg.temporal_lr,
+                ))
+            } else {
+                None
+            },
+            #[cfg(all(feature = "phase14", feature = "learned-train"))]
+            t_feats: crate::learned::temporal::TemporalFeats([0; crate::learned::temporal::NT]),
+            #[cfg(all(feature = "phase14", feature = "learned-train"))]
+            t_s_pr: 0,
+            #[cfg(all(feature = "phase14", feature = "learned"))]
+            t_last_bit: 0,
+            #[cfg(all(feature = "phase14", feature = "learned"))]
+            t_bit_run: 0,
+            #[cfg(all(feature = "phase14", feature = "learned"))]
+            t_have_bit: false,
+            #[cfg(all(feature = "phase14", feature = "learned"))]
+            t_match_run: 0,
+            #[cfg(all(feature = "phase14", feature = "learned"))]
+            t_match_ema: 0,
+            #[cfg(all(feature = "phase14", feature = "learned"))]
+            t_prev_pb_ok: 0,
+            #[cfg(all(feature = "phase14", feature = "learned"))]
+            t_prev_corr: 0,
+            #[cfg(all(feature = "phase14", feature = "learned"))]
+            t_prev_s: 0,
+            #[cfg(all(feature = "phase14", feature = "learned"))]
+            t_byte_run: 0,
             state_map: StateMap::new(),
             indirect,
             fnwords: {
@@ -2651,6 +2777,63 @@ impl Predictor {
         #[cfg(not(feature = "learned"))]
         let pr = pr0;
 
+        // Phase 14.34-14.36: the temporal corrector consumes causal sequence
+        // state and corrects the classical/residual output in the same
+        // stretch-domain way the memoryless corrector does. It is applied on top
+        // of whichever path produced `pr` above.
+        #[cfg(all(feature = "phase14", feature = "learned"))]
+        let pr = {
+            #[cfg(feature = "learned-train")]
+            let training = self.temporal_trainer.is_some();
+            #[cfg(not(feature = "learned-train"))]
+            let training = false;
+            if self.temporal.is_some() || training {
+                let rep_conf = self.rep_conf.first().copied().unwrap_or(0);
+                let feats =
+                    crate::learned::temporal::extract(&crate::learned::temporal::TemporalRaw {
+                        last_bit: self.t_last_bit,
+                        bit_run: self.t_bit_run,
+                        match_run: self.t_match_run,
+                        match_ema: self.t_match_ema,
+                        rep_conf,
+                        prev_corr: self.t_prev_corr,
+                        prev_s: self.t_prev_s,
+                        s_pr: self.st.stretch(pr),
+                        s_raw: self.st.stretch(raw),
+                        s_a2: self.st.stretch(a2),
+                        bitpos: self.bitpos as i32,
+                        last_byte: self.last_byte as i32,
+                        prev_pb_ok: self.t_prev_pb_ok,
+                        byte_run: self.t_byte_run,
+                        mstate: mstate as i32,
+                        word_open: word_open != 0,
+                        rep_active: rep_active != 0,
+                    });
+                #[cfg(feature = "learned-train")]
+                let corr = match (self.temporal_trainer.as_ref(), self.temporal.as_ref()) {
+                    (Some(tr), _) => tr.corr_for(&feats),
+                    (None, Some(net)) => net.predict(&feats),
+                    _ => 0,
+                };
+                #[cfg(not(feature = "learned-train"))]
+                let corr = match self.temporal.as_ref() {
+                    Some(net) => net.predict(&feats),
+                    None => 0,
+                };
+                #[cfg(feature = "learned-train")]
+                {
+                    self.t_feats = feats;
+                    self.t_s_pr = self.st.stretch(pr);
+                }
+                self.t_prev_corr = corr;
+                let out = crate::learned::stretch_and_apply(&self.st, pr, corr);
+                self.t_prev_s = self.st.stretch(out.clamp(1, 4094));
+                out
+            } else {
+                pr
+            }
+        };
+
         self.pr = pr.clamp(1, 4094);
         self.pr as u32
     }
@@ -2663,6 +2846,29 @@ impl Predictor {
         #[cfg(feature = "learned-train")]
         if let Some(tr) = self.residual_trainer.as_mut() {
             tr.step(&self.last_feats, self.last_s_pr, bit);
+        }
+        // Phase 14.34 (research): one SGD step of the temporal trainer, before the
+        // model state advances.
+        #[cfg(all(feature = "phase14", feature = "learned-train"))]
+        if let Some(tr) = self.temporal_trainer.as_mut() {
+            tr.step(&self.t_feats, self.t_s_pr, bit);
+        }
+        // Phase 14.34: advance the causal bit-run state for the next prediction.
+        #[cfg(all(feature = "phase14", feature = "learned"))]
+        {
+            #[cfg(feature = "learned-train")]
+            let active = self.temporal.is_some() || self.temporal_trainer.is_some();
+            #[cfg(not(feature = "learned-train"))]
+            let active = self.temporal.is_some();
+            if active {
+                if self.t_have_bit && bit as i32 == self.t_last_bit {
+                    self.t_bit_run += 1;
+                } else {
+                    self.t_bit_run = 1;
+                }
+                self.t_last_bit = bit as i32;
+                self.t_have_bit = true;
+            }
         }
         self.mixer.update(bit);
         self.apm1.update(bit);
@@ -2698,6 +2904,58 @@ impl Predictor {
         self.bitpos += 1;
         if self.bitpos == 8 {
             let byte = (self.c0 & 0xff) as u8;
+            // Phase 14.34: score the match model's byte prediction for the byte
+            // that just completed and advance the byte-level sequence state. This
+            // runs before `buf` grows and before `obs_core` re-points the match
+            // models, so it reads exactly the predictions the last byte was coded
+            // under.
+            #[cfg(all(feature = "phase14", feature = "learned"))]
+            {
+                #[cfg(feature = "learned-train")]
+                let active = self.temporal.is_some() || self.temporal_trainer.is_some();
+                #[cfg(not(feature = "learned-train"))]
+                let active = self.temporal.is_some();
+                if active {
+                    let mut pb = 0u8;
+                    let mut st = 0u8;
+                    for m in &self.match_models {
+                        let s = m.state() as u8;
+                        if s >= st {
+                            st = s;
+                            pb = m.pred_byte();
+                        }
+                    }
+                    self.t_prev_pb_ok = if st > 0 {
+                        if pb == byte {
+                            1
+                        } else {
+                            -1
+                        }
+                    } else {
+                        0
+                    };
+                    match self.t_prev_pb_ok {
+                        1 => {
+                            self.t_match_run += 1;
+                            self.t_match_ema += (2047 - self.t_match_ema) >> 4;
+                            if self.t_match_ema > 2047 {
+                                self.t_match_ema = 2047;
+                            }
+                        }
+                        -1 => {
+                            self.t_match_run = 0;
+                            self.t_match_ema -= self.t_match_ema >> 3;
+                        }
+                        _ => {}
+                    }
+                    let bl = self.buf.len();
+                    if bl == 0 || self.buf[bl - 1] != byte {
+                        self.t_byte_run = 1;
+                    } else {
+                        self.t_byte_run += 1;
+                    }
+                }
+            }
             self.buf.push(byte);
             self.c0 = 1;
             self.bitpos = 0;
@@ -2719,6 +2977,22 @@ impl Predictor {
     #[cfg(feature = "learned-train")]
     pub fn residual_stats(&self) -> (u64, f64, f64) {
         self.residual_trainer
+            .as_ref()
+            .map(|t| (t.steps, t.mean_loss_bits(), t.ema_bits))
+            .unwrap_or((0, 0.0, 0.0))
+    }
+
+    /// Phase 14.34 (research): the quantized temporal network after offline
+    /// training.
+    #[cfg(all(feature = "phase14", feature = "learned-train"))]
+    pub fn take_temporal_net(&self) -> Option<crate::learned::temporal::Temporal> {
+        self.temporal_trainer.as_ref().map(|t| t.quantize())
+    }
+
+    /// Phase 14.34 (research): temporal training diagnostics.
+    #[cfg(all(feature = "phase14", feature = "learned-train"))]
+    pub fn temporal_stats(&self) -> (u64, f64, f64) {
+        self.temporal_trainer
             .as_ref()
             .map(|t| (t.steps, t.mean_loss_bits(), t.ema_bits))
             .unwrap_or((0, 0.0, 0.0))
@@ -2751,6 +3025,10 @@ impl Predictor {
         #[cfg(feature = "phase14")]
         for c in &self.cmaps {
             m += c.memory_bytes();
+        }
+        #[cfg(all(feature = "phase14", feature = "learned"))]
+        if let Some(t) = &self.temporal {
+            m += t.model_bytes();
         }
         m + self.buf.capacity() as u64
     }
@@ -2798,6 +3076,18 @@ impl Cm {
     #[cfg(feature = "learned-train")]
     pub fn residual_stats(&self) -> (u64, f64, f64) {
         self.predictor.residual_stats()
+    }
+
+    /// Phase 14.34 (research): the trained temporal network.
+    #[cfg(all(feature = "phase14", feature = "learned-train"))]
+    pub fn take_temporal_net(&self) -> Option<crate::learned::temporal::Temporal> {
+        self.predictor.take_temporal_net()
+    }
+
+    /// Phase 14.34 (research): temporal training diagnostics.
+    #[cfg(all(feature = "phase14", feature = "learned-train"))]
+    pub fn temporal_stats(&self) -> (u64, f64, f64) {
+        self.predictor.temporal_stats()
     }
 }
 

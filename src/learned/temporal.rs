@@ -1,72 +1,110 @@
-//! Phase 8 — the learned residual corrector.
+//! Phase 14.34–14.36 — the **temporal** residual corrector.
 //!
-//! The classical chain (mixer -> APM1 -> APM2 -> APM3) already produces a
-//! calibrated probability. This module adds a small, **offline-trained**,
-//! quantized network that consumes the *classical outputs as features* and emits
-//! a logit correction — the T2 cascade: the learned capacity is spent on the
-//! residual the classical model leaves, never on re-learning text from scratch.
+//! The Phase-8 corrector is *memoryless*: its features are the classical outputs
+//! for the current bit only, so it can sharpen a calibrated probability but it
+//! cannot see a run. This module adds a second, independent corrector whose
+//! features are **causal sequence state** — the history the classical chain
+//! already carries but never exposes as a feature vector:
 //!
-//! Scored-path properties:
+//! * the previous coded bit and the length of the current bit run;
+//! * how long the match model's byte predictions have been correct, and a
+//!   smoothed correctness level;
+//! * the repeat-offset confidence and whether a repeat was active;
+//! * the correction *this* corrector emitted for the previous bit (a genuine
+//!   recurrent feature);
+//! * the previous bit's applied probability;
+//! * the previous byte's class and whether it repeated.
 //!
-//! * inference is fixed-point integer arithmetic (deterministic, no FP on the
-//!   decode path);
-//! * the weights are model data and their bytes are charged to `S`;
-//! * training is research-plane only and lives behind the `learned` feature.
+//! Every one of these is a pure function of the bytes already coded, so it is
+//! derivable on the decoder path; the state machine that maintains them is
+//! advanced identically by encoder and decoder.
+//!
+//! Scored-path properties mirror `crate::learned`: inference is fixed-point
+//! integer arithmetic (no FP on the decode path), the weights are model data
+//! charged to `S`, and the trainer is research-plane (`learned-train`).
+//!
+//! This is a *separate* type family from `crate::learned` on purpose: it is a
+//! research-plane corrector and must not perturb the accepted memoryless one,
+//! even at the cost of duplicating the small `Net`/`Trainer` pattern.
 
-use crate::mixer::{squash, StretchTable};
+/// Temporal feature-vector width.
+pub const NT: usize = 20;
 
-// Phase 14.34-14.36: the temporal residual corrector. A separate type family so
-// the accepted memoryless corrector above is never perturbed; see its module
-// docs. Gated with `phase14` (research-plane) in addition to the enclosing
-// `learned` gate, so its embedded weight bytes are *not* charged to `S` by a
-// scored build that enables `learned` but not `phase14`.
-#[cfg(feature = "phase14")]
-pub mod temporal;
-
-/// Feature-vector width.
-pub const NF: usize = 12;
-
-/// The classical outputs and state a residual step may condition on. All
-/// `s_*` values are already stretched logits in `[-2047, 2047]`.
-pub struct Raw14 {
-    pub s_raw: i32,
-    pub s_a1: i32,
-    pub s_a2: i32,
-    pub s_a3: i32,
+/// The causal sequence state a temporal step may condition on. Scalars that are
+/// bounded by construction (`last_bit`, `prev_pb_ok`) are already in `{-1,0,1}`;
+/// the rest are raw integer state that `extract` quantizes.
+pub struct TemporalRaw {
+    /// Previous coded bit: `+1`, `0` before any bit, or `-1`.
+    pub last_bit: i32,
+    /// Length of the run of identical recent coded bits.
+    pub bit_run: i32,
+    /// Consecutive byte-level match predictions that were correct.
+    pub match_run: i32,
+    /// Smoothed match correctness in `[-2047, 2047]`.
+    pub match_ema: i32,
+    /// Best repeat-offset confidence in `[-2047, 2047]`.
+    pub rep_conf: i32,
+    /// The correction this corrector emitted for the previous bit, in stretch
+    /// units.
+    pub prev_corr: i32,
+    /// Stretch of the probability applied to the previous bit.
+    pub prev_s: i32,
+    /// Stretch of the current pre-correction probability.
     pub s_pr: i32,
-    pub mstate: i32,
-    /// +1/-1 if a match is active and predicts a 1/0 next bit, else 0.
-    pub match_dir: i32,
+    /// Stretch of the mixer output for this bit.
+    pub s_raw: i32,
+    /// Stretch of the APM2 output for this bit.
+    pub s_a2: i32,
+    /// Bit position within the current byte, `0..8`.
     pub bitpos: i32,
+    /// The most recent coded byte.
+    pub last_byte: i32,
+    /// Whether the last byte matched the match model's prediction: `+1`/`-1`,
+    /// `0` when no match was active.
+    pub prev_pb_ok: i32,
+    /// Length of the run of identical trailing bytes.
+    pub byte_run: i32,
+    /// The match-model state for the current bit.
+    pub mstate: i32,
     pub word_open: bool,
     pub rep_active: bool,
 }
 
-/// The feature vector, quantized to `i8` (values fit comfortably in `[-32, 31]`).
+/// The temporal feature vector, quantized to `i8` in `[-32, 31]`.
 #[derive(Clone, Copy)]
-pub struct Feats(pub [i8; NF]);
+pub struct TemporalFeats(pub [i8; NT]);
 
 #[inline]
 fn q(x: i32) -> i8 {
     x.clamp(-32, 31) as i8
 }
 
-/// Extract the classical-residual feature vector.
-pub fn extract(r: &Raw14) -> Feats {
-    let mut f = [0i8; NF];
-    f[0] = q(r.s_raw >> 6);
-    f[1] = q(r.s_a1 >> 6);
-    f[2] = q(r.s_a2 >> 6);
-    f[3] = q(r.s_a3 >> 6);
-    f[4] = q(r.s_pr >> 6);
-    f[5] = q(r.mstate - 1);
-    f[6] = (r.match_dir.clamp(-1, 1) * 2) as i8;
-    f[7] = q(r.bitpos - 4);
-    f[8] = if r.word_open { 1 } else { -1 };
-    f[9] = if r.rep_active { 1 } else { -1 };
-    f[10] = q((r.s_a2 - r.s_a1) >> 6);
-    f[11] = q((r.s_raw - r.s_pr) >> 6);
-    Feats(f)
+/// Extract the temporal feature vector. All features are causal: they depend only
+/// on state derived from bytes already coded.
+pub fn extract(r: &TemporalRaw) -> TemporalFeats {
+    let mut f = [0i8; NT];
+    f[0] = r.last_bit.clamp(-1, 1) as i8;
+    f[1] = q(r.bit_run);
+    f[2] = q(r.match_run);
+    f[3] = q(r.match_ema >> 6);
+    f[4] = q(r.rep_conf >> 6);
+    f[5] = q(r.prev_corr >> 4);
+    f[6] = q(r.prev_s >> 6);
+    f[7] = q(r.s_pr >> 6);
+    f[8] = q(r.bitpos);
+    let c = (r.last_byte & 0xff) as u8;
+    f[9] = if c.is_ascii_alphabetic() { 1 } else { -1 };
+    f[10] = if c.is_ascii_digit() { 1 } else { -1 };
+    f[11] = if c == b' ' || c == b'\t' { 1 } else { -1 };
+    f[12] = if c == b'\n' { 1 } else { -1 };
+    f[13] = r.prev_pb_ok.clamp(-1, 1) as i8;
+    f[14] = q(r.byte_run);
+    f[15] = q(r.s_raw >> 6);
+    f[16] = q(r.s_a2 >> 6);
+    f[17] = q(r.mstate - 1);
+    f[18] = if r.word_open { 1 } else { -1 };
+    f[19] = if r.rep_active { 1 } else { -1 };
+    TemporalFeats(f)
 }
 
 /// Weight fixed-point scale (a stored `i16` is `value * 256`).
@@ -74,9 +112,8 @@ pub const WSCALE: i32 = 256;
 /// Clamp on the logit correction, in stretch units.
 pub const CORR_CLAMP: i32 = 1024;
 
-/// splitmix64: a deterministic, dependency-free 64-bit mixer. The offline
-/// trainer is the only caller, so it is gated with the trainer rather than left
-/// as dead code in the scored build.
+/// splitmix64: a deterministic, dependency-free 64-bit mixer for the offline
+/// trainer. Gated with the trainer exactly as `crate::learned::splitmix64` is.
 #[cfg(feature = "learned-train")]
 #[inline]
 fn splitmix64(mut x: u64) -> u64 {
@@ -87,11 +124,11 @@ fn splitmix64(mut x: u64) -> u64 {
     z ^ (z >> 31)
 }
 
-/// A frozen, quantized residual network: one hidden layer of `nh` units.
+/// A frozen, quantized temporal network: one hidden layer of `nh` units.
 #[derive(Clone)]
-pub struct Net {
+pub struct Temporal {
     pub nh: usize,
-    /// `w1[j*NF + i]`, `value * WSCALE`.
+    /// `w1[j*NT + i]`, `value * WSCALE`.
     pub w1: Vec<i16>,
     pub b1: Vec<i16>,
     /// `w2[j]`, `value * WSCALE`.
@@ -99,11 +136,11 @@ pub struct Net {
     pub b2: i16,
 }
 
-impl Net {
+impl Temporal {
     pub fn zero(nh: usize) -> Self {
-        Net {
+        Temporal {
             nh,
-            w1: vec![0; nh * NF],
+            w1: vec![0; nh * NT],
             b1: vec![0; nh],
             w2: vec![0; nh],
             b2: 0,
@@ -112,16 +149,15 @@ impl Net {
 
     /// Integer forward pass; returns the logit correction in stretch units.
     ///
-    /// Weights are stored as `value * WSCALE`, so an accumulator is `WSCALE`
-    /// times the real pre-activation; the `>> 8` shifts undo that. Biases are in
-    /// the same stored units and must NOT be scaled again.
+    /// Identical arithmetic to `crate::learned::Net::forward`, over `NT` features
+    /// rather than `NF`.
     #[inline]
-    pub fn forward(&self, f: &Feats) -> i32 {
+    pub fn predict(&self, f: &TemporalFeats) -> i32 {
         let mut out: i32 = self.b2 as i32;
         for j in 0..self.nh {
             let mut z: i32 = self.b1[j] as i32;
-            let row = j * NF;
-            for i in 0..NF {
+            let row = j * NT;
+            for i in 0..NT {
                 z += self.w1[row + i] as i32 * f.0[i] as i32;
             }
             let h = (z >> 8).clamp(-127, 127);
@@ -130,15 +166,16 @@ impl Net {
         (out >> 8).clamp(-CORR_CLAMP, CORR_CLAMP)
     }
 
+    /// The weight bytes, charged to `S` when this net is embedded.
     pub fn model_bytes(&self) -> u64 {
         (self.w1.len() + self.b1.len() + self.w2.len() + 1) as u64 * 2
     }
 
-    /// Serialize: `magic(4) | nh(u16) | b2(i16) | b1[nh] | w2[nh] | w1[nh*NF]`,
+    /// Serialize: `magic(4) | nh(u16) | b2(i16) | b1[nh] | w2[nh] | w1[nh*NT]`,
     /// all little-endian `i16`.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut v = Vec::with_capacity(8 + self.model_bytes() as usize);
-        v.extend_from_slice(b"ZRN1");
+        v.extend_from_slice(b"ZTP1");
         v.extend_from_slice(&(self.nh as u16).to_le_bytes());
         v.extend_from_slice(&self.b2.to_le_bytes());
         for &x in &self.b1 {
@@ -153,15 +190,15 @@ impl Net {
         v
     }
 
-    pub fn from_bytes(b: &[u8]) -> Option<Net> {
-        if b.len() < 8 || &b[0..4] != b"ZRN1" {
+    pub fn from_bytes(b: &[u8]) -> Option<Temporal> {
+        if b.len() < 8 || &b[0..4] != b"ZTP1" {
             return None;
         }
         let nh = u16::from_le_bytes([b[4], b[5]]) as usize;
         if nh == 0 || nh > 4096 {
             return None;
         }
-        let need = 6 + 2 * (1 + nh + nh + nh * NF);
+        let need = 6 + 2 * (1 + nh + nh + nh * NT);
         if b.len() < need {
             return None;
         }
@@ -174,21 +211,21 @@ impl Net {
         let b2 = rd();
         let b1: Vec<i16> = (0..nh).map(|_| rd()).collect();
         let w2: Vec<i16> = (0..nh).map(|_| rd()).collect();
-        let w1: Vec<i16> = (0..nh * NF).map(|_| rd()).collect();
-        Some(Net { nh, w1, b1, w2, b2 })
+        let w1: Vec<i16> = (0..nh * NT).map(|_| rd()).collect();
+        Some(Temporal { nh, w1, b1, w2, b2 })
     }
 
-    /// Phase 8.7 control: a deterministic permutation of the weight arrays that
-    /// preserves the architecture, model size and code path but destroys the
-    /// learned signal.
-    pub fn shuffled(&self) -> Net {
+    /// The mandatory negative control: a deterministic permutation of the weight
+    /// arrays that preserves the architecture, model size and code path but
+    /// destroys the learned signal. Identical construction to
+    /// `crate::learned::Net::shuffled`.
+    pub fn shuffled(&self) -> Temporal {
         let shuf = |v: &[i16]| -> Vec<i16> {
             let n = v.len();
             if n == 0 {
                 return Vec::new();
             }
             let mut out = vec![0i16; n];
-            // A fixed derangement by index: out[(i*k+c) % n] = v[i].
             let k = 7usize;
             let c = 3usize;
             for i in 0..n {
@@ -196,7 +233,7 @@ impl Net {
             }
             out
         };
-        Net {
+        Temporal {
             nh: self.nh,
             w1: shuf(&self.w1),
             b1: shuf(&self.b1),
@@ -206,21 +243,10 @@ impl Net {
     }
 }
 
-/// Floating-point shadow used only by the offline trainer. The trainer mirrors
-/// the integer forward pass so the quantized network it produces behaves as it
-/// was trained.
-///
-/// **Research-plane, and gated out of the scored build** (`learned-train`). It is
-/// the only code in the tree that calls a libm function, and shipping it in the
-/// stub would make the scored binary depend on the host's `libm` for no
-/// behaviour at all: the stub never constructs a trainer, so the code could not
-/// execute. Gating it is therefore two things at once — a measured reduction in
-/// `S`, and a *structural* guarantee that the judged binary's output cannot
-/// depend on a floating-point library implementation. Determination by argument
-/// ("the integer path never reads a float") is weaker than a symbol table with
-/// no `log2f` in it.
+/// Floating-point shadow used only by the offline trainer, mirroring
+/// `crate::learned::Trainer`. Research-plane and gated out of the scored build.
 #[cfg(feature = "learned-train")]
-pub struct Trainer {
+pub struct TemporalTrainer {
     pub nh: usize,
     pub w1: Vec<f32>,
     pub b1: Vec<f32>,
@@ -228,26 +254,24 @@ pub struct Trainer {
     pub b2: f32,
     pub lr: f32,
     pub steps: u64,
-    /// Running log loss in bits per bit, for the training receipt.
     pub loss_bits: f64,
-    /// Exponential moving average of the recent loss (divergence detector).
     pub ema_bits: f64,
 }
 
 #[cfg(feature = "learned-train")]
-impl Trainer {
+impl TemporalTrainer {
     pub fn new(nh: usize, lr: f32) -> Self {
-        // Small deterministic random weights: a zero-initialised hidden layer has
-        // zero gradient through `w1`, which would leave only a constant bias.
-        let mut s: u64 = 0x1234_5678_9ABC_DEF0;
+        // A different seed from the memoryless trainer, so the two are not
+        // accidentally correlated initialisations.
+        let mut s: u64 = 0x7A17_5EED_C0DE_1234;
         let mut rng = || -> f32 {
             s = splitmix64(s);
             ((s >> 40) as f32 / (1u64 << 24) as f32) - 0.5
         };
-        let w1 = (0..nh * NF).map(|_| rng() * 0.2).collect();
+        let w1 = (0..nh * NT).map(|_| rng() * 0.2).collect();
         let b1 = vec![0.0; nh];
         let w2 = (0..nh).map(|_| rng() * 0.2).collect();
-        Trainer {
+        TemporalTrainer {
             nh,
             w1,
             b1,
@@ -260,21 +284,18 @@ impl Trainer {
         }
     }
 
-    /// Decaying learning rate and a hard weight bound keep the online trainer
-    /// stable over hundreds of millions of steps.
     #[inline]
     fn lr_now(&self) -> f32 {
         self.lr / (1.0 + self.steps as f32 / 2_000_000.0)
     }
 
-    /// Forward in `f32`; returns `(hidden, correction)`.
     #[inline]
-    fn forward_raw(&self, f: &Feats) -> (Vec<f32>, f32) {
+    fn forward_raw(&self, f: &TemporalFeats) -> (Vec<f32>, f32) {
         let mut h = vec![0.0f32; self.nh];
         for j in 0..self.nh {
             let mut z = self.b1[j];
-            let row = j * NF;
-            for i in 0..NF {
+            let row = j * NT;
+            for i in 0..NT {
                 z += self.w1[row + i] * f.0[i] as f32;
             }
             h[j] = z.clamp(-127.0, 127.0);
@@ -287,18 +308,16 @@ impl Trainer {
     }
 
     /// One SGD step. `s_pr` is the pre-correction stretched logit; `bit` the
-    /// observed bit. Returns the applied probability loss in bits (so training
-    /// can be tracked without floating-log tables).
+    /// observed bit. Returns the applied loss in bits.
     #[inline]
-    pub fn step(&mut self, f: &Feats, s_pr: i32, bit: u32) -> f64 {
+    pub fn step(&mut self, f: &TemporalFeats, s_pr: i32, bit: u32) -> f64 {
         let (h, out) = self.forward_raw(f);
         let corr = out.round() as i32;
         let d = (s_pr + corr).clamp(-2047, 2047);
-        let p = squash(d) as f32 / 4096.0;
+        let p = crate::mixer::squash(d) as f32 / 4096.0;
         let y = bit as f32;
         // dL/dcorr in stretch units. 257 stretch units ~ 1 natural logit.
         let dl = (p - y) / 257.0;
-        // Clamp the correction's gradient only when the output saturated.
         let dout = if out.abs() < CORR_CLAMP as f32 {
             dl
         } else {
@@ -316,13 +335,12 @@ impl Trainer {
             } else {
                 0.0
             };
-            let row = j * NF;
-            for i in 0..NF {
+            let row = j * NT;
+            for i in 0..NT {
                 self.w1[row + i] -= lr * dz * f.0[i] as f32;
             }
             self.b1[j] -= lr * dz;
         }
-        // Bound every weight: an unbounded online corrector diverges.
         const WMAX: f32 = 4.0;
         for w in self.w1.iter_mut() {
             *w = w.clamp(-WMAX, WMAX);
@@ -351,18 +369,19 @@ impl Trainer {
         bits as f64
     }
 
-    /// The rounded correction, for the training forward pass (mirrors `Net::forward`
-    /// closely enough that the quantized net behaves as trained).
+    /// The rounded correction, for the training forward pass (mirrors
+    /// `Temporal::predict` closely enough that the quantized net behaves as
+    /// trained).
     #[inline]
-    pub fn corr_for(&self, f: &Feats) -> i32 {
+    pub fn corr_for(&self, f: &TemporalFeats) -> i32 {
         let (_, out) = self.forward_raw(f);
         out.round() as i32
     }
 
-    /// Quantize to the integer network with `i16` weights (T9).
-    pub fn quantize(&self) -> Net {
+    /// Quantize to the integer network with `i16` weights.
+    pub fn quantize(&self) -> Temporal {
         let qw = |x: f32| -> i16 { (x * WSCALE as f32).round().clamp(-32767.0, 32767.0) as i16 };
-        Net {
+        Temporal {
             nh: self.nh,
             w1: self.w1.iter().map(|&x| qw(x)).collect(),
             b1: self.b1.iter().map(|&x| qw(x)).collect(),
@@ -380,55 +399,51 @@ impl Trainer {
     }
 }
 
-/// Convenience for the predictor: predict the correction with either path.
-#[inline]
-pub fn stretch_and_apply(st: &StretchTable, pr: i32, corr: i32) -> i32 {
-    squash((st.stretch(pr) + corr).clamp(-2047, 2047))
-}
+/// The frozen, offline-trained temporal weights, embedded in the scored binary.
+/// Generated by `zentropy train-temporal`; an empty file disables the corrector.
+pub const WEIGHTS: &[u8] = include_bytes!("temporal.bin");
 
-/// The frozen, offline-trained weights, embedded in the scored binary. The file
-/// is generated by `zentropy train-residual`; an empty file disables the
-/// corrector.
-pub const WEIGHTS: &[u8] = include_bytes!("weights.bin");
-
-/// Load the embedded network, if any.
+/// Load the embedded temporal network, if any.
 #[inline]
-pub fn load() -> Option<Net> {
-    Net::from_bytes(WEIGHTS)
+pub fn load() -> Option<Temporal> {
+    Temporal::from_bytes(WEIGHTS)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn feats() -> Feats {
-        Feats([1, -2, 3, 0, 4, 1, 2, -1, 1, -1, 5, -3])
+    fn feats() -> TemporalFeats {
+        TemporalFeats([
+            1, -2, 3, 0, 4, 1, 2, -1, 1, -1, 5, -3, 1, 2, -1, 1, 0, 3, 1, -1,
+        ])
     }
 
     #[test]
     fn zero_net_is_neutral() {
-        let n = Net::zero(8);
-        assert_eq!(n.forward(&feats()), 0);
+        let n = Temporal::zero(8);
+        assert_eq!(n.predict(&feats()), 0);
     }
 
     #[test]
     fn serialization_roundtrips() {
-        let mut n = Net::zero(4);
+        let mut n = Temporal::zero(4);
         n.w1[0] = 1234;
         n.b2 = -77;
         n.w2[3] = 9;
         let b = n.to_bytes();
-        let m = Net::from_bytes(&b).unwrap();
+        let m = Temporal::from_bytes(&b).unwrap();
         assert_eq!(m.nh, 4);
         assert_eq!(m.w1[0], 1234);
         assert_eq!(m.b2, -77);
         assert_eq!(m.w2[3], 9);
-        assert!(Net::from_bytes(b"short").is_none());
+        assert!(Temporal::from_bytes(b"short").is_none());
+        assert!(Temporal::from_bytes(b"ZTP1").is_none());
     }
 
     #[test]
     fn shuffled_changes_weights_but_keeps_size() {
-        let mut n = Net::zero(6);
+        let mut n = Temporal::zero(6);
         for (i, x) in n.w1.iter_mut().enumerate() {
             *x = i as i16;
         }
@@ -438,29 +453,55 @@ mod tests {
     }
 
     #[test]
+    fn extract_is_causal_and_bounded() {
+        let f = extract(&TemporalRaw {
+            last_bit: -1,
+            bit_run: 1000,
+            match_run: 4,
+            match_ema: 2047,
+            rep_conf: -2047,
+            prev_corr: 1024,
+            prev_s: 900,
+            s_pr: -900,
+            s_raw: 2047,
+            s_a2: -2047,
+            bitpos: 7,
+            last_byte: b'\n' as i32,
+            prev_pb_ok: 1,
+            byte_run: 500,
+            mstate: 3,
+            word_open: true,
+            rep_active: false,
+        });
+        assert!(f.0.iter().all(|&x| (-32..=31).contains(&(x as i32))));
+        assert_eq!(f.0[12], 1); // newline
+        assert_eq!(f.0[19], -1); // no repeat
+    }
+
+    #[test]
     #[cfg(feature = "learned-train")]
     fn embedded_int_net_matches_dequantized_float() {
         // If this fails, the integer runtime and the float trainer disagree and
-        // the trained network cannot be shipped.
+        // the trained temporal network cannot be shipped.
         let Some(n) = load() else {
             return;
         };
-        let mut s = 0xDEAD_BEEFu64;
+        let mut s = 0xC0FF_EE00u64;
         let mut maxdiff = 0i32;
         let mut worst = String::new();
         for _ in 0..400 {
-            let mut f = [0i8; NF];
+            let mut f = [0i8; NT];
             for x in f.iter_mut() {
                 s = splitmix64(s);
                 *x = ((s % 64) as i32 - 32) as i8;
             }
-            let f = Feats(f);
-            let intc = n.forward(&f);
+            let f = TemporalFeats(f);
+            let intc = n.predict(&f);
             let mut h = vec![0f32; n.nh];
             for j in 0..n.nh {
                 let mut z = n.b1[j] as f32 / WSCALE as f32;
-                for i in 0..NF {
-                    z += (n.w1[j * NF + i] as f32 / WSCALE as f32) * f.0[i] as f32;
+                for i in 0..NT {
+                    z += (n.w1[j * NT + i] as f32 / WSCALE as f32) * f.0[i] as f32;
                 }
                 h[j] = z.clamp(-127.0, 127.0);
             }
@@ -479,7 +520,7 @@ mod tests {
         let mw2 = n.w2.iter().map(|x| x.abs()).max().unwrap_or(0);
         assert!(
             maxdiff <= 8,
-            "integer/float residual mismatch {maxdiff} nh={} max|w1|={mw1} max|w2|={mw2} b2={} worst: {worst}",
+            "integer/float temporal mismatch {maxdiff} nh={} max|w1|={mw1} max|w2|={mw2} b2={} worst: {worst}",
             n.nh,
             n.b2
         );
@@ -488,14 +529,12 @@ mod tests {
     #[test]
     #[cfg(feature = "learned-train")]
     fn trainer_learns_a_constant_bias() {
-        // With zero features and a target bit always 1, the corrector must learn
-        // a positive correction (the bounded global bias reaches +4).
-        let f = Feats([0; NF]);
-        let mut t = Trainer::new(4, 5.0);
+        let f = TemporalFeats([0; NT]);
+        let mut t = TemporalTrainer::new(4, 5.0);
         for _ in 0..50_000 {
             t.step(&f, 0, 1);
         }
         let net = t.quantize();
-        assert!(net.forward(&f) > 0, "correction did not become positive");
+        assert!(net.predict(&f) > 0, "correction did not become positive");
     }
 }

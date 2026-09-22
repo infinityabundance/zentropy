@@ -330,6 +330,17 @@ pub enum Method {
     /// estimator from the width.
     #[cfg_attr(not(feature = "phase14"), allow(dead_code))]
     Ph14CtxMapRep = 97,
+    /// Phase 14.34: the accepted composite plus the **temporal** residual
+    /// corrector, whose features are causal sequence state (bit runs, match
+    /// correctness, the corrector's own last correction) rather than the
+    /// memoryless corrector's instantaneous classical outputs.
+    #[cfg_attr(not(feature = "phase14"), allow(dead_code))]
+    Ph14Temporal = 98,
+    /// Phase 14.34 control: the same corrector with deterministically permuted
+    /// weights — identical architecture, model size and code path, no learned
+    /// signal.
+    #[cfg_attr(not(feature = "phase14"), allow(dead_code))]
+    Ph14TemporalCtl = 99,
 }
 
 impl Method {
@@ -433,6 +444,8 @@ impl Method {
             Method::Ph14CtxMap => "ph14-ctxmap",
             Method::Ph14CtxMapCtl => "ph14-ctxmap-ctl",
             Method::Ph14CtxMapRep => "ph14-ctxmap-rep",
+            Method::Ph14Temporal => "ph14-temporal",
+            Method::Ph14TemporalCtl => "ph14-temporal-ctl",
         }
     }
 
@@ -536,12 +549,14 @@ impl Method {
             "ph14-ctxmap" => Method::Ph14CtxMap,
             "ph14-ctxmap-ctl" => Method::Ph14CtxMapCtl,
             "ph14-ctxmap-rep" => Method::Ph14CtxMapRep,
+            "ph14-temporal" => Method::Ph14Temporal,
+            "ph14-temporal-ctl" => Method::Ph14TemporalCtl,
             _ => return None,
         })
     }
 
     /// All methods, for exhaustive exactness testing.
-    pub const ALL: [Method; 98] = [
+    pub const ALL: [Method; 100] = [
         Method::RawCm,
         Method::RawCmNoWord,
         Method::StructHoist,
@@ -640,6 +655,8 @@ impl Method {
         Method::Ph14CtxMap,
         Method::Ph14CtxMapCtl,
         Method::Ph14CtxMapRep,
+        Method::Ph14Temporal,
+        Method::Ph14TemporalCtl,
     ];
 
     /// Methods that extend the **accepted Phase-4 composite parent** unchanged:
@@ -695,6 +712,8 @@ impl Method {
                 | Method::ResidualAffix
                 | Method::ResidualFirstUse
                 | Method::ResidualSubword
+                | Method::Ph14Temporal
+                | Method::Ph14TemporalCtl
         )
     }
 
@@ -722,6 +741,10 @@ impl Method {
                 | Method::ReorderFullResidual
                 | Method::Residual
                 | Method::ResidualCtl
+                // Phase 14.34: the temporal-corrected composite is measured on
+                // exactly the accepted Phase-6 parent (extra SSE stage).
+                | Method::Ph14Temporal
+                | Method::Ph14TemporalCtl
                 | Method::Collision
                 | Method::CollisionCtl
                 | Method::Ppm
@@ -1095,6 +1118,10 @@ impl Method {
             Method::ReorderFull => Some(Order::Full),
             Method::ReorderFullResidual => Some(Order::FullResidual),
             Method::Residual | Method::ResidualCtl => Some(Order::Full),
+            // Phase 14.34: the temporal-corrected composite codes the same
+            // reordered stream as its `residual` parent, so the comparison
+            // isolates the corrector.
+            Method::Ph14Temporal | Method::Ph14TemporalCtl => Some(Order::Full),
             // Phase 10.4: the same composite and the same article layout; only
             // the token id assignment differs, so the comparison is clean.
             Method::ResidualMtf | Method::ResidualMoveToSecond => Some(Order::Full),
@@ -1298,6 +1325,9 @@ impl Method {
             Method::ResidualAffix => base.with_residual(false),
             Method::ResidualFirstUse => base.with_residual(false),
             Method::ResidualSubword => base.with_residual(false),
+            // Phase 14.34: the temporal composite is the accepted chain
+            // (including the memoryless corrector) plus the temporal one.
+            Method::Ph14Temporal | Method::Ph14TemporalCtl => base.with_residual(false),
             Method::ResidualCtl => base.with_residual(true),
             _ => base,
         };
@@ -1330,6 +1360,14 @@ impl Method {
                     crate::context::ctxmap::Adapt::Stationary,
                 )
             }
+            _ => base,
+        };
+        // Phase 14.34: the temporal residual corrector, applied on top of the
+        // accepted chain (including the memoryless corrector set just above).
+        #[cfg(all(feature = "phase14", feature = "learned"))]
+        let base = match self {
+            Method::Ph14Temporal => base.with_temporal(false),
+            Method::Ph14TemporalCtl => base.with_temporal(true),
             _ => base,
         };
         // Phase 11: the measured adaptation ladder, applied once for every
@@ -2303,6 +2341,8 @@ fn method_from_id(id: u8) -> Option<Method> {
         95 => Method::Ph14CtxMap,
         96 => Method::Ph14CtxMapCtl,
         97 => Method::Ph14CtxMapRep,
+        98 => Method::Ph14Temporal,
+        99 => Method::Ph14TemporalCtl,
         _ => return None,
     })
 }

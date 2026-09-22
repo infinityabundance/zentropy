@@ -81,6 +81,7 @@ fn main() -> ExitCode {
         #[cfg(feature = "procedural")]
         "procedure" => cmd_procedure(&args[2..]),
         "train-residual" => cmd_train_residual(&args[2..]),
+        "train-temporal" => cmd_train_temporal(&args[2..]),
         #[cfg(not(feature = "submission"))]
         "sweep-tune" => cmd_sweep_tune(&args[2..]),
         #[cfg(not(feature = "submission"))]
@@ -136,7 +137,8 @@ fn usage() {
          zentropy rate-sweep  <in> [--scope order|all] [--deltas -2,-1,1,2] [--method <m>] [--tune <t>]\n  \
          zentropy opportunity <corpus> [--raw] [--oracle] [--top <n>] [--json]          (feature opportunity)\n  \
          zentropy procedure   <corpus> [--class <name>] [--limit <n>] [--json]            (feature procedural)\n  \
-         zentropy vocab-price <in> [--top <n>] [--method <m>] [--tune <t>]   (feature vocab-price)\n",
+         zentropy vocab-price <in> [--top <n>] [--method <m>] [--tune <t>]   (feature vocab-price)\n  \
+         zentropy train-temporal <corpus> [--hidden <n>] [--lr <f>] [--max-bytes <n>] [--out <f>]   (feature phase14+learned-train)\n",
         version = zentropy::VERSION
     );
 }
@@ -1253,6 +1255,67 @@ fn cmd_train_residual(args: &[String]) -> Result<(), String> {
 #[cfg(not(feature = "learned-train"))]
 fn cmd_train_residual(_args: &[String]) -> Result<(), String> {
     Err("train-residual: built without the `learned-train` feature".into())
+}
+
+/// Phase 14.34 research: train the **temporal** residual corrector on a corpus
+/// prefix and write the quantized weights. As with `train-residual`, the trainer
+/// runs on the *transformed* stream the predictor actually codes, so training
+/// sees the inference distribution.
+#[cfg(all(feature = "phase14", feature = "learned-train"))]
+fn cmd_train_temporal(args: &[String]) -> Result<(), String> {
+    let path = args.first().ok_or("train-temporal: need <in>")?;
+    let get = |k: &str| -> Option<String> {
+        args.iter()
+            .position(|a| a == k)
+            .and_then(|i| args.get(i + 1))
+            .cloned()
+    };
+    let hidden: usize = get("--hidden").and_then(|v| v.parse().ok()).unwrap_or(16);
+    let lr: f32 = get("--lr").and_then(|v| v.parse().ok()).unwrap_or(0.02);
+    let max_bytes: Option<usize> = get("--max-bytes").and_then(|v| v.parse().ok());
+    let out = get("--out").unwrap_or_else(|| "src/learned/temporal.bin".into());
+
+    let raw = read(path)?;
+    let raw = match max_bytes {
+        Some(m) if m < raw.len() => &raw[..m],
+        _ => &raw[..],
+    };
+    // The temporal corrector codes the same reordered/tokenised stream as its
+    // `residual` parent, so train on that stream.
+    let stream = archive::transformed_stream(raw, Method::Ph14Temporal, archive::ACCEPTED_TUNE);
+    let n = stream.len();
+    guard_encode(n as u64, max_ram_override(args))?;
+    let cfg = Method::Ph14Temporal
+        .config_for(n)
+        .with_temporal_train(hidden)
+        .with_temporal_lr(lr);
+    let mut cm = zentropy::context::Cm::new(&cfg, n);
+    let t0 = Instant::now();
+    for &byte in stream.iter() {
+        let mut mask = 0x80u32;
+        while mask != 0 {
+            let bit = if (byte as u32) & mask != 0 { 1 } else { 0 };
+            let _ = cm.predict();
+            cm.update(bit);
+            mask >>= 1;
+        }
+    }
+    let net = cm.take_temporal_net().ok_or("train-temporal: no trainer")?;
+    let bytes = net.to_bytes();
+    let model_bytes = net.model_bytes();
+    write(&out, &bytes)?;
+    let (steps, loss, ema) = cm.temporal_stats();
+    println!(
+        "hidden={hidden} lr={lr} steps={steps} mean_loss_bits_per_bit={loss:.6} recent_loss_bits_per_bit={ema:.6} model_bytes={model_bytes} file_bytes={} wall={:.1}s out={out}",
+        bytes.len(),
+        t0.elapsed().as_secs_f64()
+    );
+    Ok(())
+}
+
+#[cfg(not(all(feature = "phase14", feature = "learned-train")))]
+fn cmd_train_temporal(_args: &[String]) -> Result<(), String> {
+    Err("train-temporal: built without the `phase14` + `learned-train` features".into())
 }
 
 /// Phase 9: measure one `tune` point for a method — encode, hash, receipt.
