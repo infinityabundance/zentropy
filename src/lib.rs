@@ -58,6 +58,12 @@ pub mod signal;
 // constructed representation beats the accepted one on the authority corpus.
 #[cfg(feature = "procedural")]
 pub mod procedural;
+// Phase 14.9: the boundary experiment — is any real Wikipedia class cheaper as a
+// shared program plus state plus residual than as the accepted representation?
+// Research-plane, and it answers the question with a measurement and its
+// falsifying control rather than with an argument.
+#[cfg(feature = "procedural")]
+pub mod procedure;
 // Phase 14: where the codelength actually lives. Research-plane (its
 // accumulator is `f64`), and it asserts that every coded byte is attributed.
 #[cfg(feature = "opportunity")]

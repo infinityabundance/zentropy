@@ -43,12 +43,48 @@
 //! change in ideal codelength when it is added. The closing residual (rounding /
 //! interaction) lands in `unclassified`, so `Σ roles == total` exactly. This is
 //! the honest basis label; the report prints it verbatim.
+//!
+//! ## Phase 14.2: a realizable causal conditional bound, per class
+//!
+//! P14.1 says *where* the bytes are. P14.2 asks what a decoder could actually
+//! reconstruct them from — not what an entropy formula fitted to the same target
+//! says. For each structural class we take that class's byte stream and price it
+//! with **real codecs**:
+//!
+//! * a static order-0 model whose 256 counts are serialized and charged;
+//! * a static order-1 model whose per-previous-byte count rows are serialized and
+//!   charged (the table can be large — that cost is the point);
+//! * an adaptive order-2 model, whose state is a pure function of already-decoded
+//!   bytes and therefore submits no table at all.
+//!
+//! The **realizable bound** for a class is the best (smallest) of those three and
+//! the accepted coder's own measured share *for that class*: the incumbent is a
+//! representation too, so the bound is a true minimum and can never regress above
+//! the measured cost. `measured − realizable` is therefore a non-negative
+//! **recoverable gap**, and `--rank` orders classes by it instead of by size.
+//!
+//! ### Two kinds of number, never mixed
+//!
+//! Every quantity is either
+//!
+//! * `REALIZABLE` — fully charged and decoder-reconstructible from bytes a
+//!   submission would actually carry (the measured share; the three codecs above,
+//!   table included); or
+//! * `TARGET-FITTED ENTROPY` — a zeroth-order entropy of the class's own byte
+//!   histogram, which is a *lower bound that would cost model bytes it does not
+//!   count*. It is a target, not a bound on a representation.
+//!
+//! The report keeps the two in **separate totals** ([`Report::realizable_floor_bytes`]
+//! and [`Report::target_fitted_bytes`]) and never adds them: a target-fitted
+//! number entering a realizable total would forge a representation that no decoder
+//! could reconstruct. The §14.5 interpretation table is printed as a verdict line
+//! from the measured realizable floor alone.
 
 use std::fs;
 
 use crate::archive::{self, Method};
 use crate::context::{Cm, CtxKind, ModelConfig};
-use crate::entropy::RangeEncoder;
+use crate::entropy::{RangeEncoder, PROB_SCALE};
 use crate::ir::{self, Kind};
 
 /// Number of structural classes in the §14.4 tree.
@@ -198,6 +234,16 @@ pub struct Bound {
     pub name: &'static str,
     pub measured_bytes: f64,
     pub zeroth_order_bytes: f64,
+    /// The best fully-charged, decoder-reconstructible cost known for this class:
+    /// the minimum of `measured_bytes` and the three codec candidates below.
+    pub realizable_bytes: f64,
+    /// Static order-0 codec: coded payload + the serialized count table.
+    pub order0_bytes: f64,
+    /// Static order-1 codec: coded payload + the serialized context-count rows.
+    pub order1_bytes: f64,
+    /// Adaptive order-2 codec: coded payload only (the model is derived from the
+    /// decoded prefix, so it submits no table).
+    pub adaptive_order2_bytes: f64,
 }
 
 impl Bound {
@@ -206,6 +252,22 @@ impl Bound {
     /// The *fitted* quantity: a zeroth-order model fit to the class's own byte
     /// histogram. It is a target, not a decoder-realizable bound.
     pub const BOUND_LABEL: &'static str = "TARGET-FITTED ENTROPY (zeroth-order, class histogram)";
+    /// The *codec* quantities: each is a real encoded stream plus the model bytes
+    /// it needs, so a decoder can reconstruct the class from them.
+    pub const REALIZABLE_LABEL: &'static str =
+        "REALIZABLE (fully charged causal codec: payload + submitted model)";
+}
+
+/// One class's recoverable gap: the accepted coder's measured share minus the
+/// best fully-charged representation a decoder could reconstruct from it. It is
+/// never negative because the accepted share is itself one candidate. `--rank`
+/// orders classes by this, not by raw size.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Gap {
+    pub name: &'static str,
+    pub measured_bytes: f64,
+    pub realizable_bytes: f64,
+    pub gap_bytes: f64,
 }
 
 /// The complete report, which is only evidence once its parts sum to its total.
@@ -227,6 +289,16 @@ pub struct Report {
     pub breakdown: Vec<Attribution>,
     /// The oracle rows, empty unless `--oracle` was passed.
     pub bounds: Vec<Bound>,
+    /// `REALIZABLE` total: the sum of the per-class realizable bounds. This is the
+    /// measured floor the §14.5 verdict is computed from.
+    pub realizable_floor_bytes: f64,
+    /// `TARGET-FITTED ENTROPY` total, kept deliberately separate. It is a target,
+    /// not a bound, and is never added to [`Report::realizable_floor_bytes`].
+    pub target_fitted_bytes: f64,
+    /// The §14.5 interpretation of the realizable floor, printed as a verdict.
+    pub verdict: String,
+    /// The classes ranked by recoverable gap (`--rank`).
+    pub ranked: Vec<Gap>,
     /// The container payload length the coding pass produced, as a cross-check
     /// against the ideal total.
     pub actual_coded_bytes: usize,
@@ -253,6 +325,7 @@ impl Report {
 struct Options {
     raw: bool,
     oracle: bool,
+    rank: bool,
     json: bool,
     top: usize,
 }
@@ -262,6 +335,7 @@ impl Default for Options {
         Options {
             raw: false,
             oracle: false,
+            rank: false,
             json: false,
             top: usize::MAX,
         }
@@ -276,6 +350,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         match a {
             "--raw" => o.raw = true,
             "--oracle" => o.oracle = true,
+            "--rank" => o.rank = true,
             "--json" => o.json = true,
             "--top" => {
                 i += 1;
@@ -444,11 +519,12 @@ fn kind_class(k: Kind) -> Class {
 }
 
 /// Classify a raw corpus 1:1 by ZIR kind, returning per-byte breakdown ids, the
-/// breakdown table, and the per-structural-class byte histograms (for `--oracle`).
-fn classify_raw(corpus: &[u8]) -> (Vec<usize>, BdSet, Vec<[u64; 256]>) {
+/// breakdown table, and the bytes of each structural class in coding order (the
+/// last of which the oracle prices with real codecs).
+fn classify_raw(corpus: &[u8]) -> (Vec<usize>, BdSet, Vec<Vec<u8>>) {
     let mut bd = BdSet::new();
     let mut class_of = vec![Class::Unclassified as usize; corpus.len()];
-    let mut hist = vec![[0u64; 256]; NCLASS];
+    let mut class_bytes: Vec<Vec<u8>> = (0..NCLASS).map(|_| Vec::new()).collect();
     // Pre-register so the breakdown table order is the stable ZIR `Kind::ALL`.
     for k in Kind::ALL {
         bd.id(k.name(), kind_class(k));
@@ -458,10 +534,10 @@ fn classify_raw(corpus: &[u8]) -> (Vec<usize>, BdSet, Vec<[u64; 256]>) {
         let id = bd.id(tok.kind.name(), class);
         for k in tok.range() {
             class_of[k] = id;
-            hist[class as usize][corpus[k] as usize] += 1;
+            class_bytes[class as usize].push(corpus[k]);
         }
     }
-    (class_of, bd, hist)
+    (class_of, bd, class_bytes)
 }
 
 fn analyze_raw(data: &[u8]) -> Result<Report, String> {
@@ -476,7 +552,7 @@ fn analyze_raw(data: &[u8]) -> Result<Report, String> {
             data.len()
         ));
     }
-    let (class_of, bd, hist) = classify_raw(&stream);
+    let (class_of, bd, class_bytes) = classify_raw(&stream);
     let cfg = Method::RawCm.config_for(stream.len()).with_tune(0);
     let (bits, bd_costs, payload) = code_classified(&cfg, &stream, &class_of, bd.table.len());
 
@@ -493,7 +569,7 @@ fn analyze_raw(data: &[u8]) -> Result<Report, String> {
     };
     finish_partitions(&mut report, &bd, &bd_costs);
     report.roles = role_partition(&cfg, &stream, bits);
-    report.bounds = oracle_bounds(&report, &hist);
+    oracle_bounds(&mut report, &class_bytes);
     Ok(report)
 }
 
@@ -520,11 +596,11 @@ fn effective_method(input: &[u8]) -> Method {
 /// dictionary strings and `0x00, byte` for reserved literals; the word tokenizer
 /// then emits a vocabulary header followed by a body in which `0x00, id` is a
 /// token reference (`id == 0` is a literal NUL) and everything else is copied.
-fn classify_transformed(data: &[u8]) -> (Vec<usize>, BdSet, Vec<[u64; 256]>) {
+fn classify_transformed(data: &[u8]) -> (Vec<usize>, BdSet, Vec<Vec<u8>>) {
     let n = data.len();
     let mut bd = BdSet::new();
     let mut class_of = vec![Class::Unclassified as usize; n];
-    let mut hist = vec![[0u64; 256]; NCLASS];
+    let mut class_bytes: Vec<Vec<u8>> = (0..NCLASS).map(|_| Vec::new()).collect();
     let mut entries: Vec<(usize, usize)> = Vec::new();
 
     let mut i = 0usize;
@@ -534,7 +610,7 @@ fn classify_transformed(data: &[u8]) -> (Vec<usize>, BdSet, Vec<[u64; 256]>) {
         {
             let id = bd.id("dict_count", Class::DictState);
             class_of[0] = id;
-            hist[Class::DictState as usize][data[0] as usize] += 1;
+            class_bytes[Class::DictState as usize].push(data[0]);
         }
         i = 1;
         for _ in 0..count {
@@ -544,13 +620,13 @@ fn classify_transformed(data: &[u8]) -> (Vec<usize>, BdSet, Vec<[u64; 256]>) {
             let l = data[i] as usize;
             let len_id = bd.id("dict_header", Class::DictState);
             class_of[i] = len_id;
-            hist[Class::DictState as usize][data[i] as usize] += 1;
+            class_bytes[Class::DictState as usize].push(data[i]);
             i += 1;
             let end = (i + l).min(n);
             let word_id = bd.id("dict_entry", Class::DictState);
             for k in i..end {
                 class_of[k] = word_id;
-                hist[Class::DictState as usize][data[k] as usize] += 1;
+                class_bytes[Class::DictState as usize].push(data[k]);
             }
             entries.push((i, end));
             i = end;
@@ -563,7 +639,7 @@ fn classify_transformed(data: &[u8]) -> (Vec<usize>, BdSet, Vec<[u64; 256]>) {
         if b == crate::transform::TOK_ESC {
             let id = bd.id("token_control", Class::Lexical);
             class_of[i] = id;
-            hist[Class::Lexical as usize][b as usize] += 1;
+            class_bytes[Class::Lexical as usize].push(b);
             if i + 1 < n {
                 let tok = data[i + 1];
                 let (class, label) = if tok == 0 {
@@ -582,7 +658,7 @@ fn classify_transformed(data: &[u8]) -> (Vec<usize>, BdSet, Vec<[u64; 256]>) {
                 };
                 let id = bd.id(label, class);
                 class_of[i + 1] = id;
-                hist[class as usize][tok as usize] += 1;
+                class_bytes[class as usize].push(tok);
                 i += 2;
             } else {
                 i += 1;
@@ -590,7 +666,7 @@ fn classify_transformed(data: &[u8]) -> (Vec<usize>, BdSet, Vec<[u64; 256]>) {
         } else if (1..=0x1F).contains(&b) {
             let id = bd.id("hoist_code", Class::XmlStructure);
             class_of[i] = id;
-            hist[Class::XmlStructure as usize][b as usize] += 1;
+            class_bytes[Class::XmlStructure as usize].push(b);
             i += 1;
         } else {
             let (class, label) = if b.is_ascii_digit() {
@@ -606,17 +682,17 @@ fn classify_transformed(data: &[u8]) -> (Vec<usize>, BdSet, Vec<[u64; 256]>) {
             };
             let id = bd.id(label, class);
             class_of[i] = id;
-            hist[class as usize][data[i] as usize] += 1;
+            class_bytes[class as usize].push(data[i]);
             i += 1;
         }
     }
-    (class_of, bd, hist)
+    (class_of, bd, class_bytes)
 }
 
 fn analyze_default(data: &[u8]) -> Result<Report, String> {
     let method = effective_method(data);
     let stream = archive::transformed_stream(data, method, archive::ACCEPTED_TUNE);
-    let (class_of, bd, hist) = classify_transformed(&stream);
+    let (class_of, bd, class_bytes) = classify_transformed(&stream);
     let cfg = method
         .config_for(stream.len())
         .with_tune(archive::ACCEPTED_TUNE);
@@ -638,7 +714,7 @@ fn analyze_default(data: &[u8]) -> Result<Report, String> {
     };
     finish_partitions(&mut report, &bd, &bd_costs);
     report.roles = role_partition(&cfg, &stream, bits);
-    report.bounds = oracle_bounds(&report, &hist);
+    oracle_bounds(&mut report, &class_bytes);
     Ok(report)
 }
 
@@ -780,17 +856,29 @@ fn role_partition(cfg: &ModelConfig, stream: &[u8], full_bits: f64) -> Vec<Attri
 }
 
 // ---------------------------------------------------------------------------
-// The oracle: zeroth-order empirical bounds, clearly separated
+// The oracle: real codecs for a realizable bound, and one fitted target
 // ---------------------------------------------------------------------------
 
-/// Zeroth-order entropy in bits of a byte histogram: `H0 * n`.
-fn zeroth_order_bits(hist: &[u64; 256]) -> f64 {
+/// A byte histogram of a class's stream.
+fn histogram(bytes: &[u8]) -> [u64; 256] {
+    let mut h = [0u64; 256];
+    for &b in bytes {
+        h[b as usize] += 1;
+    }
+    h
+}
+
+/// Zeroth-order entropy in bits of a byte histogram: `H0 * n`. This is the
+/// `TARGET-FITTED ENTROPY` quantity: it prices the *symbols* but not the model
+/// that would have to be submitted to code them, so it is a target, not a bound.
+fn zeroth_order_bits(bytes: &[u8]) -> f64 {
+    let hist = histogram(bytes);
     let total: u64 = hist.iter().sum();
     if total == 0 {
         return 0.0;
     }
     let mut h = 0.0f64;
-    for &c in hist {
+    for &c in &hist {
         if c > 0 {
             let p = c as f64 / total as f64;
             h -= p * p.log2();
@@ -799,8 +887,236 @@ fn zeroth_order_bits(hist: &[u64; 256]) -> f64 {
     h * total as f64
 }
 
-fn oracle_bounds(report: &Report, hist: &[[u64; 256]]) -> Vec<Bound> {
-    report
+/// One candidate representation of a class's byte stream: the model bytes a
+/// decoder must receive, plus the bytes the coded stream occupies. Both are real
+/// emitted bytes, so `table + payload` is `REALIZABLE` by construction.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct CodecCost {
+    table_bytes: usize,
+    payload_bytes: usize,
+}
+
+impl CodecCost {
+    fn total(self) -> usize {
+        self.table_bytes + self.payload_bytes
+    }
+}
+
+/// Bytes a varint takes to encode `v` (LEB128).
+fn varint_len(mut v: u64) -> usize {
+    let mut n = 1;
+    while v >= 128 {
+        v >>= 7;
+        n += 1;
+    }
+    n
+}
+
+/// P(bit = 1) at `node` in the 12-bit range-coder scale, from the child counts of
+/// a bit-tree. A zero-total node cannot lie on the path of an observed symbol, so
+/// the guard is defensive only.
+#[inline]
+fn tree_prob(tree: &[u64; 512], node: usize) -> u32 {
+    let total = tree[node];
+    if total == 0 {
+        return PROB_SCALE / 2;
+    }
+    let ones = tree[2 * node + 1];
+    (((ones * PROB_SCALE as u64) / total) as u32).clamp(1, PROB_SCALE - 1)
+}
+
+/// Build a 256-leaf bit-tree from symbol counts. Nodes `1..256` are internal
+/// sums, leaves `256 + symbol` are the counts. This is the whole model: a decoder
+/// handed the same counts reproduces every branch probability exactly.
+fn tree_from_counts(counts: &[u64; 256]) -> [u64; 512] {
+    let mut t = [0u64; 512];
+    t[256..512].copy_from_slice(counts);
+    for i in (1..256).rev() {
+        t[i] = t[2 * i] + t[2 * i + 1];
+    }
+    t
+}
+
+fn tree_from_u16(counts: &[u16; 256]) -> [u64; 512] {
+    let mut c = [0u64; 256];
+    for i in 0..256 {
+        c[i] = counts[i] as u64;
+    }
+    tree_from_counts(&c)
+}
+
+/// Code one byte as 8 binary decisions down a static bit-tree.
+#[inline]
+fn encode_byte(enc: &mut RangeEncoder, tree: &[u64; 512], byte: u8) {
+    let mut node = 1usize;
+    for shift in (0..8).rev() {
+        let bit = ((byte >> shift) & 1) as u32;
+        enc.encode(bit, tree_prob(tree, node));
+        node = 2 * node + bit as usize;
+    }
+}
+
+/// The exact inverse of [`encode_byte`]. Used by the round-trip test that makes
+/// the `REALIZABLE` claim falsifiable: a bound the decoder cannot reproduce is
+/// not a bound on a representation.
+#[cfg(test)]
+fn decode_byte(dec: &mut RangeDecoder<'_>, tree: &[u64; 512]) -> u8 {
+    let mut node = 1usize;
+    let mut byte = 0u8;
+    for _ in 0..8 {
+        let bit = dec.decode(tree_prob(tree, node));
+        byte = (byte << 1) | bit as u8;
+        node = 2 * node + bit as usize;
+    }
+    byte
+}
+
+/// Static order-0 codec: one count table for the whole stream, serialized and
+/// charged, then the payload.
+fn order0_cost(bytes: &[u8]) -> CodecCost {
+    if bytes.is_empty() {
+        return CodecCost::default();
+    }
+    let counts = histogram(bytes);
+    let nsym = counts.iter().filter(|&&c| c > 0).count();
+    let mut table_bytes = varint_len(nsym as u64);
+    for &c in counts.iter() {
+        if c > 0 {
+            table_bytes += 1 + varint_len(c);
+        }
+    }
+    let tree = tree_from_counts(&counts);
+    let mut enc = RangeEncoder::with_capacity(bytes.len() / 2 + 64);
+    for &b in bytes {
+        encode_byte(&mut enc, &tree, b);
+    }
+    CodecCost {
+        table_bytes,
+        payload_bytes: enc.finish().len(),
+    }
+}
+
+/// The order-1 start context, distinct from every byte value.
+const ORDER1_START: usize = 256;
+const ORDER1_CTX: usize = 257;
+
+/// Static order-1 codec: one count row per previous byte, serialized and charged.
+/// The table is allowed to dominate for a small class — that is the difference
+/// between a realizable bound and a fitted entropy, and it is why the best of the
+/// codec ladder is taken rather than the order alone.
+fn order1_cost(bytes: &[u8]) -> CodecCost {
+    if bytes.is_empty() {
+        return CodecCost::default();
+    }
+    let mut rows: Vec<[u64; 256]> = vec![[0u64; 256]; ORDER1_CTX];
+    let mut prev = ORDER1_START;
+    for &b in bytes {
+        rows[prev][b as usize] += 1;
+        prev = b as usize;
+    }
+    let present: Vec<usize> = (0..ORDER1_CTX)
+        .filter(|&c| rows[c].iter().any(|&x| x > 0))
+        .collect();
+    let mut table_bytes = varint_len(present.len() as u64);
+    for &ctx in &present {
+        table_bytes += varint_len(ctx as u64);
+        let nsym = rows[ctx].iter().filter(|&&x| x > 0).count();
+        table_bytes += varint_len(nsym as u64);
+        for &c in rows[ctx].iter() {
+            if c > 0 {
+                table_bytes += 1 + varint_len(c);
+            }
+        }
+    }
+    let trees: Vec<Option<[u64; 512]>> = (0..ORDER1_CTX)
+        .map(|c| {
+            if rows[c].iter().any(|&x| x > 0) {
+                Some(tree_from_counts(&rows[c]))
+            } else {
+                None
+            }
+        })
+        .collect();
+    let mut enc = RangeEncoder::with_capacity(bytes.len() / 2 + 64);
+    let mut prev = ORDER1_START;
+    for &b in bytes {
+        let tree = trees[prev].as_ref().expect("coded context must have a row");
+        encode_byte(&mut enc, tree, b);
+        prev = b as usize;
+    }
+    CodecCost {
+        table_bytes,
+        payload_bytes: enc.finish().len(),
+    }
+}
+
+/// Hard ceiling on the adaptive order-2 context table. A context is a byte pair,
+/// so the exact space is at most 2^16 rows; we allocate only up to the largest
+/// context the stream visits, which is what keeps this inside the budget.
+const ORDER2_MAX_CONTEXTS: usize = 1 << 16;
+/// Counts are `u16`; a row is halved before its total can overflow. Halving keeps
+/// the model's shape, is mirrored exactly by the decoder, and submits no bytes.
+const ORDER2_RESCALE_AT: u32 = 60_000;
+
+/// Adaptive order-2 codec. The model is a pure function of the already-decoded
+/// prefix, so it submits no table: the cost is the payload alone. Start counts
+/// are a constant Laplace prior (all ones), not data.
+fn adaptive_order2_cost(bytes: &[u8]) -> CodecCost {
+    if bytes.len() < 2 {
+        return CodecCost::default();
+    }
+    let (mut p1, mut p2, mut max_ctx) = (0usize, 0usize, 0usize);
+    for &b in bytes {
+        let ctx = (p1 << 8) | p2;
+        if ctx > max_ctx {
+            max_ctx = ctx;
+        }
+        p2 = p1;
+        p1 = b as usize;
+    }
+    let nrows = (max_ctx + 1).min(ORDER2_MAX_CONTEXTS);
+    let mut counts: Vec<[u16; 256]> = vec![[0u16; 256]; nrows];
+    let mut seen = vec![false; nrows];
+    let mut totals = vec![0u32; nrows];
+    let mut enc = RangeEncoder::with_capacity(bytes.len() / 2 + 64);
+    let (mut p1, mut p2) = (0usize, 0usize);
+    for &b in bytes {
+        let ctx = (p1 << 8) | p2;
+        if !seen[ctx] {
+            counts[ctx] = [1u16; 256];
+            seen[ctx] = true;
+            totals[ctx] = 256;
+        }
+        let tree = tree_from_u16(&counts[ctx]);
+        encode_byte(&mut enc, &tree, b);
+        let c = &mut counts[ctx];
+        c[b as usize] += 1;
+        totals[ctx] += 1;
+        if totals[ctx] > ORDER2_RESCALE_AT {
+            let mut t = 0u32;
+            for x in c.iter_mut() {
+                *x = (*x / 2).max(1);
+                t += *x as u32;
+            }
+            totals[ctx] = t;
+        }
+        p2 = p1;
+        p1 = b as usize;
+    }
+    CodecCost {
+        table_bytes: 0,
+        payload_bytes: enc.finish().len(),
+    }
+}
+
+/// Price every structural class and attach the fully-charged bounds to `report`.
+///
+/// The realizable bound is the minimum of the measured share and the three codec
+/// candidates: the accepted coder is itself a representation of these bytes, so
+/// the bound is a true minimum and the recoverable gap can never go negative. The
+/// zeroth-order number is kept as a *separate, target-fitted* quantity.
+fn oracle_bounds(report: &mut Report, class_bytes: &[Vec<u8>]) {
+    let bounds: Vec<Bound> = report
         .structural
         .iter()
         .map(|a| {
@@ -809,13 +1125,80 @@ fn oracle_bounds(report: &Report, hist: &[[u64; 256]]) -> Vec<Bound> {
                 .find(|c| c.name() == a.name)
                 .copied()
                 .unwrap_or(Class::Unclassified);
+            let bytes = &class_bytes[class as usize];
+            let o0 = order0_cost(bytes).total() as f64;
+            let o1 = order1_cost(bytes).total() as f64;
+            let o2 = adaptive_order2_cost(bytes).total() as f64;
+            let realizable = a.coded_bytes.min(o0).min(o1).min(o2);
             Bound {
                 name: a.name,
                 measured_bytes: a.coded_bytes,
-                zeroth_order_bytes: zeroth_order_bits(&hist[class as usize]) / 8.0,
+                zeroth_order_bytes: zeroth_order_bits(bytes) / 8.0,
+                realizable_bytes: realizable,
+                order0_bytes: o0,
+                order1_bytes: o1,
+                adaptive_order2_bytes: o2,
             }
         })
-        .collect()
+        .collect();
+
+    let (floor, target) = floor_and_target(&bounds);
+    report.realizable_floor_bytes = floor;
+    report.target_fitted_bytes = target;
+    report.verdict = interpret_floor(floor);
+    report.ranked = rank_by_gap(&bounds);
+    report.bounds = bounds;
+}
+
+/// The two totals that must never be mixed (§14.5): the first sums only
+/// `REALIZABLE` quantities, the second only `TARGET-FITTED ENTROPY`. They are
+/// returned as a pair and never added — a target-fitted byte in a realizable
+/// total would forge a representation no decoder could reconstruct.
+fn floor_and_target(bounds: &[Bound]) -> (f64, f64) {
+    let floor = bounds.iter().map(|b| b.realizable_bytes).sum();
+    let target = bounds.iter().map(|b| b.zeroth_order_bytes).sum();
+    (floor, target)
+}
+
+/// The §14.5 interpretation table, applied to the measured realizable floor. Each
+/// band names the consequence for the campaign, not just a size.
+fn interpret_floor(floor_bytes: f64) -> String {
+    const MB: f64 = 1_000_000.0;
+    let band = if floor_bytes > 110.0 * MB {
+        "> 110 MB — above the accepted record band; no realizable representation here reaches 80 MB"
+    } else if floor_bytes > 95.0 * MB {
+        "95–110 MB — kill gate C: introduce a new representation family, do not tune toward 80 MB"
+    } else if floor_bytes > 80.0 * MB {
+        "80–95 MB — below kill gate C but above the objective; continue structural/lexical work"
+    } else if floor_bytes > 65.0 * MB {
+        "65–80 MB — the floor reaches the 80 MB objective"
+    } else {
+        "below 65 MB — the floor leaves margin under the 80 MB objective"
+    };
+    format!("realizable floor {:.3} MB -> {band}", floor_bytes / MB)
+}
+
+/// Rank classes by recoverable gap, not by raw size: a large class the accepted
+/// coder already prices near its bound is not an opportunity, while a small class
+/// with a wide gap is. Ties break on name so the order is a property of the gaps
+/// rather than of the input order.
+fn rank_by_gap(bounds: &[Bound]) -> Vec<Gap> {
+    let mut v: Vec<Gap> = bounds
+        .iter()
+        .map(|b| Gap {
+            name: b.name,
+            measured_bytes: b.measured_bytes,
+            realizable_bytes: b.realizable_bytes,
+            gap_bytes: (b.measured_bytes - b.realizable_bytes).max(0.0),
+        })
+        .collect();
+    v.sort_by(|a, b| {
+        b.gap_bytes
+            .partial_cmp(&a.gap_bytes)
+            .unwrap()
+            .then_with(|| a.name.cmp(b.name))
+    });
+    v
 }
 
 // ---------------------------------------------------------------------------
@@ -879,14 +1262,51 @@ fn render_text(report: &mut Report, opts: &Options) {
     }
     if opts.oracle && !report.bounds.is_empty() {
         out_lines.push(format!(
-            "oracle per class — measured = {} | bound = {}:",
+            "oracle per class — measured = {} | realizable = {} | target-fitted = {}:",
             Bound::MEASURED_LABEL,
+            Bound::REALIZABLE_LABEL,
             Bound::BOUND_LABEL
         ));
         for b in report.bounds.iter().take(top) {
             out_lines.push(format!(
-                "  {:<18} measured {:>14.3} B | zeroth-order {:>14.3} B",
-                b.name, b.measured_bytes, b.zeroth_order_bytes
+                "  {:<18} measured {:>12.3} | realizable {:>12.3} | gap {:>11.3} | target-fitted {:>12.3}",
+                b.name,
+                b.measured_bytes,
+                b.realizable_bytes,
+                (b.measured_bytes - b.realizable_bytes).max(0.0),
+                b.zeroth_order_bytes
+            ));
+            out_lines.push(format!(
+                "      codecs [REALIZABLE, model charged]: order0 {:>12.3} | order1 {:>12.3} | adaptive-order2 {:>12.3}",
+                b.order0_bytes, b.order1_bytes, b.adaptive_order2_bytes
+            ));
+        }
+        out_lines.push(format!(
+            "REALIZABLE FLOOR = {:.3} B ({:.3} MB)  [{}]",
+            report.realizable_floor_bytes,
+            report.realizable_floor_bytes / 1_000_000.0,
+            Bound::REALIZABLE_LABEL
+        ));
+        out_lines.push(format!(
+            "TARGET-FITTED ENTROPY = {:.3} B  [{} — kept separate, never added to the floor]",
+            report.target_fitted_bytes,
+            Bound::BOUND_LABEL
+        ));
+        out_lines.push(format!("verdict: {}", report.verdict));
+    }
+    if opts.rank && !report.ranked.is_empty() {
+        out_lines.push(
+            "recoverable gap ranking (measured REALIZABLE − realizable bound; not raw size):"
+                .into(),
+        );
+        out_lines.push(format!(
+            "  {:<18} {:>13} {:>13} {:>13}",
+            "class", "measured", "realizable", "gap"
+        ));
+        for g in report.ranked.iter().take(top) {
+            out_lines.push(format!(
+                "  {:<18} {:>13.3} {:>13.3} {:>13.3}",
+                g.name, g.measured_bytes, g.realizable_bytes, g.gap_bytes
             ));
         }
     }
@@ -951,12 +1371,42 @@ fn render_json(report: &mut Report, opts: &Options) {
     {
         out_lines.push(format!(
             "{{\"kind\":\"oracle\",\"name\":\"{}\",\"measured_bytes\":{:.6},\
-             \"zeroth_order_bytes\":{:.6},\"measured_label\":\"{}\",\"bound_label\":\"{}\"}}",
+             \"zeroth_order_bytes\":{:.6},\"realizable_bytes\":{:.6},\"order0_bytes\":{:.6},\
+             \"order1_bytes\":{:.6},\"adaptive_order2_bytes\":{:.6},\"gap_bytes\":{:.6},\
+             \"measured_label\":\"{}\",\"realizable_label\":\"{}\",\"bound_label\":\"{}\"}}",
             b.name,
             b.measured_bytes,
             b.zeroth_order_bytes,
+            b.realizable_bytes,
+            b.order0_bytes,
+            b.order1_bytes,
+            b.adaptive_order2_bytes,
+            (b.measured_bytes - b.realizable_bytes).max(0.0),
             json_escape(Bound::MEASURED_LABEL),
+            json_escape(Bound::REALIZABLE_LABEL),
             json_escape(Bound::BOUND_LABEL)
+        ));
+    }
+    if opts.oracle && !report.bounds.is_empty() {
+        out_lines.push(format!(
+            "{{\"kind\":\"floor\",\"realizable_floor_bytes\":{:.6},\"realizable_label\":\"{}\",\
+             \"target_fitted_bytes\":{:.6},\"target_fitted_label\":\"{}\",\"verdict\":\"{}\"}}",
+            report.realizable_floor_bytes,
+            json_escape(Bound::REALIZABLE_LABEL),
+            report.target_fitted_bytes,
+            json_escape(Bound::BOUND_LABEL),
+            json_escape(&report.verdict)
+        ));
+    }
+    for g in report
+        .ranked
+        .iter()
+        .take(if opts.rank { opts.top } else { 0 })
+    {
+        out_lines.push(format!(
+            "{{\"kind\":\"rank\",\"name\":\"{}\",\"measured_bytes\":{:.6},\
+             \"realizable_bytes\":{:.6},\"gap_bytes\":{:.6}}}",
+            g.name, g.measured_bytes, g.realizable_bytes, g.gap_bytes
         ));
     }
     report.lines = out_lines;
@@ -994,7 +1444,7 @@ mod tests {
         let data = sample();
         let method = effective_method(&data);
         let stream = archive::transformed_stream(&data, method, archive::ACCEPTED_TUNE);
-        let (class_of, bd, _hist) = classify_transformed(&stream);
+        let (class_of, bd, _class_bytes) = classify_transformed(&stream);
         let cfg = method
             .config_for(stream.len())
             .with_tune(archive::ACCEPTED_TUNE);
@@ -1027,7 +1477,7 @@ mod tests {
         let data = sample();
         let stream = archive::transformed_stream(&data, Method::RawCm, 0);
         assert_eq!(stream, data, "RawCm must not transform");
-        let (class_of, bd, _hist) = classify_raw(&stream);
+        let (class_of, bd, _class_bytes) = classify_raw(&stream);
         let cfg = Method::RawCm.config_for(stream.len()).with_tune(0);
         let (bits, _costs, payload) = code_classified(&cfg, &stream, &class_of, bd.table.len());
         let arch = archive::encode_with(&data, Method::RawCm);
@@ -1049,6 +1499,7 @@ mod tests {
             let opts = Options {
                 raw,
                 oracle: true,
+                rank: false,
                 json: false,
                 top: usize::MAX,
             };
@@ -1100,12 +1551,13 @@ mod tests {
         let o = parse_args(&[
             "--raw".into(),
             "--oracle".into(),
+            "--rank".into(),
             "--json".into(),
             "--top".into(),
             "5".into(),
         ])
         .unwrap();
-        assert!(o.raw && o.oracle && o.json && o.top == 5);
+        assert!(o.raw && o.oracle && o.rank && o.json && o.top == 5);
         let o = parse_args(&["--top=3".into()]).unwrap();
         assert_eq!(o.top, 3);
         assert!(parse_args(&["--nope".into()]).is_err());
@@ -1118,6 +1570,7 @@ mod tests {
         let opts = Options {
             raw: true,
             oracle: true,
+            rank: false,
             json: true,
             top: 4,
         };

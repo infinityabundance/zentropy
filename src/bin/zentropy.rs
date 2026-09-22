@@ -78,6 +78,8 @@ fn main() -> ExitCode {
         "reorder-out" => cmd_reorder_out(&args[2..]),
         #[cfg(feature = "opportunity")]
         "opportunity" => cmd_opportunity(&args[2..]),
+        #[cfg(feature = "procedural")]
+        "procedure" => cmd_procedure(&args[2..]),
         "train-residual" => cmd_train_residual(&args[2..]),
         #[cfg(not(feature = "submission"))]
         "sweep-tune" => cmd_sweep_tune(&args[2..]),
@@ -133,6 +135,7 @@ fn usage() {
          zentropy layout      <in> [--nibble <orders>] [--bits <n>] [--reps <n>] [--method <m>] [--tune <t>]\n  \
          zentropy rate-sweep  <in> [--scope order|all] [--deltas -2,-1,1,2] [--method <m>] [--tune <t>]\n  \
          zentropy opportunity <corpus> [--raw] [--oracle] [--top <n>] [--json]          (feature opportunity)\n  \
+         zentropy procedure   <corpus> [--class <name>] [--limit <n>] [--json]            (feature procedural)\n  \
          zentropy vocab-price <in> [--top <n>] [--method <m>] [--tune <t>]   (feature vocab-price)\n",
         version = zentropy::VERSION
     );
@@ -1174,6 +1177,24 @@ fn cmd_opportunity(args: &[String]) -> Result<(), String> {
 #[cfg(not(feature = "opportunity"))]
 fn cmd_opportunity(_args: &[String]) -> Result<(), String> {
     Err("opportunity: built without the `opportunity` feature".into())
+}
+
+/// Phase 14.9: `zentropy procedure <corpus> [--class <name>] [--limit N] …` —
+/// the boundary experiment. It prints an A-vs-B measurement per Wikipedia class,
+/// where A is the accepted representation's cost for the same bytes and B is
+/// `program + state + residual + marginal decoder`, each with its falsifying
+/// control. A negative result here is a result.
+#[cfg(feature = "procedural")]
+fn cmd_procedure(args: &[String]) -> Result<(), String> {
+    let path = args.first().ok_or("procedure: need <corpus>")?;
+    let report = zentropy::procedure::run(path, &args[1..])?;
+    print!("{}", report.render());
+    Ok(())
+}
+
+#[cfg(not(feature = "procedural"))]
+fn cmd_procedure(_args: &[String]) -> Result<(), String> {
+    Err("procedure: built without the `procedural` feature".into())
 }
 
 /// Phase 8 research: train the learned residual corrector on a corpus prefix and
