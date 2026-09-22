@@ -60,17 +60,42 @@ and charged to `S`. Each rung therefore has its own weights. Every row is a real
 | enwik7 | `ph14-temporal` (h=16) | **−1,675** | +1,037 | 706 B |
 | enwik8 | `ph14-temporal` (h=16) | **−5,385** | (not run) | 706 B |
 | enwik8 | `ph14-temporal` (h=8) | **−10,827** | (not run) | 354 B |
+| enwik9 | `ph14-temporal` (h=8) | **−165,484** | (not run) | 354 B |
 
 The control *loses* on both rungs where it was run, which is the point: the gain is
 the learned sequence signal, not the extra code path or the model's mere presence.
 
-**Verdict so far: ADOPT-at-enwik8, pending the authority gate.** The decisive
-quantity is not the archive delta alone (the weights are charged):
+### The authority verdict
 
-    enwik8, h=8:  Δarchive + model_bytes = −10,827 + 354 = −10,473 B, before binary cost.
+`eval enwik9 --candidate ph14-temporal --tune 51 --parent-tune 51
+--parent-archive-bytes 160015425`, receipted at
+`evidence/runs/phase14/temporal_enwik9.jsonl`, weights trained on enwik9's own
+transformed stream (6,861,620,352 trainer steps, 3,144 s):
+
+    parent    residual        160,015,425 B   1.2801 bpc   exact=true
+    candidate ph14-temporal   159,849,941 B   1.2788 bpc   exact=true
+    archive_delta = -165,484 B
+
+**ADOPTED at the authority rung, pending binary cost.** The fully charged marginal
+is `−165,484 + 354 = −165,130 B` before the code's own executable bytes, which the
+stub does not yet carry (the mechanism is `phase14`-gated and `config_for` does not
+build it, so the shipped stub is byte-identical today). The mechanism is the first
+of Phase 14 to win at enwik9, and the win grows monotonically with scale:
+enwik6 −1,950, enwik7 −1,675, enwik8 −10,827, enwik9 −165,484.
+
+Adoption is not yet claimed: `S` charges the compressor, and the temporal code has
+no measured binary cost. The ordered next step is the two-build protocol, then
+moving the mechanism into the accepted chain (both `config` and `config_for`, so
+court 9's byte-identity still holds) and re-bracketing the mixer LR, which Phase 9's
+standing rule says must be re-descended after any change to the predictor.
+
+**Verdict: ADOPTED at enwik9, pending the compressor's own binary cost.** The
+decisive quantity is not the archive delta alone, because the weights are charged:
+
+    enwik9, h=8:  Δarchive + model_bytes = −165,484 + 354 = −165,130 B, before binary cost.
 
 That is the largest single-mechanism marginal of the phase, and unlike the four
-negatives it does **not** shrink with scale.
+negatives it **grows** with scale.
 
 ## The width sweep, and why the *quantized* model is the one to judge
 
