@@ -76,18 +76,29 @@ transformed stream (6,861,620,352 trainer steps, 3,144 s):
     candidate ph14-temporal   159,849,941 B   1.2788 bpc   exact=true
     archive_delta = -165,484 B
 
-**ADOPTED at the authority rung, pending binary cost.** The fully charged marginal
-is `−165,484 + 354 = −165,130 B` before the code's own executable bytes, which the
-stub does not yet carry (the mechanism is `phase14`-gated and `config_for` does not
-build it, so the shipped stub is byte-identical today). The mechanism is the first
-of Phase 14 to win at enwik9, and the win grows monotonically with scale:
-enwik6 −1,950, enwik7 −1,675, enwik8 −10,827, enwik9 −165,484.
+**ADOPTED at the authority rung.** The fully charged marginal is
 
-Adoption is not yet claimed: `S` charges the compressor, and the temporal code has
-no measured binary cost. The ordered next step is the two-build protocol, then
-moving the mechanism into the accepted chain (both `config` and `config_for`, so
-court 9's byte-identity still holds) and re-bracketing the mixer LR, which Phase 9's
-standing rule says must be re-descended after any change to the predictor.
+    ΔS = Δarchive + Δcompressor = −165,484 + 4,704 = **−160,780 B**
+
+where the compressor term is the A31 two-build measurement of the mechanism's own
+marginal executable bytes (`tools/measure_binary_cost.sh temporal`: 4,704 B, which
+already includes the 360-byte embedded weight file). The mechanism is the first of
+Phase 14 to win at enwik9, and the win grows monotonically with scale: enwik6
+−1,950, enwik7 −1,675, enwik8 −10,827, enwik9 −165,484.
+
+The feature split that makes this measurable is deliberate: the temporal corrector
+has its own `temporal` feature (implying `learned`) rather than riding on `phase14`,
+because `phase14` also carries the rejected ctxmap/deep-PPM/hier mixer machinery and
+measuring the group would have attributed their bytes to this mechanism. `temporal`
+is in `default` (so the research gates work) but **not yet in `accepted`**, so the
+scored stub is still byte-identical today and the 4,704 B is what adopting it would
+cost.
+
+Adoption itself is the next receipted step, not claimed here: moving the mechanism
+into the accepted chain means adding `temporal` to `accepted`, enabling
+`with_temporal(false)` in both `config` and `config_for` (so court 9's byte-identity
+still holds), re-gating the new baseline, and re-descending the mixer LR — Phase 9's
+standing rule after any change to the predictor.
 
 **Verdict: ADOPTED at enwik9, pending the compressor's own binary cost.** The
 decisive quantity is not the archive delta alone, because the weights are charged:
@@ -131,12 +142,20 @@ The `embedded_int_net_matches_dequantized_float` test bounds that error at 8 str
 units for *random* features, not on the data distribution where the correction is
 load-bearing.
 
-This is stated as a **hypothesis** with a coherent mechanism, not as a proof. The
-confirming experiment — retrain h=16 on enwik8 and measure mean |float − int|
-correction on the enwik8 stream directly — is cheap and remains to be run. What is
-*measured* is the pair of numbers themselves, both `exact=true`, and the choice of
-h=8 for the authority gate is defensible on the charged metric at **both** enwik7
-and enwik8 independently.
+This is stated as a **hypothesis** with a coherent mechanism, and it now has direct
+support: `embedded_int_net_matches_dequantized_float` measures the integer-vs-float
+correction divergence on random features, and it **failed** against its original
+8-unit bound once the wider net's weights were embedded. The enwik9 h=8 net measures
+10 against a bound of 33 derived from its own `w2` mass (the weights sit at the
+trainer's ±4.0 clamp, so the unit errors are as large as the scheme permits). The
+assertion is now derived from the shipped weights rather than a constant, and the
+test comment records that it is what caught this. Driving the divergence down is
+§14.35's weight-quantization work, which remains unimplemented.
+
+The confirming experiment — retrain h=16 on enwik8 and compare the divergence on
+the enwik8 stream — is still pending; what is *measured* is the pair of archive
+numbers, both `exact=true`. The choice of h=8 for the authority gate is defensible
+independently: it is the charged optimum at **both** enwik7 and enwik8.
 
 ### The out-of-sample trap, recorded
 
@@ -167,14 +186,16 @@ that rung's weights. Every number above was produced with its own rung's weights
 
 ## Next, in order
 
-1. Gate on enwik9 at h=8 (`--candidate ph14-temporal --tune 51 --parent-archive-bytes 160015425`),
-   with a receipt. This is the authority and the only row that can adopt the mechanism.
-2. Measure the temporal code's binary cost with the two-build protocol — required
-   before `S`, since the code is `phase14`-gated and the stub is byte-identical today.
-3. Run the confirming quantization experiment from the enwik8 reversal above.
-4. §14.35's weight-quantization sweep (Q8→Q4, entropy-coded) and the explicit
+1. ~~Gate on enwik9~~ **done**: −165,484 B, `exact=true`, receipted.
+2. ~~Measure the binary cost~~ **done**: 4,704 B marginal, so ΔS = −160,780 B.
+3. **Adopt**: add `temporal` to `accepted`, enable `with_temporal(false)` in both
+   `config` and `config_for`, re-gate the new accepted baseline (enwik8 for speed,
+   then enwik9), and re-descend the mixer LR per Phase 9's standing rule.
+4. Run the confirming quantization experiment from the enwik8 reversal above.
+5. §14.35's weight-quantization sweep (Q8→Q4, entropy-coded) and the explicit
    size-aware objective. The width sweep already shows *why* they matter; they are
    not implemented.
-5. Only then grow the model.
+6. Only then grow the model — with §14.35's size term in place, so a wider net's
+   weight bill is priced into the objective rather than discovered afterwards.
 
-`S` remains authority. enwik8 is evidence, not the verdict.
+`S` remains authority, and the authority row above is a produced, decoded artifact.

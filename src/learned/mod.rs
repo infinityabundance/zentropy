@@ -17,10 +17,9 @@ use crate::mixer::{squash, StretchTable};
 
 // Phase 14.34-14.36: the temporal residual corrector. A separate type family so
 // the accepted memoryless corrector above is never perturbed; see its module
-// docs. Gated with `phase14` (research-plane) in addition to the enclosing
-// `learned` gate, so its embedded weight bytes are *not* charged to `S` by a
-// scored build that enables `learned` but not `phase14`.
-#[cfg(feature = "phase14")]
+// docs. Gated by `temporal` (which implies `learned`) so its embedded weight bytes
+// are charged to `S` only when the mechanism is actually in the build.
+#[cfg(feature = "temporal")]
 pub mod temporal;
 
 /// Feature-vector width.

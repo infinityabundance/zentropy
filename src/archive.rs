@@ -1364,7 +1364,7 @@ impl Method {
         };
         // Phase 14.34: the temporal residual corrector, applied on top of the
         // accepted chain (including the memoryless corrector set just above).
-        #[cfg(all(feature = "phase14", feature = "learned"))]
+        #[cfg(feature = "temporal")]
         let base = match self {
             Method::Ph14Temporal => base.with_temporal(false),
             Method::Ph14TemporalCtl => base.with_temporal(true),

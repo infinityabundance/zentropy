@@ -1182,18 +1182,18 @@ pub struct ModelConfig {
     /// which consumes causal sequence state on top of the classical/residual
     /// path. Off in every existing configuration, so the accepted archive is
     /// unchanged. Gated with `learned` because the type family lives there.
-    #[cfg(all(feature = "phase14", feature = "learned"))]
+    #[cfg(feature = "temporal")]
     pub temporal: bool,
     /// Phase 14.34 control: apply the temporal corrector with permuted weights
     /// (identical size and code, no learned signal).
-    #[cfg(all(feature = "phase14", feature = "learned"))]
+    #[cfg(feature = "temporal")]
     pub temporal_ctl: bool,
     /// Phase 14.34 training (research): hidden width; >0 builds the offline
     /// temporal trainer.
-    #[cfg(all(feature = "phase14", feature = "learned"))]
+    #[cfg(feature = "temporal")]
     pub temporal_hidden: usize,
     /// Phase 14.34 training (research): SGD learning rate.
-    #[cfg(all(feature = "phase14", feature = "learned"))]
+    #[cfg(feature = "temporal")]
     pub temporal_lr: f32,
 }
 
@@ -1350,13 +1350,13 @@ impl ModelConfig {
             info: InfoMode::None,
             #[cfg(feature = "phase14")]
             ctxmaps: Vec::new(),
-            #[cfg(all(feature = "phase14", feature = "learned"))]
+            #[cfg(feature = "temporal")]
             temporal: false,
-            #[cfg(all(feature = "phase14", feature = "learned"))]
+            #[cfg(feature = "temporal")]
             temporal_ctl: false,
-            #[cfg(all(feature = "phase14", feature = "learned"))]
+            #[cfg(feature = "temporal")]
             temporal_hidden: 0,
-            #[cfg(all(feature = "phase14", feature = "learned"))]
+            #[cfg(feature = "temporal")]
             temporal_lr: 0.02,
         }
     }
@@ -1474,7 +1474,7 @@ impl ModelConfig {
 
     /// Phase 14.34: apply the embedded temporal residual corrector. `ctl` selects
     /// the permuted-weight control (identical size and code, no learned signal).
-    #[cfg(all(feature = "phase14", feature = "learned"))]
+    #[cfg(feature = "temporal")]
     pub fn with_temporal(mut self, ctl: bool) -> Self {
         self.temporal = true;
         self.temporal_ctl = ctl;
@@ -1483,14 +1483,14 @@ impl ModelConfig {
 
     /// Phase 14.34 (research): train a temporal corrector of the given hidden
     /// width.
-    #[cfg(all(feature = "phase14", feature = "learned-train"))]
+    #[cfg(all(feature = "temporal", feature = "learned-train"))]
     pub fn with_temporal_train(mut self, hidden: usize) -> Self {
         self.temporal_hidden = hidden;
         self
     }
 
     /// Phase 14.34 (research): the temporal trainer learning rate.
-    #[cfg(all(feature = "phase14", feature = "learned-train"))]
+    #[cfg(all(feature = "temporal", feature = "learned-train"))]
     pub fn with_temporal_lr(mut self, lr: f32) -> Self {
         self.temporal_lr = lr;
         self
@@ -2050,36 +2050,36 @@ pub struct Predictor {
     #[cfg(feature = "phase14")]
     cmap_ctx: Vec<u32>,
     /// Phase 14.34-14.36: the frozen temporal corrector (integer inference).
-    #[cfg(all(feature = "phase14", feature = "learned"))]
+    #[cfg(feature = "temporal")]
     temporal: Option<crate::learned::temporal::Temporal>,
     /// Phase 14.34 (research): the offline temporal trainer shadow.
-    #[cfg(all(feature = "phase14", feature = "learned-train"))]
+    #[cfg(all(feature = "temporal", feature = "learned-train"))]
     temporal_trainer: Option<crate::learned::temporal::TemporalTrainer>,
     /// Phase 14.34 (research): the last temporal feature vector and stretched
     /// prior, kept so the trainer can step on them.
-    #[cfg(all(feature = "phase14", feature = "learned-train"))]
+    #[cfg(all(feature = "temporal", feature = "learned-train"))]
     t_feats: crate::learned::temporal::TemporalFeats,
-    #[cfg(all(feature = "phase14", feature = "learned-train"))]
+    #[cfg(all(feature = "temporal", feature = "learned-train"))]
     t_s_pr: i32,
     /// Phase 14.34: causal sequence state feeding the temporal feature vector. It
     /// advances identically on the encoder and decoder paths.
-    #[cfg(all(feature = "phase14", feature = "learned"))]
+    #[cfg(feature = "temporal")]
     t_last_bit: i32,
-    #[cfg(all(feature = "phase14", feature = "learned"))]
+    #[cfg(feature = "temporal")]
     t_bit_run: i32,
-    #[cfg(all(feature = "phase14", feature = "learned"))]
+    #[cfg(feature = "temporal")]
     t_have_bit: bool,
-    #[cfg(all(feature = "phase14", feature = "learned"))]
+    #[cfg(feature = "temporal")]
     t_match_run: i32,
-    #[cfg(all(feature = "phase14", feature = "learned"))]
+    #[cfg(feature = "temporal")]
     t_match_ema: i32,
-    #[cfg(all(feature = "phase14", feature = "learned"))]
+    #[cfg(feature = "temporal")]
     t_prev_pb_ok: i32,
-    #[cfg(all(feature = "phase14", feature = "learned"))]
+    #[cfg(feature = "temporal")]
     t_prev_corr: i32,
-    #[cfg(all(feature = "phase14", feature = "learned"))]
+    #[cfg(feature = "temporal")]
     t_prev_s: i32,
-    #[cfg(all(feature = "phase14", feature = "learned"))]
+    #[cfg(feature = "temporal")]
     t_byte_run: i32,
 }
 
@@ -2181,7 +2181,7 @@ impl Predictor {
             cmap_specs: cfg.ctxmaps.clone(),
             #[cfg(feature = "phase14")]
             cmap_ctx: vec![0; cfg.ctxmaps.len()],
-            #[cfg(all(feature = "phase14", feature = "learned"))]
+            #[cfg(feature = "temporal")]
             temporal: {
                 if cfg.temporal {
                     crate::learned::temporal::load().map(|n| {
@@ -2195,7 +2195,7 @@ impl Predictor {
                     None
                 }
             },
-            #[cfg(all(feature = "phase14", feature = "learned-train"))]
+            #[cfg(all(feature = "temporal", feature = "learned-train"))]
             temporal_trainer: if cfg.temporal_hidden > 0 {
                 Some(crate::learned::temporal::TemporalTrainer::new(
                     cfg.temporal_hidden,
@@ -2204,27 +2204,27 @@ impl Predictor {
             } else {
                 None
             },
-            #[cfg(all(feature = "phase14", feature = "learned-train"))]
+            #[cfg(all(feature = "temporal", feature = "learned-train"))]
             t_feats: crate::learned::temporal::TemporalFeats([0; crate::learned::temporal::NT]),
-            #[cfg(all(feature = "phase14", feature = "learned-train"))]
+            #[cfg(all(feature = "temporal", feature = "learned-train"))]
             t_s_pr: 0,
-            #[cfg(all(feature = "phase14", feature = "learned"))]
+            #[cfg(feature = "temporal")]
             t_last_bit: 0,
-            #[cfg(all(feature = "phase14", feature = "learned"))]
+            #[cfg(feature = "temporal")]
             t_bit_run: 0,
-            #[cfg(all(feature = "phase14", feature = "learned"))]
+            #[cfg(feature = "temporal")]
             t_have_bit: false,
-            #[cfg(all(feature = "phase14", feature = "learned"))]
+            #[cfg(feature = "temporal")]
             t_match_run: 0,
-            #[cfg(all(feature = "phase14", feature = "learned"))]
+            #[cfg(feature = "temporal")]
             t_match_ema: 0,
-            #[cfg(all(feature = "phase14", feature = "learned"))]
+            #[cfg(feature = "temporal")]
             t_prev_pb_ok: 0,
-            #[cfg(all(feature = "phase14", feature = "learned"))]
+            #[cfg(feature = "temporal")]
             t_prev_corr: 0,
-            #[cfg(all(feature = "phase14", feature = "learned"))]
+            #[cfg(feature = "temporal")]
             t_prev_s: 0,
-            #[cfg(all(feature = "phase14", feature = "learned"))]
+            #[cfg(feature = "temporal")]
             t_byte_run: 0,
             state_map: StateMap::new(),
             indirect,
@@ -2781,7 +2781,7 @@ impl Predictor {
         // state and corrects the classical/residual output in the same
         // stretch-domain way the memoryless corrector does. It is applied on top
         // of whichever path produced `pr` above.
-        #[cfg(all(feature = "phase14", feature = "learned"))]
+        #[cfg(feature = "temporal")]
         let pr = {
             #[cfg(feature = "learned-train")]
             let training = self.temporal_trainer.is_some();
@@ -2849,12 +2849,12 @@ impl Predictor {
         }
         // Phase 14.34 (research): one SGD step of the temporal trainer, before the
         // model state advances.
-        #[cfg(all(feature = "phase14", feature = "learned-train"))]
+        #[cfg(all(feature = "temporal", feature = "learned-train"))]
         if let Some(tr) = self.temporal_trainer.as_mut() {
             tr.step(&self.t_feats, self.t_s_pr, bit);
         }
         // Phase 14.34: advance the causal bit-run state for the next prediction.
-        #[cfg(all(feature = "phase14", feature = "learned"))]
+        #[cfg(feature = "temporal")]
         {
             #[cfg(feature = "learned-train")]
             let active = self.temporal.is_some() || self.temporal_trainer.is_some();
@@ -2909,7 +2909,7 @@ impl Predictor {
             // runs before `buf` grows and before `obs_core` re-points the match
             // models, so it reads exactly the predictions the last byte was coded
             // under.
-            #[cfg(all(feature = "phase14", feature = "learned"))]
+            #[cfg(feature = "temporal")]
             {
                 #[cfg(feature = "learned-train")]
                 let active = self.temporal.is_some() || self.temporal_trainer.is_some();
@@ -2984,13 +2984,13 @@ impl Predictor {
 
     /// Phase 14.34 (research): the quantized temporal network after offline
     /// training.
-    #[cfg(all(feature = "phase14", feature = "learned-train"))]
+    #[cfg(all(feature = "temporal", feature = "learned-train"))]
     pub fn take_temporal_net(&self) -> Option<crate::learned::temporal::Temporal> {
         self.temporal_trainer.as_ref().map(|t| t.quantize())
     }
 
     /// Phase 14.34 (research): temporal training diagnostics.
-    #[cfg(all(feature = "phase14", feature = "learned-train"))]
+    #[cfg(all(feature = "temporal", feature = "learned-train"))]
     pub fn temporal_stats(&self) -> (u64, f64, f64) {
         self.temporal_trainer
             .as_ref()
@@ -3026,7 +3026,7 @@ impl Predictor {
         for c in &self.cmaps {
             m += c.memory_bytes();
         }
-        #[cfg(all(feature = "phase14", feature = "learned"))]
+        #[cfg(feature = "temporal")]
         if let Some(t) = &self.temporal {
             m += t.model_bytes();
         }
@@ -3079,13 +3079,13 @@ impl Cm {
     }
 
     /// Phase 14.34 (research): the trained temporal network.
-    #[cfg(all(feature = "phase14", feature = "learned-train"))]
+    #[cfg(all(feature = "temporal", feature = "learned-train"))]
     pub fn take_temporal_net(&self) -> Option<crate::learned::temporal::Temporal> {
         self.predictor.take_temporal_net()
     }
 
     /// Phase 14.34 (research): temporal training diagnostics.
-    #[cfg(all(feature = "phase14", feature = "learned-train"))]
+    #[cfg(all(feature = "temporal", feature = "learned-train"))]
     pub fn temporal_stats(&self) -> (u64, f64, f64) {
         self.predictor.temporal_stats()
     }

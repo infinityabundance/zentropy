@@ -138,7 +138,7 @@ fn usage() {
          zentropy opportunity <corpus> [--raw] [--oracle] [--top <n>] [--json]          (feature opportunity)\n  \
          zentropy procedure   <corpus> [--class <name>] [--limit <n>] [--json]            (feature procedural)\n  \
          zentropy vocab-price <in> [--top <n>] [--method <m>] [--tune <t>]   (feature vocab-price)\n  \
-         zentropy train-temporal <corpus> [--hidden <n>] [--lr <f>] [--max-bytes <n>] [--out <f>]   (feature phase14+learned-train)\n",
+         zentropy train-temporal <corpus> [--hidden <n>] [--lr <f>] [--max-bytes <n>] [--out <f>]   (feature temporal+learned-train)\n",
         version = zentropy::VERSION
     );
 }
@@ -1261,7 +1261,7 @@ fn cmd_train_residual(_args: &[String]) -> Result<(), String> {
 /// prefix and write the quantized weights. As with `train-residual`, the trainer
 /// runs on the *transformed* stream the predictor actually codes, so training
 /// sees the inference distribution.
-#[cfg(all(feature = "phase14", feature = "learned-train"))]
+#[cfg(all(feature = "temporal", feature = "learned-train"))]
 fn cmd_train_temporal(args: &[String]) -> Result<(), String> {
     let path = args.first().ok_or("train-temporal: need <in>")?;
     let get = |k: &str| -> Option<String> {
@@ -1330,7 +1330,7 @@ fn cmd_train_temporal(args: &[String]) -> Result<(), String> {
 
 #[cfg(not(all(feature = "phase14", feature = "learned-train")))]
 fn cmd_train_temporal(_args: &[String]) -> Result<(), String> {
-    Err("train-temporal: built without the `phase14` + `learned-train` features".into())
+    Err("train-temporal: built without the `temporal` + `learned-train` features".into())
 }
 
 /// Phase 9: measure one `tune` point for a method — encode, hash, receipt.

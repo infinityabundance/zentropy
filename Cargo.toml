@@ -51,7 +51,7 @@ path = "src/bin/zentropy_sfx.rs"
 # infrastructure that is useful when developing (`parallel`, `progress`,
 # `mem-floor`). Rejected or experimental mechanisms are compiled in explicitly with
 # `--features` so they reproduce but do not cost submission bytes.
-default = ["accepted", "parallel", "progress", "mem-floor", "learned-train", "procedural", "opportunity", "phase14"]
+default = ["accepted", "parallel", "progress", "mem-floor", "learned-train", "procedural", "opportunity", "phase14", "temporal"]
 # The scored configuration: exactly the adopted mechanisms. The submission
 # packaging builds with `--no-default-features --features accepted` so that
 # research-plane machinery (the search layer, rayon) cannot leak into the stub.
@@ -228,6 +228,14 @@ procedural = []
 # incumbent at equal memory before anything is wired into the pipeline, so the
 # whole group is gated together and outside `accepted`.
 phase14 = []
+# Phase 14.34-14.36: the temporal residual corrector. Unlike the rest of the
+# `phase14` group this is a *candidate for adoption* -- it wins at every rung
+# measured, including enwik9 -- so it gets its own feature rather than riding on
+# `phase14`: `tools/measure_binary_cost.sh temporal` can then measure the exact
+# marginal executable bytes the scored stub would pay for it, and `accepted` can
+# take it (or not) as a separate, receipted decision. Implies `learned`, because
+# it is a second corrector on the same inference path.
+temporal = ["learned"]
 # `submission` gates out research-only machinery from the decoder stub. The
 # scored build enables it (`--features accepted,submission`): it compiles out the
 # 95-arm research model constructor (see `Method::config_for`), whose only
