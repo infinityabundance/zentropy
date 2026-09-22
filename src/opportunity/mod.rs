@@ -960,7 +960,7 @@ fn encode_byte(enc: &mut RangeEncoder, tree: &[u64; 512], byte: u8) {
 /// the `REALIZABLE` claim falsifiable: a bound the decoder cannot reproduce is
 /// not a bound on a representation.
 #[cfg(test)]
-fn decode_byte(dec: &mut RangeDecoder<'_>, tree: &[u64; 512]) -> u8 {
+fn decode_byte(dec: &mut crate::entropy::RangeDecoder<'_>, tree: &[u64; 512]) -> u8 {
     let mut node = 1usize;
     let mut byte = 0u8;
     for _ in 0..8 {

@@ -128,6 +128,7 @@ pub fn evaluate(
     spans: &[Span],
     cohorts: &[Cohort],
     mode: Mode,
+    min_cohort: usize,
 ) -> Result<(Eval, Vec<CohortReport>), String> {
     let sep = spans.len().saturating_sub(1) as u64;
     let mut ev = Eval {
@@ -174,7 +175,7 @@ pub fn evaluate(
 
         let (sk, base, hole_lens): (skeleton::Skeleton, Vec<u8>, Option<Vec<usize>>) = match mode {
             Mode::Synth => {
-                let sk = skeleton::synthesise(&members);
+                let sk = skeleton::synthesise_with_min(&members, min_cohort);
                 let base = skeleton::materialise_base(&sk)?;
                 if base != sk.base() {
                     return Err("procedure: synthesised base differs from prefix ++ suffix".into());
@@ -260,7 +261,7 @@ mod tests {
         let data = b"{{a|1}} {{a|2}} {{a|3}}";
         let spans = spans_of(data);
         let cohorts = cohort::discover(data, &spans, ClassName::Template);
-        let (ev, _) = evaluate(data, &spans, &cohorts, Mode::Synth).unwrap();
+        let (ev, _) = evaluate(data, &spans, &cohorts, Mode::Synth, cohort::DEFAULT_MIN_COHORT).unwrap();
         assert_eq!(ev.separators, (spans.len() - 1) as u64);
         assert!(ev.total() >= ev.separators);
     }
@@ -273,7 +274,7 @@ mod tests {
         let data = b"{{cite|a=1}}{{cite|b=2}}{{cite|c=3}}";
         let spans = spans_of(data);
         let cohorts = cohort::discover(data, &spans, ClassName::Template);
-        let (ev, reps) = evaluate(data, &spans, &cohorts, Mode::Synth).unwrap();
+        let (ev, reps) = evaluate(data, &spans, &cohorts, Mode::Synth, cohort::DEFAULT_MIN_COHORT).unwrap();
         assert!(ev.residual > 0, "residual stream was not charged");
         let raw: u64 = reps.iter().map(|r| r.residual_raw).sum();
         assert!(raw > 0);
@@ -288,7 +289,7 @@ mod tests {
         let data = b"{{a|1}} {{b|2}} {{c|3}}";
         let spans = spans_of(data);
         let cohorts = cohort::discover(data, &spans, ClassName::Template);
-        let (ev, reps) = evaluate(data, &spans, &cohorts, Mode::LiteralOnly).unwrap();
+        let (ev, reps) = evaluate(data, &spans, &cohorts, Mode::LiteralOnly, cohort::DEFAULT_MIN_COHORT).unwrap();
         assert_eq!(reps.len(), spans.len());
         assert_eq!(ev.residual, 0);
         let sum_bytes: u64 = spans.iter().map(|s| s.len as u64).sum();
@@ -313,7 +314,7 @@ mod tests {
         let data = b"{{cite|url=1|t=x}}{{cite|url=2|t=y}}{{cite|url=3|t=z}}";
         let spans = spans_of(data);
         let cohorts = cohort::discover(data, &spans, ClassName::Template);
-        let (ev, _) = evaluate(data, &spans, &cohorts, Mode::BestMember).unwrap();
+        let (ev, _) = evaluate(data, &spans, &cohorts, Mode::BestMember, cohort::DEFAULT_MIN_COHORT).unwrap();
         assert!(ev.residual > 0);
         assert!(ev.total() >= ev.program + ev.residual);
     }

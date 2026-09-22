@@ -152,6 +152,7 @@ pub const P14_4_PLACEHOLDER: bool = true;
 // * `rank`     — rank/unrank primitives for state coding (§4.3);
 // * `residual` — the typed residual algebra (§4.4).
 pub mod execute;
+pub mod progcodec;
 pub mod program;
 pub mod rank;
 pub mod residual;

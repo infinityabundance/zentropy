@@ -81,6 +81,11 @@ pub struct Options {
     pub seed: u64,
     /// Also measure the accepted archive of the isolated corpus (the "current S").
     pub corpus_s: bool,
+    /// Minimum members for a cohort to be worth sharing a program (§14.13).
+    /// Below this the cohort is priced *directly* and pays no program at all, so
+    /// a singleton can never look good or bad by accident. Exposed as a knob
+    /// because the boundary verdict must be robust to it, not an artefact of it.
+    pub min_cohort: usize,
 }
 
 impl Default for Options {
@@ -94,6 +99,7 @@ impl Default for Options {
             control_best_member: true,
             seed: 0x9e37_79b9_7f4a_7c15,
             corpus_s: true,
+            min_cohort: crate::procedure::cohort::DEFAULT_MIN_COHORT,
         }
     }
 }
@@ -149,6 +155,12 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
             }
             "--random-cohorts" => o.random_cohorts = true,
             "--no-random-cohorts" => o.random_cohorts = false,
+            "--min-cohort" => {
+                let v = next("--min-cohort")?;
+                o.min_cohort = v
+                    .parse()
+                    .map_err(|_| format!("procedure: bad --min-cohort '{v}'"))?;
+            }
             "--control-best-member" => o.control_best_member = true,
             "--no-control-best-member" => o.control_best_member = false,
             "--no-corpus-s" => o.corpus_s = false,

@@ -226,23 +226,23 @@ pub fn analyse(path: &str, data: &[u8], opts: &Options) -> Result<Report, String
         let a = cost::cost_coded(&stream);
         let cohorts: Vec<Cohort> = cohort::discover(data, &ex.spans, class);
 
-        let (synth, cohort_detail) = cost::evaluate(data, &ex.spans, &cohorts, Mode::Synth)?;
+        let (synth, cohort_detail) = cost::evaluate(data, &ex.spans, &cohorts, Mode::Synth, opts.min_cohort)?;
 
         let (random, random_detail) = if opts.random_cohorts && !cohorts.is_empty() {
             let mut rng = Rng::new(opts.seed);
             let rc = cohort::randomised(&cohorts, &mut rng);
-            cost::evaluate(data, &ex.spans, &rc, Mode::Synth)?
+            cost::evaluate(data, &ex.spans, &rc, Mode::Synth, opts.min_cohort)?
         } else {
             (Eval::default(), Vec::new())
         };
 
         let (best, _) = if opts.control_best_member {
-            cost::evaluate(data, &ex.spans, &cohorts, Mode::BestMember)?
+            cost::evaluate(data, &ex.spans, &cohorts, Mode::BestMember, opts.min_cohort)?
         } else {
             (Eval::default(), Vec::new())
         };
 
-        let (literal, _) = cost::evaluate(data, &ex.spans, &cohorts, Mode::LiteralOnly)?;
+        let (literal, _) = cost::evaluate(data, &ex.spans, &cohorts, Mode::LiteralOnly, opts.min_cohort)?;
 
         out.push(ClassReport {
             class: class.name(),

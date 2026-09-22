@@ -1,13 +1,13 @@
 # Phase 14 — first boundary report
 
-> **Required by §14.52.** The pivotal question of Phase 14 was whether any real
+> **Required by §14.52.** Phase 14's pivotal question was whether any real
 > Wikipedia-derived class is strictly cheaper as a *shared program plus state plus
-> residual* than as the accepted representation. This document records the
-> measurement, its controls, and exactly one evidence-driven verdict.
+> residual* than as the accepted representation. This records the measurement, its
+> controls, the two redesigns the first pass forced, and the single evidence-driven
+> verdict.
 >
-> Everything below is measured on `evidence/corpus/enwik6` (the development rung).
-> Nothing here is extrapolated to enwik9, and the verdict is about the
-> representation *variant tested*, not about the idea in the abstract.
+> Everything here is measured on `evidence/corpus/enwik6` (the development rung).
+> Nothing is extrapolated to enwik9.
 
 ## 1. Current S
 
@@ -23,131 +23,141 @@
 Every coded byte is attributed to one structural class and one predictor role, and
 the report is rejected unless the parts sum to the total.
 
-enwik6, accepted pipeline (ideal codelength of the transformed stream):
+enwik6, accepted pipeline: lexical 187,770 B (76.4%), punctuation 32,979 (13.4%),
+xml_structure 11,160 (4.5%), numbers 8,600 (3.5%), unclassified 4,196 (1.7%),
+dict_state 962 (0.4%).
 
-| structural class | bytes | share |
-|---|---|---|
-| lexical | 187,770 | 76.4% |
-| punctuation | 32,979 | 13.4% |
-| xml_structure | 11,160 | 4.5% |
-| numbers | 8,600 | 3.5% |
-| unclassified | 4,196 | 1.7% |
-| dict_state | 962 | 0.4% |
-
-enwik6, `--raw` (1:1 with the corpus, full ZIR taxonomy):
-
-| class | bytes | share |
-|---|---|---|
-| lexical | 140,218 | 54.5% |
-| **links** | **59,249** | **23.0%** |
-| punctuation | 28,449 | 11.1% |
-| templates | 10,227 | 4.0% |
-| tables | 10,017 | 3.9% |
-| numbers | 4,810 | 1.9% |
-| xml_structure | 3,521 | 1.4% |
-
-Links are the largest single structural pool after prose, which is why
-`wiki_link` is one of the classes the boundary experiment tests.
+enwik6, `--raw` (1:1 with the corpus): lexical 140,218 (54.5%), **links 59,249
+(23.0%)**, punctuation 28,449 (11.1%), templates 10,227 (4.0%), tables 10,017
+(3.9%), numbers 4,810 (1.9%), xml_structure 3,521 (1.4%).
 
 ## 3. The realizable lower-bound oracle (`--oracle`)
 
-Per class, the measured cost is shown beside a zeroth-order bound from that
-class's own byte histogram, labelled `TARGET-FITTED ENTROPY`. On enwik6 the
-lexical class measures 187,770 B against a 369,196 B zeroth-order bound — the
-model is *far below* zeroth-order on prose, which is the expected direction and
-means the oracle is not the binding constraint. No class showed a measured cost
-above its own zeroth-order bound, so there is no degenerate class where the
-current model is leaving trivial order-0 redundancy on the table.
+Measured cost beside a zeroth-order bound from the class's own histogram, labelled
+`TARGET-FITTED ENTROPY`. On enwik6 the lexical class measures 187,770 B against a
+369,196 B zeroth-order bound: the model is **far below** order-0 on prose, so the
+oracle is not the binding constraint and no class is leaving trivial order-0
+redundancy on the table.
 
 ## 4. The boundary experiment (`zentropy procedure`)
 
 `A` = the accepted configuration's measured cost for the class stream `S`.
-`B` = `serialize(program) + state + residual + marginal decoder + separators`, with
-`residual` coded through the *same* accepted configuration.
+`B` = `program + state + residual + marginal decoder + separators`, residual coded
+through the *same* accepted configuration. enwik6, `--limit 500`, bytes:
 
-enwik6, `--limit 400`, all figures in bytes:
-
-| class | spans | \|S\| | **A** | B synth | B random | B best-member | B literal-only | ΔS synth |
+| class | spans | \|S\| | **A** | B synth | B random | B best-member | B literal-only | ΔS |
 |---|---|---|---|---|---|---|---|---|
-| template | 400 | 35,622 | 10,995 | 22,260 | 22,416 | 21,532 | 39,298 | **+11,265** |
-| wiki_link | 400 | 10,146 | 4,023 | 5,778 | 5,778 | 5,505 | 13,750 | +1,755 |
-| wiki_table | 18 | 22,743 | 6,445 | 6,745 | 6,745 | 7,937 | 22,923 | **+300** |
-| xml_open | 400 | 4,631 | 296 | 1,642 | 2,339 | 1,078 | 8,232 | +1,346 |
-| number | 400 | 2,425 | 593 | 1,197 | 1,197 | 1,263 | 6,025 | +604 |
-| url | 400 | 18,696 | 6,633 | 8,622 | 8,622 | 8,441 | 22,301 | +1,989 |
-| entity | 400 | 2,445 | 94 | 674 | 674 | 562 | 6,045 | +580 |
+| template | 465 | 37,625 | 11,633 | 15,438 | 14,356 | 22,699 | 35,317 | **+3,805** |
+| wiki_link | 500 | 12,605 | 4,761 | 6,605 | 6,658 | 7,484 | 16,900 | +1,844 |
+| wiki_table | 18 | 22,743 | 6,445 | 6,680 | 6,688 | 9,613 | 13,814 | **+235** |
+| xml_open | 500 | 5,684 | 300 | 1,351 | 1,759 | 1,124 | 10,131 | +1,051 |
+| number | 500 | 2,948 | 696 | 1,390 | 1,390 | 1,493 | 7,448 | +694 |
+| url | 467 | 21,590 | 7,549 | 9,485 | 9,485 | 9,593 | 25,330 | +1,936 |
+| entity | 500 | 3,048 | 112 | 751 | 751 | 686 | 7,548 | +639 |
 
-A single-class run at `--class template --limit 2000` (465 spans, \|S\| = 37,625 B):
-A = 11,633; B synth = 24,361 — **program 14,097 + state 346 + residual 9,454 +
-decoder 0 (UNMEASURED) + separators 464** — vs random 26,037, best-member 23,077,
-literal-only 41,887. ΔS **+12,728**.
+Controls behave: random cohorts are always ≥ the synthesised skeleton (so the
+cohorting is not doing the work); best-actual-member sometimes beats the
+synthesised skeleton and sometimes loses (so anti-unification is not reliably
+better than reusing a real member); `Literal`-only is 2–7× A, confirming the
+accounting charges a procedure for sharing nothing.
 
-### 4.1 Controls
+### 4.1 Two redesigns the first pass forced, both now in
 
-* **Random cohorts at equal size distribution**: always ≥ the synthesised
-  skeleton, so the cohorting is not doing the work.
-* **Best-actual-member as the shared base**: sometimes beats the synthesised
-  skeleton (xml_open, wiki_link, url, entity) and sometimes loses (number,
-  wiki_table, template). Anti-unification is therefore not reliably better than
-  reusing a real member.
-* **`Literal`-only, no sharing**: 2–7× A, confirming the accounting is sound — a
-  procedure that shares nothing is correctly charged for sharing nothing.
+The first pass charged programs at `serialize(p).len()` — raw varints — and let
+singleton cohorts pay a whole program for nothing. Both were defects against the
+plan (§14.29 requires the explanation to be entropy-coded; §14.13 presupposes a
+shared program worth sharing), and both are fixed and measured:
 
-## 5. Verdict: **REDESIGN**
+* **the explanation is now modelled** (`src/procedural/progcodec.rs`): six streams
+  (opcode / arity / parameter / edge-distance / length / literal) each coded by the
+  smallest of raw, static rANS with a *charged* histogram, order-0 and order-1
+  adaptive coding. A realistic ~51-node template skeleton drops to **56%** of raw
+  (286 → 160 B) and a repeated-opcode program to **32%** (1,204 → 385 B);
+  `best_program_bytes` returns the minimum, so a program too small for its own
+  model bytes is honestly charged raw.
+* **a minimum cohort size with an unshared fallback**: below it a cohort pays **no
+  program at all** and its members are priced directly, so a singleton cannot look
+  good or bad by accident. On the template class the program term fell from
+  14,097 B to **611 B** at `min_cohort 8`, and ΔS from +12,728 to +3,805.
 
-**No class wins.** `B ≥ A` for all seven classes; the smallest gap is **+300 B**
-on `wiki_table`, against +12,728 B on `template`. By Kill Gate A the representation
-*variant tested* is **rejected**: a shared byte-level skeleton plus a `Patch`
-residual does not beat coding the same bytes directly.
+### 4.2 The asymptote, which is the decisive measurement
 
-Three mechanical causes are visible in the numbers, and all three are fixable, so
-this is a redesign rather than a stop:
+If the family cannot win, withdrawing sharing should show `B` approaching a floor
+rather than improving without limit. It does. Template class, `--limit 2000`,
+A = 11,633 B:
 
-1. **The program was charged uncompressed.** On `template` the program is 14,097 B
-   of a 24,361 B B-cost — **58%** — and it is charged at
-   `serialize(program).len()`, i.e. raw varints. §14.29 is explicit that the
-   explanation is itself data and must be compressed (opcode / arity / edge /
-   length / parameter streams under their own structural model). This pass did not
-   do that, so the largest single term in B is unmodelled. On this evidence the
-   family has not yet been tested as specified.
-2. **Cohorting is too weak.** 465 template spans collapse into cohorts dominated
-   by singletons, and a singleton cohort degenerates to a `Literal` program — the
-   worst of both worlds. §14.13 requires the program to be paid once and shared,
-   which presupposes a minimum useful cohort size and an explicit non-shared
-   fallback that does not pay a program at all.
-3. **The residual loses to direct coding.** On `wiki_table` the residual is
-   6,649 B where A is 6,445 B: re-coding the mismatch *through the accepted coder*
-   is worse than coding the original bytes, because the original bytes are
-   structured text that the models already exploit while a patch stream is not.
-   This is the sharpest finding of the pass: a `Patch` decomposition only pays if
-   the base is close enough that the residual is a *small* stream, and here it is
-   not.
+| min_cohort | program | state | residual | sep | **B** | ΔS |
+|---|---|---|---|---|---|---|
+| 3 | 1,729 | 437 | 12,808 | 464 | 15,438 | +3,805 |
+| 8 | 611 | 467 | 12,879 | 464 | 14,421 | +2,788 |
+| 32 | 152 | 476 | 12,775 | 464 | 13,867 | +2,234 |
+| **1000** (no sharing) | **0** | 485 | 12,642 | 464 | **13,591** | **+1,958** |
 
-Per §14.51's instruction — *"If that cannot be demonstrated: stop expanding the
-DSL. Diagnose the reason first"* — the DSL is frozen at seven operators and no new
-operators are added until cause 1 is fixed and the experiment re-run.
+and wiki_table is flat at B = 6,680 (program 0, state 33, residual 6,630, sep 17)
+against A = 6,445 for every `min_cohort` tested.
 
-## 6. Estimated remaining headroom
+So with **zero** sharing — no program, no anti-unification, nothing procedural at
+all — the decomposition's residual stream is still strictly more expensive than
+coding the same bytes directly: 12,642 B vs 11,633 B on template, 6,630 vs 6,445 on
+wiki_table. The residual wire format pays per-member headers and the cohort
+reordering discards context the coder was exploiting, so `B`'s floor is
+`A + overhead`.
 
-The honest position: this experiment does **not** bound the family's headroom,
-because the largest term in `B` was unmodelled. What it does bound is the
-*uncompressed-skeleton* variant, which is dead on every class.
+## 5. Verdict: **STOP PROCEDURAL FAMILY** (as specified)
 
-The next measurement that would actually bound the family is the same experiment
-with the program entropy-coded under its own structural model, plus a minimum
-cohort size. If `B` still exceeds `A` on every class with the program compressed,
-then the residual-vs-direct finding (cause 3) is structural and the family should
-be **stopped**; if `B` drops below `A` on any class, that class becomes the first
-Phase 14 adoption candidate and the campaign continues.
+`B ≥ A` on all seven classes, the smallest gap being **+235 B** on `wiki_table`,
+and §4.2 shows the gap cannot be closed by any cohorting policy: the best case
+degenerates to direct coding plus overhead. This is Kill Gate A, and Kill Gate D
+names the reason directly — *"program/state are tiny but residual remains
+enormous: shift research toward residual/language modeling."* Program and state are
+0–611 B and 33–485 B; the residual is 6,630–12,879 B.
 
-## 7. What this pass did establish
+Three quantified causes, and they are structural rather than implementation
+defects:
 
-* `zentropy opportunity` measures where the codelength is, with parts that sum to
-  the total, in two modes with their limitations stated.
-* `zentropy procedure` measures `A` against `B` with its controls, on the same
-  bytes, and reports decoder cost as **UNMEASURED** rather than omitting it.
-* The bounded procedural VM, its exact serializer, five independently enforced
-  bounds, the rank/unrank primitives and the typed residual algebra all exist and
-  are covered by tests (265 passing) without costing the scored stub a byte.
-* The negative result is recorded with its causes rather than hidden, which is the
-  outcome §14.51 asks for.
+1. **Where shared structure is abundant, it is already nearly free.** The
+   `xml_open` class codes at **300 B for 5,684 B of spans — 0.42 bits/byte** — and
+   `entity` at 112 B for 3,048 B (0.29 bits/byte). A shared program can only add
+   overhead there.
+2. **Where bytes are expensive, shared structure is small.** `wiki_link` codes at
+   3.02 bits/byte and `url` at 2.80; anti-unification strips only a small prefix,
+   suffix and a few shared segments, so the residual stays ~the full member bytes.
+3. **The residual stream loses to direct coding even at zero sharing** (§4.2), so
+   the family's floor is above `A` on these classes.
+
+The DSL stays frozen at seven operators: adding operators cannot address any of the
+three causes, and §14.51's instruction for exactly this outcome is *"stop expanding
+the DSL… diagnose the reason first."*
+
+## 6. Where the remaining headroom actually is
+
+The attribution (§2) and the oracle (§3) answer this, and they redirect the phase:
+
+* **lexical prose is 76% of the codelength**, and the model is already 2× below
+  order-0 on it — so the remaining pool is *better modelling of expensive running
+  text*, not structural reconstruction;
+* links are the largest non-prose pool at 23% of the raw-stream codelength, and
+  they code at 3.02 bits/byte — expensive, but §4 shows a program/residual
+  decomposition does not help them.
+
+So the correct continuation is the plan's own modelling branch, which needs no new
+representation family: §14.30 `ContextMap`, §14.32 deep PPM as a distribution
+provider, §14.33 hierarchical mixing, §14.34-14.36 the temporal learned residual
+expert with model-size-aware training. That is also, independently, what Phase 13's
+Tier 1 wants re-tested — and the two now agree on the evidence.
+
+## 7. What this pass established
+
+* `zentropy opportunity`: where the codelength is, in two modes with their limits
+  stated, with parts that sum to the total.
+* `zentropy procedure`: `A` vs `B` with its controls, on the same bytes, reporting
+  decoder cost as **UNMEASURED** rather than omitting it, and exposing the
+  asymptote that makes the verdict decisive.
+* A bounded procedural VM with an exact serializer, five independently enforced
+  bounds, rank/unrank primitives, a typed residual algebra, an entropy-coded
+  program representation and a bounded target-directed search — all covered by
+  tests (291 passing) and all costing the scored stub **not one byte** (still
+  125,056 B).
+* A negative result with its causes, its controls and its asymptote, which is the
+  outcome §14.52 asks for and which saves the campaign from months of tuning in the
+  wrong family.
