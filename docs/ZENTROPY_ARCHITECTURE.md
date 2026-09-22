@@ -153,24 +153,28 @@ Honest status as of the current revision. `MEASURED` means the number exists in
 
 The **accepted configuration** is `Method::Residual` (structural hoist + word token
 reversion + column expert + Phase-4 match family + `sse-3` + article layout +
-learned residual corrector) at **`tune 53`** — scale 3 (order tables of 2^27 at
-enwik9) on the high nibble, mixer LR 16 on the low nibble, APM axis off. Every
-number below reconstructs exactly and is bound to a receipt in `evidence/runs/`.
+learned residual corrector) at **`tune 51`** — scale 3 (order tables of 2^27 at
+enwik9) on the high nibble, mixer LR 8 on the low nibble, APM axis off — with the
+measured adaptation ladder and a residual corrector retrained against the current
+predictor. Every number below reconstructs exactly and is bound to a receipt in
+`evidence/runs/`.
 
 The accepted configuration is tuned **for enwik9, the scored corpus**. The smaller
-rungs are screening instruments, and after Phases 9 and 11 they are slightly
-*worse* than they were at the old tunes — LR 16 and the larger tables cost
-enwik6/7/8 a few KB and buy enwik9 nearly 4 MB, because the optimum of a
-hyperparameter follows the predictor and the predictor is the 10⁹-byte corpus.
-Reading the ladder as a monotone improvement is a category error: the target is
-enwik9.
+rungs are screening instruments, and after Phases 9, 11 and 12 they are slightly
+*worse* than they were at the old tunes — the mixer rate, the table scale and the
+adaptation ladder all have optima that move as the predictor grows, and the
+target is the 10⁹-byte corpus. Reading the ladder as a monotone improvement is a
+category error.
 
 | Corpus | bytes | archive (accepted) | bits/byte | ratio | encode wall | peak RSS |
 |---|---|---|---|---|---|---|
-| enwik6 | 1,000,000 | 262,750 | 2.1020 | 3.81 | ~1.8 s | — |
-| enwik7 | 10,000,000 | 2,333,062 | 1.8664 | 4.29 | ~25 s | — |
-| enwik8 | 100,000,000 | 20,865,077 | 1.6692 | 4.79 | ~330 s | — |
-| enwik9 | 1,000,000,000 | **165,344,019** | **1.3228** | **6.05** | ~58 min | 5.63 GiB |
+| enwik6 | 1,000,000 | 245,797 | 1.9664 | 4.07 | ~1.4 s | — |
+| enwik7 | 10,000,000 | 2,217,223 | 1.7738 | 4.51 | ~22 s | — |
+| enwik8 | 100,000,000 | 20,066,185 | 1.6053 | 4.98 | ~231 s | — |
+| enwik9 | 1,000,000,000 | **160,015,425** | **1.2801** | **6.25** | ~40 min | 5.96 GiB |
+
+All four reconstruct exactly, and the **enwik9** figure is measured on the
+*shipped stub*, not the research driver (`submission/MANIFEST.txt`).
 
 The accepted configuration's executable is the **125,056 B** scored stub
 (`--profile submission --no-default-features --features accepted,submission`,
@@ -179,9 +183,7 @@ all; the smaller dynamic build is 105,536 B and requires glibc ≥ 2.34). See
 [`LICENCE_INVENTORY.md`](LICENCE_INVENTORY.md) §4 for why eligibility beats 19 KB.
 `accepted` is the single definition of the scored feature set, so research-plane
 machinery — the Phase-9 search layer, rayon — cannot leak into `S` by forgetting
-a flag. Most of the stub is dispatch for rejected methods, which Phase 12
-reclaims; it is charged correctly here, but should not survive into a final
-submission.
+a flag.
 
 Mechanisms admitted by measurement (each a sequential experiment; a mechanism
 only counts when the *complete* `ΔS` is negative):
@@ -206,6 +208,8 @@ only counts when the *complete* `ΔS` is negative):
 | Phase 9 mixer-LR re-tune (**LR 16**, `tune 5`, zero executable cost) | enwik9 **−359,748** (169,642,087 → 169,282,339, 1.3543 bpc); LR 20 was −158,058 and LR 24 the old accepted value | **ADOPTED** |
 | Phase 9 APM adaptation-shift axis | enwik7 ≈−12 KB on the mean, enwik8 +653 at the best LR, **enwik9 +90,996 at the best LR** | **REJECTED at scale**, compiled out (`--features apm-tune` reproduces it) |
 | Phase 11 adaptation ladder (`ACCEPTED_RATES`) | enwik6 −15,942; enwik7 −106,709; enwik8 −674,765; **enwik9 −3,925,403** (165,344,019 → 161,418,616, 1.2913 bpc), exact, measured 0 B of executable on the shipped target | **ADOPTED** |
+| Phase 12 residual-corrector **retrain** (no code change; 120 B weights unchanged) | enwik9 **−664,427** (161,418,616 → 160,754,189) | **ADOPTED** |
+| Phase 12 mixer-LR move to **LR 8** (`tune 51`, zero executable cost) | enwik9 **−738,764** (160,754,189 → **160,015,425**, 1.2801 bpc); every neighbour in `MIXER_LRS` worse on both sides | **ADOPTED** |
 
 > **Accounting note.** The executable cost of a mechanism is *measured*, never
 > estimated: build an otherwise-identical submission binary with and without the

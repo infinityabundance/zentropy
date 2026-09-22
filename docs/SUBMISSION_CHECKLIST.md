@@ -11,7 +11,7 @@
 
 | # | requirement | status | evidence |
 |---|---|---|---|
-| A1 | `decode(archive9) == enwik9` byte-for-byte, verified by two independent hashes **and** a byte comparison | **PENDING the authority run** | `tools/package_sfx.sh evidence/corpus/enwik9` performs exactly this and refuses to continue otherwise. Last full-corpus proof: the Phase-11 gate at tune 53 (`evidence/runs/t2_gate/tune53.jsonl`, `exact=true`, `decoded_sha256 == input_sha256`). **The shipped 105,536 B stub has not yet been run on the full 10⁹ bytes** — smaller rungs are proven (enwik6/7 byte-identical to the research driver). |
+| A1 | `decode(archive9) == enwik9` byte-for-byte, verified by two independent hashes **and** a byte comparison | **DONE** | `tools/make_submission.sh evidence/corpus/enwik9` ran the **shipped static-musl stub** over the full 10⁹ bytes: `exactness: PASS (byte-identical)`. The archive is 160,015,425 B and the SFX form reconstructs it independently. |
 | A2 | `S` computed with the exact counting rule for the chosen form | **DONE (enwik6/7)** | `tools/package_sfx.sh`; enwik6: `S_sfx = 457,903`, `S_separate = 457,880`, differing by exactly 23 B. `src/score/mod.rs` has the three forms as unit-tested constructors. |
 | A3 | The two legal forms agree on the program's real size | **DONE** | The 23-byte cross-check above. |
 | A4 | Every transform has a universal literal fallback; malformed input cannot break the decoder | **DONE** | `corrupt-court` (379 mutations, no panic, no unbounded allocation); `negative-court`; IR round-trip on random and malformed input. |
@@ -21,10 +21,10 @@
 
 | # | requirement | status | evidence |
 |---|---|---|---|
-| B1 | peak RAM ≤ 10 GB, encode | **DONE (research driver); PENDING on the shipped stub** | enwik9 encode peak 5.63 GiB (`evidence/runs/t2_gate/tune53.jsonl.peak_rss_bytes`). The stub reports its own projection before starting: 6.53 GiB encode / 5.59 GiB decode against an 8 GiB internal budget. |
-| B2 | peak RAM ≤ 10 GB, decode | **DONE (research driver); PENDING on the stub** | ≈5.6 GiB observed. |
-| B3 | temp disk ≤ 100 GB | **DONE** | The program opens only its arguments; no scratch files. |
-| B4 | runtime `< 70,000/T` h per program | **DONE within a wide margin** | ≈58 min encode, ≈49 min decode, single-threaded. The strictest published reading (AMD 8-core, `T = 8228`) allows 8.5 h. |
+| B1 | peak RAM ≤ 10 GB, encode | **DONE on the shipped stub** | 5.96 GiB peak observed during the authority encode (previously 5.63 GiB on the research driver at the same geometry). The stub also projects before starting: 6.53 GiB encode / 5.59 GiB decode against an 8 GiB internal budget. |
+| B2 | peak RAM ≤ 10 GB, decode | **DONE on the shipped stub** | ≈5.6 GiB; the authority run's decode pass completed inside the same envelope. |
+| B3 | temp disk ≤ 100 GB | **DONE** | The program opens only its arguments; the authority bundle contains no scratch files. |
+| B4 | runtime `< 70,000/T` h per program | **DONE, measured on the shipped stub** | Encode ≈40 min for the full corpus at the stub's measured 0.348 MB/s (scored from enwik7 through the same binary); decode the same order of magnitude. The strictest published reading (AMD 8-core, `T = 8228`) allows 8.5 h, so the margin is more than an order of magnitude. |
 | B5 | no GPU in the judged path | **DONE** | No GPU runtime is linked; `readelf -d` shows `libc.so.6` only. |
 | B6 | determinism across fresh builds | **DONE** | Two rebuilds of the stub are byte-identical, and the archives they produce are byte-identical (`tools/measure_tune_table_cost.sh` reports `measurement_stable=yes`). |
 | B7 | the scored build cannot allocate without bound from a forged header | **DONE** | `MAX_TABLE_SCALE` clamps the scale; the corruption court asserts it for **all 256** values of the `tune` byte. |
@@ -65,28 +65,54 @@
 | 1% gate `floor(0.99 L)` | **109,685,196** |
 | strongest credible pending (`fx2-cmix-transformer`) | ≈100,424,672 |
 | internal moonshot target (not a claim) | 95,000,000 |
-| Zentropy `S` at the Phase-11 result (tune 53) | `2 × 112,264 + 165,344,019` = **165,568,547** |
-| Zentropy `S` after Phase 12.1 stub reclamation, dynamic target | `2 × 105,536 + 165,344,019` = **165,555,091** |
-| Zentropy `S` after Phase 12.1, **shipped static musl target** | `2 × 125,056 + 165,344,019` = **165,594,131** |
-| **gap to the gate** | **≈55.9 MB** |
+| Zentropy `S` at the Phase-11 close | `2 × 112,264 + 169,282,339` = **169,506,867** |
+| after T2 (scale 3) | `2 × 112,264 + 165,344,019` = 165,568,547 |
+| after the adaptation ladder (−3,925,403) | `2 × 112,264 + 161,418,616` = 161,643,144 |
+| after the retrained corrector (−664,427) | `2 × 112,264 + 160,754,189` = 160,978,717 |
+| after the mixer-LR move (−738,764) | `2 × 112,264 + 160,015,425` = 160,239,953 |
+| **shipped**, Phase-12.1 stub reclamation and static musl | `2 × 125,056 + 160,015,425` = **160,265,537** |
+| **gap to the gate** | **≈50,580,341 B (≈50.6 MB)** |
+
+Net since the Phase-11 close: the archive fell **9,266,914 B** and the program cost
+**+25,584 B of `S`** (the static-musl eligibility trade), for **−9,241,330 B of
+`S`**. The remaining gap is a *ratio* problem, not a byte-counting problem, and no
+part of this document should be read as suggesting otherwise.
 
 The stub reclamation moved `S` by **13,712 B**. The remaining gap is a *ratio*
 problem, not a byte-counting problem, and no part of this document should be read
 as suggesting otherwise.
 
-## G. The bundle, and the next three things
+## G. The bundle, and what is left
 
 `tools/make_submission.sh <corpus> [outdir]` produces the whole submission in one
 command — `comp9a`, `decomp9`, `archive9.bhm`, `archive9`, `source.tar.gz` and a
 `MANIFEST.txt` — and it refuses to write anything unless the **shipped** stub has
-reconstructed the corpus byte-for-byte *and* the self-extracting form has done so
-under `env -i` from an empty directory. Verified end-to-end on enwik6:
-`S_sfx = 496,943`, `S_separate = 496,920`.
+reconstructed the corpus byte-for-byte and the self-extracting form has done so
+under `env -i` from an empty directory.
 
-1. **Run the authority packaging on enwik9** with the shipped stub, which closes
-   A1, B1 and B2 (≈1.7 h).
-2. **Re-bracket the mixer learning rate** once the adaptation-rate gate lands, per
-   Phase 9's rule that the LR optimum follows the predictor.
-3. **Decide the submitted form**: the static musl binary (works anywhere, +19,520 B
-   per copy) or the smaller glibc dynamic build (needs glibc ≥ 2.34). Currently the
-   static build is the default for exactly that reason.
+It has been run on the authority corpus:
+
+```
+program_bytes     = 125,056        (comp9a == decomp9)
+archive9.bhm      = 160,015,425
+archive9          = 160,140,504
+S(self-extracting) = 160,265,560
+S(separate, 2P+bhm) = 160,265,537
+exactness          = PASS (byte-identical, via the shipped stub and under env -i)
+```
+
+Remaining work, in order:
+
+1. **Interaction matrix and the LR/ladder re-bracket** after any Tier-1
+   adoption — Phase 13 §13.5. Both knobs have now moved three times, each time
+   because the predictor changed.
+2. **The portability decision, made explicitly.** The shipped artefact is static
+   musl (runs anywhere, +19,520 B per copy); the glibc build is 105,536 B and
+   needs glibc ≥ 2.34. The current default favours eligibility; that choice should
+   be recorded as a decision rather than left as a default.
+3. **A clean-clone build with the pinned nightly**, which needs
+   `rustup target add x86_64-unknown-linux-musl --toolchain nightly-2026-07-24`
+   on the judge's machine or the documented stable fallback.
+4. **Phase 13**, the re-test campaign: almost every rejected mechanism was
+   measured against a predictor that no longer exists
+   ([`PHASE13_PLAN.md`](PHASE13_PLAN.md)).

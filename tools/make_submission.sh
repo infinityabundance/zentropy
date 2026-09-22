@@ -50,17 +50,20 @@ P=$(wc -c < "$STUB")
 B=$(wc -c < "$BHM")
 A=$(wc -c < "$SFX")
 
-echo "=== 12.2  proving the shipped stub reconstructs from submitted bytes alone ===" >&2
-# Deliberately *not* the driver: the artefact under test is the stub.
-"$STUB" d "$BHM" "$OUT/.verify"
-cmp -s "$CORPUS" "$OUT/.verify" || {
-    echo "FAIL: the shipped stub did not reconstruct the corpus byte-for-byte" >&2
-    exit 1
-}
-rm -f "$OUT/.verify"
+echo "=== 12.2  the shipped stub reconstructs from submitted bytes alone ===" >&2
+# `package_sfx.sh` has just done exactly this (same stub, same archive, `cmp`
+# against the corpus) and refuses to continue otherwise, so it is *not* repeated
+# here. On enwik9 a duplicate pass is 45 minutes of machine time for a second
+# assertion of the same fact, and this script's first version paid it twice more
+# without noticing. The check that is genuinely different — extraction through
+# the self-extracting container under a scrubbed environment — follows.
 
 echo "=== 12.4  self-containment: empty directory, scrubbed environment ===" >&2
-( cd "$OUT" && env -i "./$NAME.archive9" && cmp -s data9 "$CORPUS" ) || {
+# Capped like the other stub invocations: this is a full decode of a 10^9-byte
+# corpus, and it runs from the bundle directory where the earlier `cd` makes a
+# relative path useless — hence the absolute corpus path resolved at the top.
+( cd "$OUT" && ZENTROPY_ALLOW_CONCURRENT=1 sh "$ROOT/tools/run_guarded.sh" \
+    "${ZENTROPY_STUB_CAP_GIB:-9}" env -i "./$NAME.archive9" && cmp -s data9 "$CORPUS" ) || {
     echo "FAIL: the self-extracting form does not reconstruct under env -i" >&2
     exit 1
 }
@@ -76,15 +79,25 @@ echo "=== 12.7  source form ===" >&2
     src Cargo.toml Cargo.lock .cargo tools docs LICENSE-MIT README.md 2>/dev/null )
 
 echo "=== assembling the bundle ===" >&2
+# The submitted names are fixed by the rules, not by the corpus: comp9a, decomp9,
+# archive9.bhm, archive9. The packaging step names its outputs after the corpus,
+# which is right for a research receipt and wrong for a submission (a manifest
+# that named a file the bundle did not contain would be worse than no manifest).
 cp "$STUB" "$OUT/comp9a"
 cp "$STUB" "$OUT/decomp9"
+cp "$BHM" "$OUT/archive9.bhm"
 cp "$SFX" "$OUT/archive9"
+# Drop the corpus-named intermediates so the bundle contains exactly what the
+# manifest lists and nothing else. Note the manifest hashes `archive9.bhm`, not
+# `$BHM` — hashing the intermediate after deleting it would silently produce an
+# empty digest.
+rm -f "$OUT/$NAME.bhm" "$OUT/$NAME.archive9"
 
 {
     echo "Zentropy submission bundle"
     echo "corpus      = $NAME ($(wc -c < "$CORPUS") bytes)"
     echo "corpus_sha256 = $(sha256sum "$CORPUS" | cut -d' ' -f1)"
-    echo "archive_sha256 = $(sha256sum "$BHM" | cut -d' ' -f1)"
+    echo "archive_sha256 = $(sha256sum "$OUT/archive9.bhm" | cut -d' ' -f1)"
     echo "revision    = $(git --no-pager -C "$ROOT" rev-parse HEAD 2>/dev/null || echo '<no git>')"
     echo "target      = $TARGET_TRIPLE"
     echo "features    = accepted,submission"
@@ -92,7 +105,7 @@ cp "$SFX" "$OUT/archive9"
     echo "toolchain   = nightly-2026-07-24, -Z build-std=std,panic_abort, -Cpanic=immediate-abort"
     echo ""
     echo "program_bytes     = $P   (comp9a == decomp9)"
-    echo "archive_bhm_bytes = $B"
+    echo "archive9.bhm_bytes = $B"
     echo "archive9_bytes    = $A"
     echo ""
     echo "S(self-extracting: comp9 + archive9)      = $((P + A))"

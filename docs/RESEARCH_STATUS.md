@@ -17,16 +17,23 @@
   `22,449,073` bytes (1.7959 bpc) with structural hoisting enabled, beating
   `xz -9e` (24,831,656), `brotli -q 11` (25,742,001), `bzip2 -9` (29,008,758)
   and `gzip -9` (36,445,248) on the same input.
-- **The full corpus reconstructs exactly.** The accepted configuration
-  (`Method::Residual` at **`tune 53`** — table scale 3 on the high nibble, mixer
-  LR 16 on the low nibble, APM axis off) gives enwik9 `165,344,019` bytes
-  (`1.3228` bpc), decoded byte-identically. Progression: pre-column
-  `182,949,204` (1.4636 bpc); hoist+column `181,803,607` (1.4544); +A1.1 tokenizer
-  `180,079,678` (1.4406); +Phase 4 `176,204,762` (1.4096); +Phase 6 SSE
-  `174,533,527` (1.3963); +Phase 7 article layout `170,063,733` (1.3605); +Phase 8
-  learned residual `169,642,087` (1.3571); +Phase 9 LR re-tune `169,282,339`
-  (1.3543); **+Phase 11 T2 table scale `165,344,019` (1.3228)**. This is milestone
-  G0 (exact 10⁹-byte reconstruction) and G1.
+- **The full corpus reconstructs exactly, from the shipped binary.** The accepted
+  configuration (`Method::Residual` at **`tune 51`** — table scale 3, mixer LR 8,
+  the measured adaptation ladder, and a residual corrector retrained against the
+  current predictor) gives enwik9 **`160,015,425` bytes (`1.2801` bpc)**, decoded
+  byte-identically by the **scored stub**, not the research driver. Progression:
+  pre-column `182,949,204` (1.4636); hoist+column `181,803,607`; +A1.1 tokenizer
+  `180,079,678`; +Phase 4 `176,204,762`; +Phase 6 SSE `174,533,527`; +Phase 7
+  layout `170,063,733`; +Phase 8 corrector `169,642,087`; +Phase 9 LR `169,282,339`
+  (1.3543); **+Phase 11 T2 `165,344,019`; +Phase 11 rates `161,418,616`;
+  +Phase 12 retrained corrector `160,754,189`; +Phase 12 LR 8 `160,015,425`
+  (1.2801)**. That is milestone G0 (exact 10⁹-byte reconstruction) and G1, and it
+  is **9,266,914 B** below the Phase-11 close.
+- **The score is measured on the shipped artefact.** `2 × 125,056 + 160,015,425`
+  = **160,265,537** for the separate form, and 160,265,560 for the self-extracting
+  one (the 23-byte difference is the SFX marker plus the length field, which is
+  the cross-check that both accounting paths agree). Gap to the 1% gate
+  (109,685,196): **≈50.6 MB**.
 - **Mechanisms are adopted only by complete, measured cost:** word/bigram
   experts (−653,805 B on enwik8) and orders 0/5/12/16 (−118,676 B on enwik8).
   Structural hoisting is adopted for ≥ enwik7 (−15,130 B on enwik8) but

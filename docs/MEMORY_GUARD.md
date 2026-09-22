@@ -200,3 +200,63 @@ The general lesson is the same one as the 543 B → 1,728 B estimate: a guard is
 only a guard if it is run, and a bound is only a bound if it is asserted about
 the *actual* input. The test-plane guard found a decoder hole because it was
 applied to the decoder's own code path.
+
+### 6.2 The unguarded thing was the operator, not the editor
+
+Three times a long session ended with the editor being killed, and twice it was
+attributed to the codec because the codec was the most recent suspect. That was
+wrong in an important way: it led to *editing the user's editor configuration*,
+which is not this repository's business and had to be reverted. The honest account:
+
+* Measured on 2026-09-15, before starting any heavy run, `zed-editor` was
+  **24.6 GB** resident and `target/` held **28,359 files**. So the editor was
+  already large and the machine was already close to its limit.
+* **The commands that tipped it were the operator's.** `tools/run_guarded.sh`
+  covered the coding runs, and only those. Every `cargo build`, every
+  `cargo test`, and every shell loop over several gates ran **outside any
+  ceiling** — and a `for` loop launching three gates is three unguarded
+  processes, not one.
+
+So the fix belongs on the operator's side, and it is now a rule with a tool:
+**every terminal command runs through `tools/memcap.sh <gib> <command>`.**
+
+### 6.3 `memcap.sh`: what was tried, and what was rejected
+
+The first version used a systemd scope (`systemd-run --user --scope -p
+MemoryMax=1G`), which is strictly stronger than `RLIMIT_AS` because it bounds the
+*total* of a command tree rather than each process. It was removed, because it was
+tested rather than trusted and it **silently did not enforce**: a 3 GiB allocation
+succeeded inside a 1 GiB scope on this machine. A guard that reports success while
+enforcing nothing is worse than no guard.
+
+The shipped mechanism is `RLIMIT_AS` via `ulimit -v`, which was verified to
+actually stop an over-budget allocation:
+
+```text
+tools/memcap.sh 1 python3 -c "bytearray(3*1024**3)"   -> MemoryError, exit 1
+tools/memcap.sh 4 python3 -c "bytearray(1*1024**3)"   -> allocated, exit 0
+```
+
+The limit is per process and is inherited, so a shell that spawns children caps
+each of them; the total is bounded by (processes × cap), which is why the cap is
+paired with a bounded process count (`.cargo/config.toml` sets `jobs = 2`).
+
+Recommended caps: **1 GiB** for trivial commands, **8 GiB** for anything that
+compiles, **10 GiB** for anything that codes.
+
+### 6.4 Every heavy path, not just the ones we remembered
+
+The hard `RLIMIT_AS` ceiling was applied by the gate wrappers but **not** by
+`package_sfx.sh` or `make_submission.sh`, which invoke the scored stub directly —
+so the enwik9 authority run, the single heaviest thing this project does, ran
+under only the stub's own startup projection. Both now route their stub
+invocations through `tools/run_guarded.sh` (`ZENTROPY_STUB_CAP_GIB`, default 9 GiB,
+against a measured 5.96 GiB peak). An estimate is a guard only if a kernel ceiling
+backs it up.
+
+### 6.5 What is still not guarded
+
+The editor's *baseline* footprint is outside the repository's control, and the
+repository must not try to configure it. What the operator controls is now capped,
+so this project's own commands can no longer be the trigger; `tools/watch_run.sh`
+will show which process is large if it happens again.

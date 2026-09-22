@@ -655,18 +655,20 @@ more, so the LR ladder was re-descended rather than assumed. Against the receipt
 
 | tune | LR | archive | Δ |
 |---|---|---|---|
-| 48 | 12 | 160,232,405 | −1,186,211 |
-| 52 | 10 | *gated to close the bracket* | — |
 | 51 | 8 | **160,015,425** | **−1,403,191** |
+| 52 | 10 | 160,057,110 | −1,361,506 |
+| 48 | 12 | 160,232,405 | −1,186,211 |
 | 50 | 6 | 160,292,663 | −1,125,953 |
 | 49 | 4 | 161,324,386 | −94,230 |
 | 53 | 16 | 160,754,189 | −664,427 |
+| 54 | 20 | 162,050,033 | +631,417 (rejected) |
 
 For comparison, at the **shipped** weights LR 16 gives 161,418,616 and LR 10 gives
 160,809,990 — so the retrained corrector is worth more than *any* LR move at the
 old weights, and the two combine.
 
-LR 10 sits between the tested 8 and 12, so it is gated like every other point
-rather than assumed. **This is the third time the LR optimum has moved**, and every
-time it moved it was because the predictor had changed. The knob is cheap to
-re-measure and expensive to assume.
+**LR 8 is adopted** (`ACCEPTED_TUNE = 51`). It is an interior optimum at the
+representable granularity of `MIXER_LRS`: every neighbour is worse on both sides,
+so the ladder is **closed** rather than stopped. This is the third time the
+optimum has moved, and every time it moved it was because the predictor had
+changed. The knob is cheap to re-measure and expensive to assume.

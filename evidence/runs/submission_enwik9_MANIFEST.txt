@@ -1,0 +1,20 @@
+Zentropy submission bundle
+corpus      = enwik9 (1000000000 bytes)
+corpus_sha256 = 159b85351e5f76e60cbe32e04c677847a9ecba3adc79addab6f4c6c7aa3744bc
+archive_sha256 = 2d79b229bc9e7cb18e1e6ca22023649da6468c3f880be71cd51e008c72e1ff6b
+revision    = c6230da46c981920a8680094a9c283b488898b7b
+target      = x86_64-unknown-linux-musl
+features    = accepted,submission
+profile     = submission (opt-level=z, lto=fat, codegen-units=1, panic=abort, overflow-checks=on)
+toolchain   = nightly-2026-07-24, -Z build-std=std,panic_abort, -Cpanic=immediate-abort
+
+program_bytes     = 125056   (comp9a == decomp9)
+archive_bhm_bytes = 160015425
+archive9_bytes    = 160140504
+
+S(self-extracting: comp9 + archive9)      = 160265560
+S(separate, comp9a=decomp9: 2P + bhm)     = 160265537
+
+exactness = PASS (byte-identical, via the shipped stub and under env -i)
+
+files: comp9a decomp9 archive9.bhm archive9 source.tar.gz MANIFEST.txt

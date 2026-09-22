@@ -75,10 +75,20 @@ BHM="$OUTDIR/$NAME.bhm"
 SFX="$OUTDIR/${NAME}.archive9"
 
 echo "compressing with the scored stub (comp9a == decomp9)..." >&2
-"$STUB" c "$IN" "$BHM"
+
+# Hard address-space ceiling on the stub, not just its own `mem-guard` startup
+# projection. The stub's guard is an estimate; `RLIMIT_AS` is not. The cap sits
+# well above the measured peak (5.96 GiB at enwik9) and far below the machine, so
+# a runaway allocates into a clean abort instead of into the rest of the session.
+# `run_guarded.sh` also takes the single-heavy-run lock; sharded callers opt out
+# with ZENTROPY_ALLOW_CONCURRENT=1, which is set by gate_many.sh deliberately.
+CAP_GIB="${ZENTROPY_STUB_CAP_GIB:-9}"
+guard() { sh "$ROOT/tools/run_guarded.sh" "$CAP_GIB" "$@"; }
+
+guard "$STUB" c "$IN" "$BHM"
 
 echo "verifying exactness with the same stub..." >&2
-"$STUB" d "$BHM" "$OUTDIR/$NAME.decoded"
+guard "$STUB" d "$BHM" "$OUTDIR/$NAME.decoded"
 if ! cmp -s "$IN" "$OUTDIR/$NAME.decoded"; then
     echo "FAIL: reconstruction is not byte-identical" >&2
     exit 1
