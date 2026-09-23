@@ -555,4 +555,44 @@ mod tests {
         let net = t.quantize();
         assert!(net.predict(&f) > 0, "correction did not become positive");
     }
+
+    /// Diagnostic (run with `--ignored --nocapture`): the weight statistics of the
+    /// two preserved training artefacts. It exists because the enwik9-trained net
+    /// *hurts* the archive it was trained on (+1,566,863 B at enwik9, +155,752 B at
+    /// enwik8) while the enwik8-trained net helps (-10,827 B at enwik8), and the
+    /// question is whether the longer training simply saturated the weights.
+    #[test]
+    #[ignore]
+    fn dump_preserved_weight_stats() {
+        for p in [
+            "evidence/phase14/temporal/enwik8-h8.bin",
+            "evidence/phase14/temporal/enwik9-h8.bin",
+        ] {
+            let Ok(b) = std::fs::read(p) else {
+                continue;
+            };
+            let Some(n) = Temporal::from_bytes(&b) else {
+                println!("{p}: not a temporal net");
+                continue;
+            };
+            let mi = |v: &[i16]| v.iter().map(|x| x.unsigned_abs()).max().unwrap_or(0);
+            let sat = |v: &[i16]| {
+                v.iter()
+                    .filter(|x| x.unsigned_abs() as i32 >= WSCALE * 4 - 2)
+                    .count()
+            };
+            let sum_w2: i64 = n.w2.iter().map(|x| *x as i64).sum();
+            println!(
+                "{p}: nh={} max|b1|={} max|w2|={} max|w1|={} sat_w1={} sat_w2={} b2={} sum_w2={}",
+                n.nh,
+                mi(&n.b1),
+                mi(&n.w2),
+                mi(&n.w1),
+                sat(&n.w1),
+                sat(&n.w2),
+                n.b2,
+                sum_w2
+            );
+        }
+    }
 }

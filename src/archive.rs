@@ -1365,15 +1365,15 @@ impl Method {
         // Phase 14.34: the temporal residual corrector, applied on top of the
         // accepted chain (including the memoryless corrector set just above).
         //
-        // ADOPTED at enwik9 (ΔS = -156,076 B, exact, receipted), so the accepted
-        // method itself now carries it: `residual` IS the temporal-corrected
-        // composite. The `ph14-temporal` candidate and its control remain for the
-        // record -- the candidate is now the same configuration as `residual`.
+        // NOT adopted. The gate that appeared to adopt it was mis-measured (see
+        // docs/PHASE14_TEMPORAL.md): the enwik9 gate ran a stale binary carrying
+        // *enwik8*-trained weights, and the enwik9-trained weights in fact make the
+        // archive worse. So the accepted method does NOT enable it; the candidate
+        // and its control remain for the reproducible screen.
         #[cfg(feature = "temporal")]
         let base = match self {
             Method::Ph14Temporal => base.with_temporal(false),
             Method::Ph14TemporalCtl => base.with_temporal(true),
-            Method::Residual | Method::ResidualCtl => base.with_temporal(false),
             _ => base,
         };
         // Phase 11: the measured adaptation ladder, applied once for every
@@ -1430,17 +1430,6 @@ impl Method {
             // The downgrade target: the accepted configuration without the layout.
             Method::Sse3 => base,
             _ => base.with_residual(false),
-        };
-        // Phase 14.34: the temporal corrector is part of the adopted chain, so the
-        // scored constructor must build it too -- court 9 asserts this function and
-        // the research `config` produce byte-identical archives, and a mechanism
-        // present in one but not the other would break exactly that. The `Sse3`
-        // downgrade target is left alone: it deliberately drops the accepted
-        // mechanisms down to the plain geometry.
-        #[cfg(feature = "temporal")]
-        let base = match self {
-            Method::Sse3 => base,
-            _ => base.with_temporal(false),
         };
         base.with_rates(&crate::context::ACCEPTED_RATES)
             .with_info(InfoMode::None)
@@ -2527,6 +2516,53 @@ pub fn extract_sfx(image: &[u8]) -> Option<&[u8]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The accepted method and the Phase-14.34 temporal candidate must build the
+    /// **identical** configuration, at every scale. Court 9 (submission/research
+    /// archive equivalence) compares the two *constructors*, but it runs on enwik6,
+    /// whose table scale is 2^21; the authority corpus runs at 2^27, where a
+    /// scale-sensitive divergence would hide. This test pins the equivalence at
+    /// n = 10^9 directly, in milliseconds, so a future edit cannot silently make
+    /// `Residual` and `ph14-temporal` different configurations.
+    ///
+    /// It exists because the shipped stub's first full-enwik9 run disagreed with a
+    /// research-driver measurement of the candidate, and the cheapest way to
+    /// localise that was to ask the two configurations whether they are equal
+    /// rather than to reason about it. (The disagreement turned out to be a stale
+    /// binary, not a config difference -- this test ruled that out in milliseconds
+    /// instead of ninety minutes.)
+    ///
+    /// The temporal corrector is **research-plane**, so the accepted method must
+    /// NOT enable it; the candidate must be the accepted chain plus exactly the
+    /// temporal selector, and nothing else.
+    #[test]
+    fn temporal_candidate_is_the_accepted_chain_plus_only_the_temporal_selector() {
+        let n = 1_000_000_000usize;
+        let mut a = Method::Residual.config_for(n).with_tune(ACCEPTED_TUNE);
+        let b = Method::Ph14Temporal.config_for(n).with_tune(ACCEPTED_TUNE);
+        let c = Method::Ph14TemporalCtl
+            .config_for(n)
+            .with_tune(ACCEPTED_TUNE);
+        assert!(
+            !a.temporal,
+            "the temporal corrector is research-plane; the accepted method must not enable it"
+        );
+        assert!(b.temporal, "the candidate enables the corrector");
+        assert!(!b.temporal_ctl, "the candidate is not the control");
+        assert!(
+            c.temporal && c.temporal_ctl,
+            "the control is the permuted variant"
+        );
+        // Everything except the temporal selector must be identical, so that a
+        // measured delta attributes the mechanism and not a changed parent.
+        a.temporal = b.temporal;
+        a.temporal_ctl = b.temporal_ctl;
+        assert_eq!(
+            format!("{a:?}"),
+            format!("{b:?}"),
+            "Ph14Temporal must be the accepted config plus only the temporal selector"
+        );
+    }
 
     #[test]
     fn header_is_well_formed() {

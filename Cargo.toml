@@ -70,7 +70,7 @@ accepted = ["accepted-core", "tune-table"]
 #
 # A `compile_error!` in `src/context/mod.rs` refuses to build this set on its
 # own, so it cannot be mistaken for a scored configuration.
-accepted-core = ["struct-hoist", "column-model", "word-token", "long-match", "sparse-match", "match-byte", "sse-3", "reorder", "learned", "mem-guard", "temporal"]
+accepted-core = ["struct-hoist", "column-model", "word-token", "long-match", "sparse-match", "match-byte", "sse-3", "reorder", "learned", "mem-guard"]
 # Escape hatch for A31 measurements. `accepted-core` without `tune-table` is the
 # *pre-T2 geometry* — the same mechanism set, with the `tune` high nibble inert.
 # It exists so the marginal executable cost of `tune-table` can be measured by

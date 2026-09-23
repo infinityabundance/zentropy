@@ -4,23 +4,26 @@ One page, kept current. Every row is a measurement, not a projection; the verdic
 column uses the phase's own vocabulary (ADOPTED / REJECTED / INCONCLUSIVE /
 PERF_ENABLER / RESEARCH_ONLY). The authority is always `S` on enwik9.
 
-## The adopted baseline moved
+## The baseline is UNCHANGED
 
-Phase 14.34 is the first Phase 14 mechanism to be adopted, so the project's
-authority numbers are no longer the ones in older documents. The current accepted
-point (tune 51) is:
+Phase 14 has adopted nothing. One mechanism (14.34, the temporal residual corrector)
+briefly appeared to be adopted, and that adoption was **reverted**: the gate that
+justified it had run a stale binary carrying the wrong weights, and once the shipped
+stub was built properly it turned out to be a **regression** on the authority corpus
+(+1,566,863 B of archive). The full account, including the two mistakes, is in
+[`PHASE14_TEMPORAL.md`](PHASE14_TEMPORAL.md).
 
-| quantity | before Phase 14.34 | after adoption |
-|---|---|---|
-| enwik9 archive | 160,015,425 B | **159,849,941 B** |
-| scored stub (musl, `accepted,submission`) | 125,056 B | **129,152 B** |
-| **S = 2 × program + archive** | 160,265,537 B | **160,108,245 B** |
-| gap to the 1 % gate (109,685,196) | 50.6 MB | 50.4 MB |
+The current accepted point (tune 51) is therefore the pre-phase one:
 
-`ΔS = −157,292 B`. The archive row is an exact, decoded, receipted artifact
-(`evidence/runs/phase14/temporal_enwik9.jsonl`); the program row is the shipped stub;
-court 9 proves the two configurations are byte-identical. Docs that quote
-`125,056` / `160,015,425` / `160,265,537` are describing the *pre-14.34* point.
+| quantity | value |
+|---|---|
+| enwik9 archive | 160,015,425 B |
+| scored stub (musl, `accepted,submission`) | 125,056 B |
+| **S = 2 × program + archive** | **160,265,537 B** |
+| gap to the 1 % gate (109,685,196) | 50.6 MB |
+
+`residual` at enwik6 is 245,797 and at enwik7 2,217,223, both matching their receipts
+after the revert (`Δ = 0`).
 
 ## Verdicts
 
@@ -35,8 +38,8 @@ court 9 proves the two configurations are byte-identical. Docs that quote
 | 14.19b | selective PPM escape (min-count rule) | **REJECTED** | every threshold loses monotonically: control 2.6746 vs best 2.7156 b/B at equal memory |
 | 14.30 | context-map specialists (tagged + stationary) | **REJECTED** | +656 (enwik6) / +70,878 (enwik7); the *replacement* control costs +7,283 at equal width — the direct experts are worth more |
 | 14.20 | two-level (hierarchical) mixer | **REJECTED** | −3.3 % vs the flat mixer at equal input count and comparable memory |
-| 14.34 | **temporal residual corrector** | **ADOPTED** | ΔS = **−157,292 B** at enwik9, exact; control loses on every rung it was run |
-| 14.35 | weight-quantization sweep + size-aware objective | **NOT IMPLEMENTED** | the width sweep proves it matters (h=8 charged −1,184 vs h=64 +1,266 at enwik7) |
+| 14.34 | **temporal residual corrector** | **REJECTED as trained / RESEARCH** | mechanism reproduces exactly (−10,827 at enwik8 with enwik8 weights, control loses), but the enwik9 training saturated the weights (`max|w|` at the ±4.0 clamp, `sum(w2)` = +2692 vs −362) and the corrector *hurt* (+1,566,863 at enwik9). See [`PHASE14_TEMPORAL.md`](PHASE14_TEMPORAL.md) |
+| 14.35 | weight-quantization sweep + size-aware objective | **NOT IMPLEMENTED — and now the prerequisite** | the enwik9 failure is a saturation/objective problem, not a model-size one |
 | 14.36 | deterministic integer inference | **ADOPTED** (with 14.34) | integer-only `predict`; the int/float agreement test is derived-bound, and caught the h=8/h=16 reversal |
 | 14.21–14.28, 14.31, 14.37–14.58 (and 14.34's larger models) | large learned models, MatchTrust, procedural-aware ordering, universes, recursive residual explanation, … | **NOT STARTED** | blocked on budget, not on a negative result |
 
@@ -47,24 +50,25 @@ width penalty larger than the signal it brings.** The ctxmap screen priced that
 penalty directly (+1,946 B for three redundant direct experts at enwik6) and turned
 it from a suspicion into a number.
 
-That is why the temporal corrector won where they lost. It applies a logit
-correction *after* the mixer and the APM chain, so it adds capacity **without adding
-a vote**. The forward rule for the rest of Phase 14 is:
-
-> spend capacity behind the mixer, not in it.
+That is why the temporal corrector is the only family in the phase that has ever
+measured a win: it spends capacity behind the mixer. It has not been adopted — its
+training recipe is unstable at enwik9 scale (see the 14.34 row) — but the shape of
+the rule stands, and it is the reason the next attempts should also spend capacity
+*behind* the mixer rather than adding votes to it.
 
 ## Next, in order
 
-1. **The shipped stub's own full-enwik9 authority run** (the outstanding Phase-12
-   receipt). It validates `S` on the actual artifact rather than on the research
-   driver that court 9 proves is equivalent.
-2. **Mixer-LR re-descend** (Phase 9's standing rule after any change to the
-   predictor). Not expected to move — the corrector sits after the mixer with no
-   feedback — but "not expected" is not "measured".
-3. **§14.35**: weight-quantization sweep (Q8→Q4, entropy-coded) and the explicit
-   size-aware objective — required before any larger learned model, because the
-   weight bill is what killed the wider nets.
-4. **§14.34's larger models** (recurrent / gated / Transformer), now justified by a
-   measured signal rather than by hope.
-5. The unstarted structural subphases (14.21–14.28, 14.37–14.58) remain open; the
+1. **Fix the temporal corrector's training objective** (§14.35): a bound or decay that
+   prevents saturation, plus a check that the second layer stays near zero-sum.
+   Re-test on enwik8 (10 minutes); enwik9 is 140.
+2. **Then re-run the enwik9 gate with the rebuild** — the mistake that caused this
+   whole detour was training and gating without rebuilding, so the rule is now
+   explicit: weights are a build input, and a training run and a gate are never
+   adjacent without a rebuild.
+3. **The shipped stub's own full-enwik9 authority run** for the *unchanged* baseline —
+   done once, and it is how the regression was caught; it should be a standing check.
+4. **Mixer-LR re-descend** (Phase 9's standing rule), which nothing in this phase has
+   triggered yet, since nothing was adopted.
+5. §14.35's weight-quantization sweep (Q8→Q4, entropy-coded), then larger models.
+6. The unstarted structural subphases (14.21–14.28, 14.31, 14.37–14.58); the
    procedural family among them is stopped by measurement, not by neglect.

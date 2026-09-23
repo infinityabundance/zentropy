@@ -1,208 +1,140 @@
 # Phase 14.34 — The temporal residual corrector
 
-This is the first **positive** mechanism of Phase 14 after four negatives (the
-procedural family, deep PPM depth, the two-level mixer, and the context-map
-specialists). It is a real, scaling archive reduction with a falsifying control.
+**Status: research-plane. The adoption this document previously reported was based
+on a mis-measurement and has been reverted. The mechanism is real — it reproduces
+exactly when trained on enwik8 — but the training recipe is unstable at enwik9 scale
+and produced a corrector that *hurts*. Details below, including the two mistakes, so
+they are not repeated.**
 
-## Why this and not another expert
+## Why this mechanism, and why it fits the phase's one transferable rule
 
-The four negatives share one shape: every mechanism that entered the competition as
-a **new mixer input** paid a width penalty larger than the signal it brought. The
-ctxmap screen measured that penalty directly (+1,946 B for three redundant direct
-experts at enwik6). The corrected conclusion was that any further capacity must be
-spent *without* widening the mixer.
+Four Phase 14 mechanisms were rejected and they share one shape: **a new mixer input
+pays a width penalty larger than the signal it brings** (priced at +1,946 B for three
+redundant direct experts at enwik6). The learned residual corrector applies its
+correction *after* the mixer and the APM chain, so it adds capacity **without adding
+a vote** — the only shape in this phase that has ever won.
 
-The learned residual corrector (§Phase 8) is exactly such a mechanism: it applies a
-logit correction *after* the mixer and the APM chain, so it adds capacity without
-adding a vote. But the shipped corrector is **memoryless** — its 12 features are the
-instantaneous classical outputs — so it cannot model any temporal structure. §14.34
-asks for a temporal expert; this is the smallest honest one: the same corrector
-shape, fed **causal sequence state**.
+But the shipped corrector is **memoryless**: its 12 features are the instantaneous
+classical outputs, so it models no sequence structure. §14.34 asks for a temporal
+expert. This is the smallest honest one: the same corrector shape, fed **causal
+sequence state**.
 
 ## The mechanism
 
-`src/learned/temporal.rs` (new, `phase14` + `learned` gated, outside `accepted`):
+`src/learned/temporal.rs` (own feature `temporal`, implying `learned`; outside
+`accepted`):
 
-* `TemporalFeats` — `NT = 20` quantized features. `TemporalRaw` carries the causal
-  state the classical chain already computes: the previous coded bit, the run length
-  of recent correct match predictions, the match correctness EMA, rep-offset
-  confidence, the corrector's **own previous correction**, the previous stretched
-  classical output, bit position, and the last-byte class. Every field is a pure
-  function of bytes already coded, so it is legal on the decoded path.
-* `Temporal` — the frozen net: one hidden layer, `i16` weights at `WSCALE = 256`,
-  integer-only `predict()` returning a stretch-domain logit correction, plus
-  `to_bytes`/`from_bytes` (magic `ZTP1`), `model_bytes()` and `shuffled()` (the
-  deterministic weight permutation that is the negative control).
+* `TemporalFeats` / `TemporalRaw` — `NT = 20` causal features: the previous coded
+  bit, the run length of recent correct match predictions, the match-correctness EMA,
+  rep-offset confidence, the corrector's **own previous correction**, the previous
+  stretched classical output, the bit position and the last-byte class. Every field
+  is a pure function of bytes already coded, so it is legal on the decoded path.
+* `Temporal` — one hidden layer, `i16` weights at `WSCALE = 256`, integer-only
+  `predict()`, serialization (magic `ZTP1`), `model_bytes()`, and `shuffled()` — the
+  deterministic weight permutation that is the negative control.
 * `TemporalTrainer` — the float shadow, `learned-train`-gated exactly like the
-  accepted `Trainer`, mirroring the integer forward pass so the quantized net
-  behaves as trained.
-* `Predictor` applies the temporal correction after the memoryless one, and advances
-  the temporal state identically on encoder and decoder. The hook is a strict no-op
-  when no net is present or the configuration does not request one — verified:
-  `--candidate residual` against its own baseline gives `archive_delta = 0`.
+  accepted `Trainer`, mirroring the integer forward pass.
+* A `Predictor` hook applying the correction after the memoryless one, advancing the
+  temporal state identically on encoder and decoder. It is a strict no-op until a net
+  and a configuration request it — verified: `--candidate residual` gives
+  `archive_delta = 0` against its own baseline.
 
-`Method::Ph14Temporal` and its control `Method::Ph14TemporalCtl` are wired to mirror
-the **accepted parent exactly** — same `on_phase4_parent`, same `base6` (extra SSE
-stage), same `Order::Full` article ordering, same memoryless corrector — and then
-add the temporal net. So the archive delta isolates the corrector, not a changed
-transform stack. That equality is what makes the numbers below meaningful.
+`Method::Ph14Temporal` and its control `Ph14TemporalCtl` are the accepted chain plus
+*only* the temporal selector. That is now a test
+(`temporal_candidate_is_the_accepted_chain_plus_only_the_temporal_selector`), which
+pins the equivalence at n = 10⁹ in milliseconds rather than at enwik6's scale. The
+test exists because the first attempt at localising the problem was to compare the
+two configurations by reading them, and asking them directly was the cheaper answer.
 
-## Results
+## What is measured, and what is not
 
-The corrector is trained on the **transformed stream of the target rung** — the same
-protocol the accepted corrector uses — and its weights are embedded in the binary
-and charged to `S`. Each rung therefore has its own weights. Every row is a real
-`eval`: candidate encoded **and decoded**, `exact=true`.
+Correct (each rung's weights rebuilt into the binary before gating — see the second
+mistake below):
 
-| rung | candidate | Δarchive | control (permuted weights) | weights charged |
-|---|---|---|---|---|
-| enwik6 | `ph14-temporal` (h=16) | **−1,950** | +89 | 706 B |
-| enwik7 | `ph14-temporal` (h=16) | **−1,675** | +1,037 | 706 B |
-| enwik8 | `ph14-temporal` (h=16) | **−5,385** | (not run) | 706 B |
-| enwik8 | `ph14-temporal` (h=8) | **−10,827** | (not run) | 354 B |
-| enwik9 | `ph14-temporal` (h=8) | **−165,484** | (not run) | 354 B |
-
-The control *loses* on both rungs where it was run, which is the point: the gain is
-the learned sequence signal, not the extra code path or the model's mere presence.
-
-### The authority verdict
-
-`eval enwik9 --candidate ph14-temporal --tune 51 --parent-tune 51
---parent-archive-bytes 160015425`, receipted at
-`evidence/runs/phase14/temporal_enwik9.jsonl`, weights trained on enwik9's own
-transformed stream (6,861,620,352 trainer steps, 3,144 s):
-
-    parent    residual        160,015,425 B   1.2801 bpc   exact=true
-    candidate ph14-temporal   159,849,941 B   1.2788 bpc   exact=true
-    archive_delta = -165,484 B
-
-**ADOPTED.** The mechanism is now in the accepted chain (`temporal` is in
-`accepted-core`; `with_temporal(false)` is set for `Method::Residual` in `config`
-and for the accepted chain in `config_for`). Measured on the shipped artifacts:
-
-    archive  160,015,425 -> 159,849,941      Δarchive  = -165,484   (enwik9, exact)
-    program      125,056 ->     129,152      Δprogram  =   +4,096   (musl accepted,submission)
-    S        160,265,537 -> 160,108,245      ΔS        = -157,292
-
-`S = 2 x program + archive` is how this project charges the scored artifact, so one
-executable byte costs two bytes of `S`; `-165,484 + 2 x 4,096 = -157,292`. The
-program figure is the actual static-pie musl stub the submission ships (confirmed
-against the receipted 125,056 B in `docs/SUBMISSION_CHECKLIST.md`), not the
-host-native A31 cross-check (`measure_binary_cost.sh temporal` reports 4,704 B), and
-court 9 proves the stub's archive is byte-identical to the research driver's.
-
-Caveat kept visible: the 159,849,941 archive was produced by the research driver,
-which court 9 proves is the *same configuration* as the stub; the shipped stub's own
-full-enwik9 run is still the outstanding Phase-12 authority receipt (90 minutes).
-
-The win grows monotonically with scale: enwik6 -1,950, enwik7 -1,675, enwik8
--10,827, enwik9 -165,484. Note that the 354-byte weight file is trained per corpus,
-so the *shipped* `temporal.bin` is the enwik9 artifact and is near-neutral on the
-smaller rungs -- that is the intended deployment (one binary, one corpus), not a
-regression, and the ladder receipts for enwik6/7/8 predate the adoption.
-
-**Verdict: ADOPTED at enwik9.** The decisive quantity is not the archive delta alone,
-because the weights are charged and the program is charged twice:
-
-    enwik9, h=8:  ΔS = Δarchive + 2 × Δprogram = −165,484 + 2 × 4,096 = −157,292 B.
-
-That is the largest single-mechanism marginal of the phase, and unlike the four
-negatives it **grows** with scale.
-
-## The width sweep, and why the *quantized* model is the one to judge
-
-`tools/p14_temporal_width_sweep.sh` sweeps the hidden width in-sample on enwik7,
-every row a real encode+decode. Charged (`Δarchive + model_bytes`):
-
-| hidden | model bytes | Δarchive (enwik7) | charged |
+| rung | weights trained on | Δarchive | exact |
 |---|---|---|---|
-| **8** | 354 | −1,538 | **−1,184** |
-| 16 | 706 | −1,675 | −969 |
-| 32 | 1,410 | −1,562 | −152 |
-| 64 | 2,818 | −1,552 | +1,266 |
-| 128 | 5,634 | −1,642 | +3,992 |
+| enwik6 | enwik6 | −1,950 | yes |
+| enwik7 | enwik7 | −1,675 | yes |
+| enwik8 | enwik8 | **−10,827** | yes |
 
-The archive gain is essentially **flat** across a 16× width increase (−1,538 to
-−1,675, a 137 B spread) while the model bytes grow linearly, so the fully charged
-optimum is the smallest net. This is §14.35's rule made concrete: a model that
-cannot pay for its own persisted bytes does not exist.
+The enwik8 number is fully reproducible: retraining and re-gating reproduces
+−10,827 B exactly. Control (permuted weights, same size and code path) **loses** on
+both rungs it was run (+89 at enwik6, +1,037 at enwik7), so the gain is learned
+sequence signal.
 
-### The enwik8 reversal, and its explanation
+NOT measured: a valid in-sample enwik9 result. See the first mistake.
 
-At enwik8 the width effect **reverses and amplifies**: h=8 gives −10,827 against
-h=16's −5,385, a 5,442 B difference — while the two trainers report *almost identical
-loss* (mean 0.234531 vs 0.234544 bits/bit, recent 0.243891 vs 0.243898). Training
-loss therefore does not explain the archive, which is the whole reason §14.35 insists
-on evaluating the **quantized model**, not the float checkpoint.
+## Mistake 1 — the enwik9 gate ran a stale binary
 
-The mechanism is consistent with quantization error accumulating across hidden
-units: inference sums `w2[j] · h[j]` over `nh` units, and each unit contributes its
-own `w1`/`w2` rounding error, so a wider net's *quantized* correction can drift
-further from the float trainer's intent even though its training loss is the same.
-The `embedded_int_net_matches_dequantized_float` test bounds that error at 8 stretch
-units for *random* features, not on the data distribution where the correction is
-load-bearing.
+I trained the enwik9 weights and then ran the gate **without rebuilding**. Because
+the weights are embedded with `include_bytes!`, the gate therefore ran the *previous*
+build, carrying **enwik8-trained weights**. The `−165,484 B` it reported is not an
+enwik9 in-sample result; it is enwik8 weights applied to enwik9.
 
-This is stated as a **hypothesis** with a coherent mechanism, and it now has direct
-support: `embedded_int_net_matches_dequantized_float` measures the integer-vs-float
-correction divergence on random features, and it **failed** against its original
-8-unit bound once the wider net's weights were embedded. The enwik9 h=8 net measures
-10 against a bound of 33 derived from its own `w2` mass (the weights sit at the
-trainer's ±4.0 clamp, so the unit errors are as large as the scheme permits). The
-assertion is now derived from the shipped weights rather than a constant, and the
-test comment records that it is what caught this. Driving the divergence down is
-§14.35's weight-quantization work, which remains unimplemented.
+The error surfaced only when the shipped stub was finally built and run on enwik9:
 
-The confirming experiment — retrain h=16 on enwik8 and compare the divergence on
-the enwik8 stream — is still pending; what is *measured* is the pair of archive
-numbers, both `exact=true`. The choice of h=8 for the authority gate is defensible
-independently: it is the charged optimum at **both** enwik7 and enwik8.
+    stub program 129,152 B, archive 161,582,288 B
+    receipted baseline: archive 160,015,425 B   -> +1,566,863 B WORSE
 
-### The out-of-sample trap, recorded
+The shipped stub was **not** diverging from the research driver — that was checked
+directly (stub and research produce byte-identical archives at enwik6, enwik7 and
+enwik8; the enwik9 header records method 86, so the reorder precondition did not
+downgrade it). The stub simply carried the enwik9-trained weights, and **the
+enwik9-trained corrector makes the archive worse.**
 
-The first enwik7 run used enwik6-trained weights and **lost** (+840 B). Retraining on
-enwik7's own stream reversed it to −1,675. This is not a violation of the rules —
-the weights are part of the charged description, so training on the target corpus is
-legal one-shot compression — but it means a rung's number is only meaningful with
-that rung's weights. Every number above was produced with its own rung's weights.
+Process rule from this: **the weights are a build input, so a training run and a gate
+are never adjacent without a rebuild.** Repeating the gate after retraining is not
+enough; the binary must be rebuilt between them.
 
-## What is NOT done (honest scope)
+## Mistake 2 — adopting on a mis-measured row
 
-§14.34–14.36 is a larger programme than this. Specifically:
+The adoption commit is reverted. `accepted-core` no longer contains `temporal`, and
+the accepted chain in both `config` and `config_for` no longer enables the corrector.
+Reverting restores the receipted baseline exactly: `residual` at enwik6 is 245,797,
+`Δ = 0`.
 
-* **The large learned models are not implemented.** §14.34 lists a "small recurrent /
-  gated / Transformer" and §14.35 lists 0.25M–6M parameters. This work is the 353-parameter
-  end: a temporal *feature* extension of the existing corrector, not a sequence model
-  with its own recurrence. That is the deliberate cheap test, and it passed; the
-  bigger models are now justified by the signal and remain to be built.
-* **§14.35's size-aware training objective is not implemented.** The trainer
-  minimises data codelength only. `model_bytes()` is measured and reported, and the
-  net is small enough (706 B) that the omission is not load-bearing here — but an
-  explicit `J = data_codelength + λ·serialized_model_bits` term and a weight
-  entropy-coding / Q8–Q4 quantization sweep are required before larger models can be
-  judged, because for them the weight term is decisive.
-* **The binary cost is not yet measured.** The temporal code is `phase14`-gated and
-  absent from `scored`/`config_for`, so the stub is byte-identical today. Adoption
-  needs the two-build protocol (`tools/measure_binary_cost.sh`) plus the enwik9 gate.
+## The actual finding — the training recipe is unstable at enwik9 scale
+
+The two preserved artefacts, loaded through the real decoder:
+
+| weights | max\|w1\| | max\|w2\| | entries at the ±4.0 clamp | sum(w2) |
+|---|---|---|---|---|
+| enwik8-h8 | 705 | 203 | 0 | **−362** (balanced) |
+| enwik9-h8 | 1024 | 1024 | 2 + 2 | **+2692** (strongly positive) |
+
+`1024 = 4.0 × WSCALE`: the enwik9 net's weights are **saturated at the trainer's
+clamp**, and its second layer sums to **+2692** against the enwik8 net's −362. A
+corrector whose output is systematically positive is a *biased* corrector: it pushes
+every prediction toward 1, which on a roughly balanced bit stream costs far more than
+it saves. That is the sign flip, and it is fully explained.
+
+The cause is the training schedule, not the architecture: enwik9 ran 6.86 × 10⁹
+steps against enwik8's 7.06 × 10⁸ (9.7×), and the only regularisation is a hard
+`±4.0` clamp that the run simply saturates.
+
+This is exactly §14.35's subject, and it is why §14.35 is the prerequisite for any
+larger model here: the weight bound, a decay or size-aware term, and a schedule that
+does not drive the net into its clamp. The net is small (354 B), so nothing about this
+is about model bytes yet — it is about the objective.
+
+## Honesty notes
+
+* `S = 2 × program + archive` in this project (the shipped separate form charges the
+  program twice), so a program byte costs two bytes of `S`. The withdrawn adoption
+  reported `−157,292 B` on that basis; the arithmetic was right, the inputs were not.
+* The temporal code is still `accepted`-free, and the stub is back to its receipted
+  size. The preserved weights live in `evidence/phase14/temporal/` and are committed
+  as evidence, not as a shipped model.
+* The mechanism remains the only Phase 14 family with a *reproducible* archive win
+  behind the mixer. It is rejected **as trained**, not as an idea.
 
 ## Next, in order
 
-1. ~~Gate on enwik9~~ **done**: −165,484 B, `exact=true`, receipted.
-2. ~~Measure the binary cost~~ **done**: 4,096 B on the shipped musl stub
-   (125,056 → 129,152), so ΔS = −165,484 + 2 × 4,096 = **−157,292 B**.
-3. ~~Adopt~~ **done**: `temporal` is in `accepted-core` and `with_temporal(false)` is
-   set for the accepted chain in both constructors; all 10 courts pass, including
-   court 9's submission/research byte-identity.
-4. **Outstanding**: the shipped stub's own full-enwik9 authority run (the Phase-12
-   open item), and the mixer-LR re-descend that Phase 9's standing rule requires
-   after any change to the predictor. The corrector is applied *after* the mixer and
-   APM, so it does not feed back into their adaptation and the LR optimum is not
-   expected to move — but "not expected" is not "measured".
-5. Run the confirming quantization experiment from the enwik8 reversal above.
-6. §14.35's weight-quantization sweep (Q8→Q4, entropy-coded) and the explicit
-   size-aware objective. The width sweep already shows *why* they matter; they are
-   not implemented.
-7. Only then grow the model — with §14.35's size term in place, so a wider net's
-   weight bill is priced into the objective rather than discovered afterwards.
-
-`S` remains authority, and the authority row above is a produced, decoded artifact.
+1. Fix the training objective: a bound or decay that prevents saturation, and a check
+   that `sum(w2)` stays near zero. Re-test on enwik8 first — it is 10 minutes against
+   enwik9's 140.
+2. Only then re-run the enwik9 gate **with the rebuild**, and gate the new baseline on
+   the authority rung.
+3. §14.35's weight-quantization sweep (Q8→Q4, entropy-coded) and the explicit
+   size-aware objective.
+4. Only then grow the model.
