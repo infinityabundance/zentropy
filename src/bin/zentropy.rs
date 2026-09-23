@@ -1316,13 +1316,30 @@ fn cmd_train_temporal(args: &[String]) -> Result<(), String> {
         }
     }
     let net = cm.take_temporal_net().ok_or("train-temporal: no trainer")?;
+    // Refuse a saturated net. This is not defensive decoration: the enwik9 training
+    // run saturated the clamp and the resulting corrector made the archive *worse*
+    // than no corrector at all (+1,566,863 B at enwik9), while the unsaturated
+    // enwik8 net saved 10,827 B. The observable that separates them is saturation,
+    // so a run that saturates is refused here rather than discovered at enwik9.
+    if net.is_saturated() {
+        let (sat1, sat2, clamp) = net.weight_stats();
+        return Err(format!(
+            "train-temporal: REFUSED -- {sat1}+{sat2} weights pinned at the +-{:.1} clamp ({clamp} stored). \
+             A saturated corrector is systematically biased and costs archive bytes; see docs/PHASE14_TEMPORAL.md. \
+             Lower --lr, bound the run with --max-bytes, or add a decay. Nothing was written.",
+            zentropy::learned::temporal::WMAX
+        ));
+    }
     let bytes = net.to_bytes();
     let model_bytes = net.model_bytes();
     write(&out, &bytes)?;
     let (steps, loss, ema) = cm.temporal_stats();
+    let (sat1, sat2, clamp) = net.weight_stats();
     println!(
-        "hidden={hidden} lr={lr} steps={steps} mean_loss_bits_per_bit={loss:.6} recent_loss_bits_per_bit={ema:.6} model_bytes={model_bytes} file_bytes={} wall={:.1}s out={out}",
+        "hidden={hidden} lr={lr} steps={steps} mean_loss_bits_per_bit={loss:.6} recent_loss_bits_per_bit={ema:.6} model_bytes={model_bytes} file_bytes={} saturated={}+{} of clamp {clamp} wall={:.1}s out={out}",
         bytes.len(),
+        sat1,
+        sat2,
         t0.elapsed().as_secs_f64()
     );
     Ok(())

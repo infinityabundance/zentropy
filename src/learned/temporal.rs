@@ -111,6 +111,11 @@ pub fn extract(r: &TemporalRaw) -> TemporalFeats {
 pub const WSCALE: i32 = 256;
 /// Clamp on the logit correction, in stretch units.
 pub const CORR_CLAMP: i32 = 1024;
+/// Bound on every trained weight, in real units. Hoisted out of the training step
+/// because the saturation it produces is a *shippable defect*, not an internal
+/// detail: the enwik9-trained net pinned its weights here and cost 1.5 MB of
+/// archive (see the module docs and `docs/PHASE14_TEMPORAL.md`).
+pub const WMAX: f32 = 4.0;
 
 /// splitmix64: a deterministic, dependency-free 64-bit mixer for the offline
 /// trainer. Gated with the trainer exactly as `crate::learned::splitmix64` is.
@@ -167,6 +172,30 @@ impl Temporal {
     }
 
     /// The weight bytes, charged to `S` when this net is embedded.
+    /// A quantitative hygiene report on a trained net.
+    ///
+    /// The enwik9 training run produced a net whose weights sat at the [`WMAX`]
+    /// clamp; embedded, it made the archive *worse* than no corrector at all
+    /// (+1,566,863 B at enwik9). Saturation is the observable that distinguishes the
+    /// harmful artefact from the helpful one (the enwik8 net tops out at 705/243
+    /// against the clamp's 1024), so it is exposed as a value a caller can refuse.
+    pub fn weight_stats(&self) -> (usize, usize, i32) {
+        let clamp = (WMAX * WSCALE as f32) as i32;
+        let sat = |v: &[i16]| {
+            v.iter()
+                .filter(|x| (x.unsigned_abs() as i32) >= clamp - 2)
+                .count()
+        };
+        (sat(&self.w1), sat(&self.w2), clamp)
+    }
+
+    /// Whether any weight is pinned at the training clamp. A net that is not
+    /// hygienic must not be embedded: it is a biased, extremal corrector.
+    pub fn is_saturated(&self) -> bool {
+        let (a, b, _) = self.weight_stats();
+        a + b > 0
+    }
+
     pub fn model_bytes(&self) -> u64 {
         (self.w1.len() + self.b1.len() + self.w2.len() + 1) as u64 * 2
     }
@@ -341,7 +370,8 @@ impl TemporalTrainer {
             }
             self.b1[j] -= lr * dz;
         }
-        const WMAX: f32 = 4.0;
+        // Weights are clamped to the module-level `WMAX`; a run that saturates it
+        // is refused by `train-temporal` rather than embedded.
         for w in self.w1.iter_mut() {
             *w = w.clamp(-WMAX, WMAX);
         }
@@ -554,6 +584,29 @@ mod tests {
         }
         let net = t.quantize();
         assert!(net.predict(&f) > 0, "correction did not become positive");
+    }
+
+    /// The preserved artefacts encode the phase's most expensive lesson as a
+    /// regression test: the enwik9-trained net saturated the weight clamp and made
+    /// the archive worse, the enwik8-trained one did not and helped. If the guard
+    /// in `train-temporal` is ever weakened, this fails.
+    #[test]
+    fn saturated_net_is_detected_and_the_healthy_one_is_not() {
+        let dir = "evidence/phase14/temporal";
+        if let Ok(b) = std::fs::read(format!("{dir}/enwik8-h8.bin")) {
+            let n = Temporal::from_bytes(&b).expect("enwik8 artefact parses");
+            assert!(
+                !n.is_saturated(),
+                "the net that saved 10,827 B must not be flagged saturated"
+            );
+        }
+        if let Ok(b) = std::fs::read(format!("{dir}/enwik9-h8.bin")) {
+            let n = Temporal::from_bytes(&b).expect("enwik9 artefact parses");
+            assert!(
+                n.is_saturated(),
+                "the net that cost 1,566,863 B must be flagged saturated"
+            );
+        }
     }
 
     /// Diagnostic (run with `--ignored --nocapture`): the weight statistics of the
